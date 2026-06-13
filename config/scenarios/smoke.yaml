@@ -1,0 +1,120 @@
+fleet:
+  n_drones: 3
+  battery_capacity_wh: 400.0
+  drone_dims_m:
+  - 1.2
+  - 1.2
+  - 0.4
+platform_type: MULTIROTOR
+platforms:
+  FIXED_WING:
+    v_cruise: 18.0
+    v_coverage: 14.0
+    v_climb: 5.0
+    v_descent: 4.0
+    r_min_m: 45.0
+    omega_max: 0.35
+    climb_angle_deg: 12.0
+    ground_roll_energy_j: 8000.0
+    power_w:
+      IDLE: 10.0
+      TAKEOFF: 300.0
+      CLIMB: 250.0
+      CRUISE: 100.0
+      COVERAGE: 115.0
+      TURN: 140.0
+      DESCENT: 40.0
+      LAND: 60.0
+      HOVER: 0.0
+  MULTIROTOR:
+    v_cruise: 12.0
+    v_coverage: 6.0
+    v_climb: 3.0
+    v_descent: 2.5
+    r_min_m: 0.0
+    omega_max: 1.0
+    climb_angle_deg: 90.0
+    ground_roll_energy_j: 0.0
+    power_w:
+      IDLE: 12.0
+      TAKEOFF: 280.0
+      CLIMB: 280.0
+      CRUISE: 220.0
+      COVERAGE: 210.0
+      TURN: 210.0
+      DESCENT: 140.0
+      LAND: 150.0
+      HOVER: 200.0
+  VTOL:
+    v_cruise: 16.0
+    v_coverage: 12.0
+    v_climb: 3.0
+    v_descent: 2.5
+    r_min_m: 55.0
+    omega_max: 0.4
+    climb_angle_deg: 90.0
+    ground_roll_energy_j: 0.0
+    power_w:
+      IDLE: 12.0
+      TAKEOFF: 400.0
+      CLIMB: 380.0
+      CRUISE: 130.0
+      COVERAGE: 145.0
+      TURN: 170.0
+      DESCENT: 200.0
+      LAND: 210.0
+      HOVER: 300.0
+sensor:
+  swath_width_m: 100.0
+  overlap_frac: 0.5
+aero:
+  formation_drag_reduction: 0.1514
+  downwash_radius_m: 3.0
+  downwash_length_m: 10.0
+  formation_spacing_m: 8.0
+  rth_rendezvous_window_s: 30.0
+env:
+  geojson_path: data/areas/smoke_area.geojson
+  coverage_altitude_m: 100.0
+  obstacle_density_per_km2: 4.0
+  obstacle_size_range_m:
+  - 10.0
+  - 30.0
+  obstacle_shapes:
+  - circle
+  - rectangle
+  - polygon
+  n_obstacle_classes: 3
+  clearance_buffer_m: 5.0
+launch:
+  candidate_sites: 8
+  w_distance: 0.3
+  w_energy: 0.5
+  w_swaps: 0.2
+battery_zones:
+  high: 0.75
+  nominal: 0.4
+  critical: 0.2
+swap:
+  service_time_s: 90.0
+  n_bays: 2
+failure:
+  hazard_rate_per_hour: 0.0
+safety:
+  min_separation_m: 10.0
+  obstacle_buffer_m: 5.0
+  predict_horizon_s: 5.0
+rth:
+  check_interval_s: 5.0
+  reserve_frac: 0.05
+sim:
+  dt_s: 1.0
+  max_timesteps: 20000
+  master_seed: 42
+mc:
+  n_max: 6
+  n_min: 3
+  ci_tolerance: 0.01
+tier_thresholds:
+- 15
+- 50

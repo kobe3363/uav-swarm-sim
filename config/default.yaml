@@ -1,0 +1,224 @@
+# =============================================================================
+# UAV Swarm Reconnaissance Simulation — default configuration
+# Single source of truth for every global input. Mirrors the dataclass schema
+# in infrastructure/config.py one-to-one.
+#
+# Units in this file: battery in Wh, angles where noted in degrees, everything
+# else SI (meters, seconds, m/s, rad/s, watts). The loader converts Wh -> J and
+# degrees -> radians internally; code never sees Wh or degrees.
+#
+# Energy-coefficient provenance (thesis guideline 1.1): no physical flight tests
+# were run. Coefficients are theoretical approximations from typical specs via
+# Steup et al.'s component method. MULTIROTOR is closest to the validated Steup
+# baseline; FIXED_WING and VTOL tables are COARSER extrapolations and should be
+# read as relative, structurally-consistent estimates, not calibrated absolutes.
+# =============================================================================
+
+fleet:
+  n_drones: 8                 # default = small/heuristic tier (<=15)
+  battery_capacity_wh: 100.0  # ~6S 5000 mAh (22.2 V x 4.5 Ah) class pack
+  drone_dims_m: [1.2, 1.2, 0.4]   # nominal bounding box; drives wake/formation geometry
+
+# Active platform for this run. Per-run the swarm is homogeneous; one of the
+# three tables below is resolved into the active PlatformConfig by the loader.
+platform_type: MULTIROTOR     # FIXED_WING | MULTIROTOR | VTOL
+
+platforms:
+
+  # ~2 kg electric fixed-wing. No hover. Cruise-efficient; turns and climb-out
+  # cost the most. r_min from r = v^2 / (g*tan(phi)), v=18, phi~=35deg -> ~47 m.
+  FIXED_WING:
+    v_cruise: 18.0
+    v_coverage: 14.0          # slower for sensor dwell / GSD
+    v_climb: 5.0
+    v_descent: 4.0
+    r_min_m: 45.0             # minimum turn radius (Dubins); MUST be > 0 for FW
+    omega_max: 0.35           # rad/s, unused for Dubins platforms (kept for symmetry)
+    climb_angle_deg: 12.0     # sloped climb-out / approach (vertical_segments, FW branch)
+    ground_roll_energy_j: 8000.0   # launch/recovery infrastructure energy footprint
+    mass_kg: 2.0              # 2.5D vertical-energy term only (B3); never horizontal power
+    power_w:                  # grey-box instantaneous power per maneuver (W)
+      IDLE: 10.0              # electronics on, on ground
+      TAKEOFF: 300.0          # high-power launch / climb-out
+      CLIMB: 250.0            # excess power for sustained climb
+      CRUISE: 100.0           # the efficient regime FW exists for
+      COVERAGE: 115.0         # cruise + active payload, slightly slower
+      TURN: 140.0             # banked turn -> higher load factor -> induced drag
+      DESCENT: 40.0           # near-glide
+      LAND: 60.0              # powered approach
+      HOVER: 0.0              # not applicable to FW; ignored by build_spec
+
+  # ~2 kg quadrotor. Closest to the Steup-validated baseline. Hover-dominated;
+  # forward flight ~ hover + drag; climb costs most, descent least.
+  MULTIROTOR:
+    v_cruise: 12.0
+    v_coverage: 6.0
+    v_climb: 3.0
+    v_descent: 2.5
+    r_min_m: 0.0              # holonomic -> HolonomicModel, never Dubins
+    omega_max: 1.0            # rad/s in-place yaw rate
+    climb_angle_deg: 90.0     # pure vertical
+    ground_roll_energy_j: 0.0
+    mass_kg: 2.0              # 2.5D vertical-energy term only (B3); never horizontal power
+    power_w:
+      IDLE: 12.0
+      TAKEOFF: 280.0
+      CLIMB: 280.0
+      CRUISE: 220.0           # hover + translational drag
+      COVERAGE: 210.0         # slower forward flight + payload
+      TURN: 210.0             # ~ hover while yawing/repositioning
+      DESCENT: 140.0
+      LAND: 150.0
+      HOVER: 200.0            # reference hover power for a ~2 kg quad
+      # NOTE: forward flight slightly above hover here; at higher speeds
+      # translational lift can reduce it, but this constant-per-maneuver
+      # grey-box model intentionally does not model the speed-dependent dip.
+
+  # Hybrid VTOL: fixed-wing cruise efficiency + multirotor vertical phases.
+  # Heavier than either pure type, so cruise is a bit costlier than FW and
+  # vertical phases a bit costlier than the quad.
+  VTOL:
+    v_cruise: 16.0
+    v_coverage: 12.0
+    v_climb: 3.0
+    v_descent: 2.5
+    r_min_m: 55.0             # heavier -> larger min radius than FW
+    omega_max: 0.4
+    climb_angle_deg: 90.0     # vertical takeoff/landing (1-D segments, §2.5)
+    ground_roll_energy_j: 0.0
+    mass_kg: 2.5              # heavier hybrid airframe; vertical-energy term only (B3)
+    power_w:
+      IDLE: 12.0
+      TAKEOFF: 400.0          # vertical, multirotor mode, heavier airframe
+      CLIMB: 380.0
+      CRUISE: 130.0           # fixed-wing mode + VTOL hardware penalty
+      COVERAGE: 145.0
+      TURN: 170.0
+      DESCENT: 200.0          # powered vertical descent
+      LAND: 210.0
+      HOVER: 300.0            # transition / station-keeping
+
+sensor:
+  swath_width_m: 100.0        # raw sensor ground footprint width
+  overlap_frac: 0.5           # 50% side overlap -> effective strip = 50 m
+                              # (recon sweep; lower than the 70% used for dense
+                              #  3-D mapping in §1.3.4, traded for fewer strips)
+
+aero:
+  formation_drag_reduction: 0.1514   # Guo et al. 2025, homogeneous formation (15.14%)
+  downwash_radius_m: 3.0      # multirotor wake half-width (~2-3 rotor diameters)
+  downwash_length_m: 10.0     # wake extent behind/below
+  formation_spacing_m: 8.0    # inter-drone spacing in formation
+  rth_rendezvous_window_s: 30.0   # ETA window to group a return formation
+
+env:
+  geojson_path: data/areas/example_area.geojson
+  coverage_altitude_m: 100.0  # constant coverage altitude (1-D vertical segments to/from)
+  obstacle_density_per_km2: 8.0
+  obstacle_size_range_m: [20.0, 80.0]
+  obstacle_shapes: [circle, rectangle, polygon]
+  n_obstacle_classes: 3       # semantic classes (e.g. building/vegetation/no-fly) for GVG
+  clearance_buffer_m: 5.0     # regulatory safety buffer around obstacles (§1.4.6)
+  # 2.5D prism extrusion. Each obstacle footprint is extruded over [floor, ceil].
+  obstacle_floor_m: 0.0          # prism floor (ground)
+  obstacle_ceil_range_m: null    # null => UNBOUNDED ceiling: every layer sees every
+                                 # obstacle, so the single-layer case stays
+                                 # 2D-byte-identical. Set e.g. [20.0, 80.0] to make
+                                 # altitude a tactic (higher layers clear shorter obstacles).
+
+# --------------------------------------------------------------------------- #
+# 2.5D coverage stack. The world is an ordered set of horizontal coverage      #
+# layers; drones are assigned to layers and cover in pure 2D within each.      #
+#   altitudes_m: null => a SINGLE layer synthesized at env.coverage_altitude_m #
+#     (the permanent regression net: one layer == the current 2D model).       #
+#     Provide an ascending list, e.g. [60.0, 100.0, 140.0], to add layers.     #
+#   assignment_policy: single | area_balanced | battery_tiered                 #
+#     (single = all drones on layer 0; see planning/layer_planner.py).         #
+# --------------------------------------------------------------------------- #
+layers:
+  altitudes_m: null
+  assignment_policy: single
+
+# --------------------------------------------------------------------------- #
+# Mission type: what each drone actually does.                                 #
+#   coverage     -> sweep an assigned 2D area (boustrophedon). DEFAULT.        #
+#   target_visit -> visit discrete target points (per-drone tour; count ~ battery).
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Dynamic obstacles + proactive (LIDAR) avoidance.                            #
+#   The whole capability is OFF by default. When enabled, `count` drone-sized #
+#   obstacles appear at random free positions and move at `speed_m_s` in a     #
+#   random direction. The swarm runs PASSIVE (cheap, short range) until ANY    #
+#   drone detects an obstacle, which flips the WHOLE swarm to ACTIVE (LIDAR,   #
+#   long range) at the cost of `active_scan_power_w` per airborne drone; it    #
+#   reverts to passive after `dynamic_hold_s` with no detection.               #
+# --------------------------------------------------------------------------- #
+dynamic_obstacles:
+  enabled: false             # central ON/OFF switch for the whole feature
+  count: 3                   # number of dynamic obstacles (used when enabled)
+  speed_m_s: 8.0             # their constant speed (random direction each)
+  size_m: 1.5                # drone-sized; modelled as a circle of this diameter
+  passive_sense_range_m: 30.0    # detection range while passive (short, cheap)
+  active_sense_range_m: 150.0    # detection range while active (long, LIDAR)
+  active_scan_power_w: 60.0      # extra power per airborne drone while scanning
+  dynamic_hold_s: 20.0           # stay active this long after last detection
+
+mission:
+  type: coverage              # coverage | target_visit
+  n_targets: 40               # used when type=target_visit and no explicit coordinates
+  target_coordinates: []      # explicit [[x, y], ...] in metres; if non-empty, overrides n_targets
+  weight_targets_by_battery: true   # per-drone target COUNT proportional to battery (the contribution)
+
+launch:
+  candidate_sites: 8          # int N -> sample N free sites near boundary;
+                              # or a list of [x, y] for explicit candidates
+  w_distance: 0.3             # weight: mean kinematic distance to zones
+  w_energy: 0.5               # weight: formation-corrected initial+return energy
+  w_swaps: 0.2                # weight: expected battery-swap count over mission
+
+battery_zones:                # fractions of capacity (0..1); reporting bins + coarse guards
+  high: 0.75                  # HIGH    >= 75
+  nominal: 0.40               # NOMINAL >= 40
+  critical: 0.20              # CRITICAL>= 20 ; TERMINAL < 20
+
+swap:
+  service_time_s: 90.0        # battery exchange duration at the station
+  n_bays: 2                   # parallel swap bays
+
+failure:
+  hazard_rate_per_hour: 0.3   # lambda; DELIBERATELY ELEVATED so S_FAIL populates
+                              # in Monte Carlo (MTBF ~3.3 h). Set 0.0 to disable
+                              # failures entirely; set realistically (e.g. 0.01)
+                              # for engineering numbers rather than demonstration.
+
+safety:
+  min_separation_m: 10.0
+  obstacle_buffer_m: 5.0
+  predict_horizon_s: 5.0      # proactive monitoring lookahead
+
+rth:
+  check_interval_s: 5.0
+  reserve_frac: 0.05          # small epsilon margin — explicitly NOT a static 30%
+
+sim:
+  dt_s: 0.5
+  max_timesteps: 20000        # 0.5 s x 20000 = 10000 s (~2.8 h) hard ceiling
+  master_seed: 42
+
+mc:
+  n_max: 1000                 # hard replication cap
+  n_min: 30                   # minimum before convergence is evaluated
+  ci_tolerance: 0.01          # stop when 95% CI half-width of pi_time(S2) <= this
+
+# --------------------------------------------------------------------------- #
+# Visualization-only options (no effect on the simulation/physics).           #
+#   show_comm_range draws a communication-range circle around each drone in    #
+#   the replay GIF and the static state-colored path plot. OFF by default.     #
+# --------------------------------------------------------------------------- #
+viz:
+  show_comm_range: false      # master ON/OFF for the comm-range overlay
+  comm_range_m: 250.0         # circle radius in metres (view-only; not modelled)
+  comm_range_alpha: 0.12      # circle opacity
+  comm_range_dashed: true     # true = dashed outline (less clutter); false = translucent fill
+
+tier_thresholds: [15, 50]     # <=15 heuristic ; 16-49 compare ; >=50 TGC

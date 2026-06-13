@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtuali aplinka
+.venv/
+venv/
+ENV/
+
+# Simuliacijos rezultatai ir paveiksliukai
+runs/
+*.png
+*.gif
+
+# IDE
+.vscode/

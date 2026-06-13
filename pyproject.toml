@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uav-swarm-sim"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "networkx>=3.2", "shapely>=2.0", "scipy>=1.11", "numpy>=1.26",
+  "matplotlib>=3.8", "pulp>=2.7", "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
