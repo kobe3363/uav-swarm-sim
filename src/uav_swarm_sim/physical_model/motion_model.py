@@ -3,6 +3,12 @@
 One interface, two kinematics. Everything downstream (transit planning, coverage
 connectors, RTH, avoidance micro-plans) is platform-agnostic and goes through a
 MotionModel, so the FW/VTOL-vs-multirotor switch lives in exactly one place.
+
+2.5D (Batch 3): ``plan`` gains a thin vertical mode -- CLIMB / DESCENT delegate
+to ``vertical_segments`` (which owns the climb/descent geometry and, via the
+EnergyModel, the mass-coupled energy). Horizontal maneuvers are untouched, and
+CLIMB/DESCENT never occur in the single-layer case, so this branch is never taken
+there and the 2D behaviour is byte-identical.
 """
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ from ..infrastructure.core_types import (
 from ..infrastructure.enums import ManeuverType, PlatformType
 from . import dubins
 from .drone_specs import PlatformSpec
+from .vertical_segments import climb_path, descent_path
 
 
 class MotionModel(ABC):
@@ -36,6 +43,21 @@ class MotionModel(ABC):
     def leg_cost(self, start: Pose, goal: Pose) -> float:
         """Flyable length (m) of the cheapest leg between poses."""
 
+    def _vertical_path_if_vertical(
+        self, start: Pose, goal: Pose, maneuver: ManeuverType
+    ) -> Path | None:
+        """Thin vertical wrapper. Genuine inter-layer climb/descent are owned by
+        ``vertical_segments`` (geometry here; energy via the EnergyModel). The
+        altitude change is taken from the poses' ``z``. Returns None for every
+        horizontal maneuver so the 2D kinematics handle it unchanged."""
+        if maneuver is ManeuverType.CLIMB:
+            dz = goal.z - start.z
+            return climb_path(self._spec, dz, start) if dz > 0 else Path(())
+        if maneuver is ManeuverType.DESCENT:
+            dz = start.z - goal.z
+            return descent_path(self._spec, dz, start) if dz > 0 else Path(())
+        return None
+
     def advance(self, path: Path, t_elapsed: float, dt: float) -> tuple[Pose | None, float]:
         """Advance a path by time. Returns (new pose, new elapsed time).
 
@@ -50,6 +72,9 @@ class DubinsModel(MotionModel):
     """Fixed-wing and VTOL cruise: minimum-turn-radius Dubins kinematics."""
 
     def plan(self, start: Pose, goal: Pose, maneuver: ManeuverType) -> Path:
+        vp = self._vertical_path_if_vertical(start, goal, maneuver)
+        if vp is not None:
+            return vp
         v = self._spec.speed_for(maneuver)
         return dubins.shortest_path(start, goal, self._spec.r_min_m, v, maneuver)
 
@@ -61,6 +86,9 @@ class HolonomicModel(MotionModel):
     """Multirotor: in-place yaw + straight legs; Euclidean leg cost."""
 
     def plan(self, start: Pose, goal: Pose, maneuver: ManeuverType) -> Path:
+        vp = self._vertical_path_if_vertical(start, goal, maneuver)
+        if vp is not None:
+            return vp
         v = self._spec.speed_for(maneuver)
         omega = self._spec.omega_max
         dx, dy = goal.x - start.x, goal.y - start.y
