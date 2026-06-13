@@ -202,7 +202,7 @@ rth:
 
 sim:
   dt_s: 0.5
-  max_timesteps: 20000        # 0.5 s x 20000 = 10000 s (~2.8 h) hard ceiling
+  max_timesteps: 50000        # 0.5 s x 50000 = 25000 s (~6.9 h) hard ceiling
   master_seed: 42
 
 mc:

@@ -133,24 +133,19 @@ All entry points live in `src/uav_swarm_sim/experiments/` and take a `--config` 
 
 ```bash
 # One mission with full visual output (the defense demo)
-python -m uav_swarm_sim.experiments.run_single_mission \
-    --config config/default.yaml --out runs/demo
+python -m uav_swarm_sim.experiments.run_single_mission --config config/default.yaml --out runs/demo
 
 # Headline experiment: classic_voronoi vs tgc_basic vs weighted_voronoi
-python -m uav_swarm_sim.experiments.run_decomposition_comparison \
-    --config config/scenarios/tier_mid_comparison.yaml --out runs/decomp
+python -m uav_swarm_sim.experiments.run_decomposition_comparison --config config/scenarios/tier_mid_comparison.yaml --out runs/decomp
 
 # Guideline 1.2: Dubins vs discretized grid (FIXED_WING / VTOL only)
-python -m uav_swarm_sim.experiments.run_kinematics_comparison \
-    --config config/default.yaml --out runs/kinematics
+python -m uav_swarm_sim.experiments.run_kinematics_comparison --config config/default.yaml --out runs/kinematics
 
 # Guideline 3.3: scale-tier sweep, locate the empirical break-even in 16–49
-python -m uav_swarm_sim.experiments.run_scale_tiers \
-    --config config/default.yaml --n 8 12 24 36 48 64 80 --out runs/tiers
+python -m uav_swarm_sim.experiments.run_scale_tiers --config config/default.yaml --n 8 12 24 36 48 64 80 --out runs/tiers
 
 # §2.4: launch-site optimization study
-python -m uav_swarm_sim.experiments.run_launch_site_study \
-    --config config/default.yaml --out runs/launch
+python -m uav_swarm_sim.experiments.run_launch_site_study --config config/default.yaml --out runs/launch
 ```
 
 Each run writes figures (environment, partition, trajectories, per-agent state Gantt, battery traces, embedded-vs-time-weighted `π` bars, comparison box plots, Monte-Carlo convergence), a `result.json`/CSV, and a structured log. Runs are **deterministic** given `(config, master_seed, replication, algorithm, planner)`.
