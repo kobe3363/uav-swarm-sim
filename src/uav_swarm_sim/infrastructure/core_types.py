@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 from shapely.geometry import Polygon
 
-from .enums import DecompositionAlgo, EventType, ManeuverType
+from .enums import DecompositionAlgo, EventType, ManeuverType, Outcome
 
 TWO_PI = 2.0 * math.pi
 
@@ -314,3 +314,7 @@ class MissionResult:
     aborted: bool
     coverage_frac: float
     config_hash: str
+    # Phase 2 (Task 2.2): explicit terminal outcome decided in the run loop.
+    # Defaulted so any existing direct MissionResult(...) construction is
+    # unaffected; the engine always passes the resolved Outcome.
+    outcome: Outcome = Outcome.MISSION_INCOMPLETE

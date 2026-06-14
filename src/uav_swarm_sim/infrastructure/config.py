@@ -46,6 +46,12 @@ class FleetConfig:
     battery_capacity_wh: float
     battery_capacity_j: float            # derived: wh * 3600
     drone_dims_m: tuple[float, float, float]
+    # Phase 2 (Task 2.1): finite shared reserve of swap packs for the WHOLE fleet.
+    # The swap station decrements this once per admitted swap; exhaustion before
+    # 100% coverage drives MISSION_FAILED. None => unbounded reserve, i.e. the
+    # pre-Phase-2 infinite-reserve behaviour (kept so fixtures that omit the key,
+    # and any direct FleetConfig(...) construction, are unaffected).
+    total_reserve_batteries: int | None = None
 
 
 @dataclass(frozen=True)
@@ -269,11 +275,15 @@ def _build(raw: dict, config_hash: str) -> Config:
     dims = tuple(float(x) for x in _require(f, "drone_dims_m", "fleet"))
     if len(dims) != 3:
         raise ConfigError("fleet.drone_dims_m must have exactly 3 values")
+    # Optional finite shared swap reserve; absent => None (unbounded).
+    trb_raw = f.get("total_reserve_batteries", None)
+    total_reserve_batteries = None if trb_raw is None else int(trb_raw)
     fleet = FleetConfig(
         n_drones=int(_require(f, "n_drones", "fleet")),
         battery_capacity_wh=cap_wh,
         battery_capacity_j=cap_wh * WH_TO_J,
         drone_dims_m=dims,  # type: ignore[arg-type]
+        total_reserve_batteries=total_reserve_batteries,
     )
 
     # ---- platform (resolve active table) ----
@@ -466,6 +476,14 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError(f"fleet.n_drones must be in [1, 100], got {cfg.fleet.n_drones}")
     if cfg.fleet.battery_capacity_wh <= 0:
         raise ConfigError("fleet.battery_capacity_wh must be > 0")
+    if (
+        cfg.fleet.total_reserve_batteries is not None
+        and cfg.fleet.total_reserve_batteries < 0
+    ):
+        raise ConfigError(
+            "fleet.total_reserve_batteries must be >= 0 (or omitted for unbounded), "
+            f"got {cfg.fleet.total_reserve_batteries}"
+        )
 
     bz = cfg.battery_zones
     if not (1.0 > bz.high > bz.nominal > bz.critical > 0.0):

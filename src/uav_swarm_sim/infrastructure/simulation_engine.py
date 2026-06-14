@@ -31,6 +31,7 @@ from ..infrastructure.enums import (
     DecompositionAlgo,
     EventType,
     MissionType,
+    Outcome,
     SensingMode,
     ManeuverType,
     PlannerKind,
@@ -80,6 +81,10 @@ from ..execution.state_machine import StateMachine
 from ..execution.swap_station import SwapStation
 
 _LOG = logging.getLogger(__name__)
+
+# Coverage is treated as 100% complete at/above this fraction. Mirrors the
+# existing abort gate (``coverage_frac < 0.999``) so success/abort agree.
+_COVERAGE_COMPLETE_FRAC = 0.999
 
 
 class SimulationEngine:
@@ -182,7 +187,9 @@ class SimulationEngine:
         sm = StateMachine(cfg.battery_zones)
         self.bus = EventBus()
         self.history = StateHistory()
-        self.swap_station = SwapStation(cfg.swap, self.launch_pose)
+        self.swap_station = SwapStation(
+            cfg.swap, self.launch_pose, cfg.fleet.total_reserve_batteries
+        )
         self.safety = SafetyMonitor(self.layers, self.aero, cfg.safety, self.motion)
         # dynamic obstacles + swarm sensing (feature is OFF unless enabled in config)
         self.sensing = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
@@ -249,6 +256,7 @@ class SimulationEngine:
         cfg = self.cfg
         dt = cfg.sim.dt_s
         complete = False
+        self._outcome = Outcome.MISSION_INCOMPLETE
         t = 0.0
         for step in range(cfg.sim.max_timesteps):
             t = step * dt
@@ -277,8 +285,13 @@ class SimulationEngine:
                 self.history.record_position(a.id, t, a.pose.x, a.pose.y, a.state)
             if self._dynfield is not None:
                 self.history.record_dynamic_obstacles(t, self._dynfield.snapshot(), self.sensing.mode)
-            if self._mission_complete():
-                complete = True
+            # Phase 2 (Tasks 2.1b + 2.2): mutually-exclusive terminal evaluation,
+            # right after event routing + position logging. Failure is tested
+            # before success; the first match halts the dt loop.
+            outcome = self._evaluate_terminal(t)
+            if outcome is not None:
+                self._outcome = outcome
+                complete = outcome is Outcome.MISSION_SUCCESS
                 break
 
         t_end = t
@@ -292,7 +305,7 @@ class SimulationEngine:
         )
         aborted = (not complete) or (len(self.fleet.active()) == 0 and coverage_frac < 0.999)
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
-                             cfg.config_hash)
+                             cfg.config_hash, self._outcome)
 
     # ------------------------------------------------------------------ #
     def _route_events(self, t: float) -> None:
@@ -370,6 +383,43 @@ class SimulationEngine:
             if not done:
                 return False
         return True
+
+    def _evaluate_terminal(self, t: float) -> Outcome | None:
+        """Mutually-exclusive terminal check (Phase 2, Tasks 2.1b + 2.2).
+
+        Evaluated once per tick after event routing and position logging. Returns
+        the Outcome to halt on, or None to keep running. Failure is checked BEFORE
+        success: a drone whose battery dies on the very tick coverage finishes is a
+        failure, not a success.
+
+        Only BATTERY DEPLETION mid-flight is a failure here; the detector keys on
+        ``battery.frac``, not on S_FAIL membership, so hazard-induced kills (which
+        deliberately populate S_FAIL for the elevated-hazard Monte-Carlo / SMDP
+        statistics) are naturally excluded and never halt the run.
+        """
+        coverage_complete = self._coverage_frac() >= _COVERAGE_COMPLETE_FRAC
+
+        # ---- Condition 1: MISSION_FAILED (fail-fast) ----------------------- #
+        # (a) any AIRBORNE drone whose battery has reached 0 -> forced S_FAIL.
+        depleted = [a for a in self.fleet.airborne() if a.battery.frac <= 0.0]
+        if depleted:
+            for a in depleted:
+                self.fleet.kill(a.id, t)        # freeze mid-flight in S_FAIL
+            return Outcome.MISSION_FAILED
+        # (b) shared swap reserve exhausted before coverage is complete.
+        if self.swap_station.pool_exhausted and not coverage_complete:
+            return Outcome.MISSION_FAILED
+
+        # ---- Condition 2: MISSION_SUCCESS ---------------------------------- #
+        # 100% area coverage AND every surviving drone parked in S0_IDLE.
+        # ``_mission_complete`` already encodes "every survivor finished its
+        # assigned legs (=> full partitioned area) and is idle" and additionally
+        # guards the t=0 / empty-plan edge; AND-ing the area gate keeps the
+        # explicit Task 2.2 coverage condition and never relaxes the timing.
+        if coverage_complete and self._mission_complete():
+            return Outcome.MISSION_SUCCESS
+
+        return None
 
     def _coverage_frac(self) -> float:
         if self._mission_type is MissionType.TARGET_VISIT:

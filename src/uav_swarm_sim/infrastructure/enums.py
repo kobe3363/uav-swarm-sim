@@ -115,3 +115,26 @@ class SensingMode(Enum):
     """
     PASSIVE = "passive"
     ACTIVE = "active"
+
+
+class Outcome(Enum):
+    """Terminal mission outcome (Phase 2, Task 2.2).
+
+    Decided once per tick inside ``SimulationEngine.run()`` by a mutually-exclusive
+    evaluation (failure is tested before success). Carried on ``MissionResult``.
+
+    MISSION_SUCCESS    -- 100% of the partitioned area is covered AND every
+                          surviving drone has returned to S0_IDLE.
+    MISSION_FAILED     -- a physics-dictated halt: an AIRBORNE drone's battery
+                          reached 0 (forced into S_FAIL mid-flight), or the shared
+                          swap reserve was exhausted before coverage completed.
+                          NOTE: hazard-induced S_FAIL (failure_model) does NOT
+                          trigger this -- those failures are meant to populate
+                          S_FAIL for the elevated-hazard Monte-Carlo / SMDP
+                          statistics and the run continues via redistribution.
+    MISSION_INCOMPLETE -- neither terminal condition fired before the run ended
+                          (e.g. the sim.max_timesteps ceiling). Default outcome.
+    """
+    MISSION_SUCCESS = "MISSION_SUCCESS"
+    MISSION_FAILED = "MISSION_FAILED"
+    MISSION_INCOMPLETE = "MISSION_INCOMPLETE"
