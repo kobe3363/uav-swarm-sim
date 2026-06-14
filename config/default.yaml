@@ -15,7 +15,7 @@
 # =============================================================================
 
 fleet:
-  n_drones: 8                 # default = small/heuristic tier (<=15)
+  n_drones: 5                 # default = small/heuristic tier (<=15)
   battery_capacity_wh: 100.0  # ~6S 5000 mAh (22.2 V x 4.5 Ah) class pack
   drone_dims_m: [1.2, 1.2, 0.4]   # nominal bounding box; drives wake/formation geometry
 
