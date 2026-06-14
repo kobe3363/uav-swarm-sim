@@ -13,6 +13,11 @@ only (a budget quantity); horizontal flight is unchanged and stays in the z=0
 plane, so per-layer obstacle slicing and the per-layer return reserve are the
 only multi-layer effects -- and with one layer (altitude == coverage_altitude_m)
 the behaviour is byte-identical to the 2D model.
+
+2.5D (Batch 5a): flown distance is accumulated in 3D (it includes any altitude
+change of the executed segment). Because flight is in the z=0 plane today, the 3D
+and 2D path lengths coincide and the length metric stays byte-identical; the
+moment inter-layer climbs are flown as legs, their vertical extent is counted.
 """
 from __future__ import annotations
 
@@ -203,7 +208,10 @@ class Agent:
         self.energy_consumed_j += e
         new_pose, new_t = self.motion.advance(leg, self._t, dt)
         if new_pose is not None:
-            self.flown_m += math.dist(self.pose.as_xy(), new_pose.as_xy())
+            # 2.5D path length: measure displacement in 3D so an executed
+            # altitude change counts. Flight is in the z=0 plane today, so this
+            # equals the 2D distance and the length metric stays byte-identical.
+            self.flown_m += math.dist(self.pose.as_xyz(), new_pose.as_xyz())
             self.pose = new_pose
         self._t = new_t
         if new_t >= leg.total_duration_s - 1e-9:
