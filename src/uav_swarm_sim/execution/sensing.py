@@ -13,6 +13,11 @@ Energy: while ACTIVE the coordinator reports ``scan_power_w`` > 0, which the
 engine drains from every airborne drone -- the high cost of proactive scanning.
 If an obstacle appears but never enters any drone's passive range, it is never
 detected and the swarm ignores it (an accepted outcome).
+
+2.5D (Batch 4): detection is per layer -- a drone only senses obstacles in its
+own coverage-layer band, since obstacles at other altitudes are vertically
+separated. With one layer the filter is a no-op (everything on layer 0), so the
+detection set, threats and mode transitions are byte-identical.
 """
 from __future__ import annotations
 
@@ -51,8 +56,11 @@ class SensingCoordinator:
 
         detected_any = False
         for a in airborne:
+            a_layer = getattr(a, "layer", 0)
             nearest = None
             for o in field.obstacles:
+                if getattr(o, "layer", 0) != a_layer:
+                    continue  # obstacle in another altitude band -> not visible here
                 d = math.hypot(a.pose.x - o.x, a.pose.y - o.y)
                 if d <= sense_r:
                     detected_any = True

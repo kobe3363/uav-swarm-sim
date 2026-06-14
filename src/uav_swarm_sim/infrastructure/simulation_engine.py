@@ -183,14 +183,14 @@ class SimulationEngine:
         self.bus = EventBus()
         self.history = StateHistory()
         self.swap_station = SwapStation(cfg.swap, self.launch_pose)
-        self.safety = SafetyMonitor(self.env, self.aero, cfg.safety, self.motion)
+        self.safety = SafetyMonitor(self.layers, self.aero, cfg.safety, self.motion)
         # dynamic obstacles + swarm sensing (feature is OFF unless enabled in config)
         self.sensing = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
         if cfg.dynamic_obstacles.enabled and cfg.dynamic_obstacles.count > 0:
             dyn_rng = self.rng.stream(STREAM_DYNOBS, self.replication)
             self._dynfield = DynamicObstacleField(
                 self.env, cfg.dynamic_obstacles.count, cfg.dynamic_obstacles.speed_m_s,
-                cfg.dynamic_obstacles.size_m, dyn_rng,
+                cfg.dynamic_obstacles.size_m, dyn_rng, self.layers.n_layers,
             )
         else:
             self._dynfield = None
@@ -208,8 +208,10 @@ class SimulationEngine:
         agents: list[Agent] = []
         for i in range(cfg.fleet.n_drones):
             battery = Battery(self.spec.battery_capacity_j, cfg.battery_zones, 1.0)
+            i_layer = self.layer_of.get(i, 0)
             agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
-                          self.formation, self.launch_pose, recorder=self.history)
+                          self.formation, self.launch_pose, recorder=self.history,
+                          layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer))
             if self._mission_type is MissionType.TARGET_VISIT:
                 plan = self.plans.get(i)
                 if plan is not None and plan.waypoints:
@@ -232,7 +234,7 @@ class SimulationEngine:
             None if self._mission_type is MissionType.TARGET_VISIT else Redistributor(
                 self.decomposer if isinstance(self.decomposer, (WeightedTgcDecomposer,))
                 else WeightedTgcDecomposer(),
-                self.tgc, self.env, self.motion, self.em, self.spec,
+                self.layer_graphs, self.motion, self.em, self.spec,
             )
         )
         self.replan_times: list[float] = []

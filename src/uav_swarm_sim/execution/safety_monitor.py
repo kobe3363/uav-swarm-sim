@@ -6,6 +6,14 @@ is continuous surveillance, not a reactive last-moment trigger. Deterministic
 yielding (lower-id agent yields) keeps the resolution collision-free by
 construction. All S_OBS time is flight overhead by definition and lands in the
 efficiency-score denominator via the SMDP layer.
+
+2.5D (Batch 4): separation is intra-layer. Drones on different coverage layers
+are vertically separated, so pairwise separation and wake checks skip cross-layer
+pairs, and each drone's obstacle-penetration test uses its OWN layer's sliced map
+(higher layers clear short obstacles). The monitor takes the LayerStack and
+selects the per-agent map; a plain EnvironmentMap is still accepted (back-compat).
+With one layer every drone is on layer 0 whose map is the 2D world, so the
+threats raised are byte-identical.
 """
 from __future__ import annotations
 
@@ -21,12 +29,21 @@ from ..physical_model.motion_model import MotionModel
 
 
 class SafetyMonitor:
-    def __init__(self, env, aero: AeroCorrection, cfg: SafetyConfig, motion: MotionModel) -> None:
-        self._env = env
+    def __init__(self, world, aero: AeroCorrection, cfg: SafetyConfig, motion: MotionModel) -> None:
+        # ``world`` is a LayerStack (per-layer maps) or a single EnvironmentMap.
+        self._world = world
         self._aero = aero
         self._cfg = cfg
         self._motion = motion
         self._cooldown_until: dict[int, float] = {}
+
+    def _env_for(self, a):
+        """The obstacle map this agent is checked against: its layer's sliced map
+        if a LayerStack was supplied, else the single map (back-compat)."""
+        w = self._world
+        if w is not None and hasattr(w, "layer"):
+            return w.layer(getattr(a, "layer", 0))
+        return w
 
     def _predicted_poses(self, agent, n: int = 4) -> list[Pose]:
         legs = getattr(agent, "_legs", [])
@@ -58,11 +75,15 @@ class SafetyMonitor:
         # by the FormationManager (spacing), not collision avoidance -- ignore them
         # here to avoid launch/return thrashing.
         a_formation = a.state in (AgentState.S1_TRANSIT, AgentState.S3_RTH)
+        a_layer = getattr(a, "layer", 0)
 
         # pairwise predicted separation (lower-id yields), skipped if both formation
+        # or on different layers (vertically separated -> cannot collide).
         if not a_formation:
             for b in airborne:
                 if b.id <= a.id:
+                    continue
+                if getattr(b, "layer", 0) != a_layer:
                     continue
                 if b.state in (AgentState.S1_TRANSIT, AgentState.S3_RTH):
                     continue
@@ -70,16 +91,18 @@ class SafetyMonitor:
                     if math.dist(pa.as_xy(), pb.as_xy()) < self._cfg.min_separation_m:
                         return True
 
-        # genuine obstacle penetration (raw obstacle polygons; not boundary/buffer)
-        if self._env is not None:
+        # genuine obstacle penetration on THIS agent's layer (raw obstacle
+        # polygons; not boundary/buffer)
+        env = self._env_for(a)
+        if env is not None:
             for p in preds[a.id]:
-                if self._env.in_obstacle(p.as_xy()):
+                if env.in_obstacle(p.as_xy()):
                     return True
 
-        # wake zones from other airborne drones (invisible obstacles), only when
-        # this agent is dispersed (not riding a formation)
+        # wake zones from other airborne drones ON THE SAME LAYER (invisible
+        # obstacles), only when this agent is dispersed (not riding a formation)
         if not a_formation:
-            leaders = [b.pose for b in airborne if b.id != a.id]
+            leaders = [b.pose for b in airborne if b.id != a.id and getattr(b, "layer", 0) == a_layer]
             for wake in self._aero.wake_zones(leaders):
                 for p in preds[a.id]:
                     if wake.covers(Point(p.as_xy())):

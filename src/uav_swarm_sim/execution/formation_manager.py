@@ -5,6 +5,11 @@ benefit applies (the scope limitation of guideline 1.3 enforced in one place):
 formation during launch/transit and episodic RTH, never during coverage. For
 multirotor the manager still tracks grouping (for wake geometry) but the power
 factor is always 1.0.
+
+2.5D (Batch 4): formations are intra-layer. Drones at different coverage
+altitudes cannot share a wake, so departing agents are grouped BY LAYER, each
+group with its own (lowest-id) leader. With a single layer this is one group with
+the lowest-id leader -- identical to the 2D behaviour.
 """
 from __future__ import annotations
 
@@ -21,26 +26,36 @@ class FormationManager:
         self._aero = aero
         self._cfg = cfg
         self._platform = platform
-        self._departing: set[int] = set()
-        self._leader: int | None = None
+        # per-layer departing groups and their leaders
+        self._departing_by_layer: dict[int, set[int]] = {}
+        self._leader_by_layer: dict[int, int] = {}
 
     def register_departure(self, agents, shared_routes: dict | None = None) -> None:
-        """Mark a group of agents as departing together (a transit formation).
-        The lowest-id agent is the leader; followers ride the wake benefit."""
-        ids = sorted(a.id for a in agents)
-        self._departing = set(ids)
-        self._leader = ids[0] if ids else None
+        """Mark agents as departing together, grouped by layer. The lowest-id
+        agent in each layer is that layer's leader; followers ride the wake."""
+        self._departing_by_layer = {}
+        self._leader_by_layer = {}
+        by_layer: dict[int, list[int]] = {}
+        for a in agents:
+            by_layer.setdefault(getattr(a, "layer", 0), []).append(a.id)
+        for layer, ids in by_layer.items():
+            ids_sorted = sorted(ids)
+            self._departing_by_layer[layer] = set(ids_sorted)
+            self._leader_by_layer[layer] = ids_sorted[0] if ids_sorted else None
 
     def in_formation(self, agent, t: float) -> bool:
         # coverage is always dispersed
         if agent.state is AgentState.S2_MISSION:
             return False
-        # transit/RTH with >=2 grouped agents: followers are in formation
+        # transit/RTH with >=2 grouped agents on the SAME layer: followers benefit
         if agent.state in (AgentState.S1_TRANSIT, AgentState.S3_RTH):
+            layer = getattr(agent, "layer", 0)
+            group = self._departing_by_layer.get(layer, set())
+            leader = self._leader_by_layer.get(layer)
             return (
-                len(self._departing) >= 2
-                and agent.id in self._departing
-                and agent.id != self._leader
+                len(group) >= 2
+                and agent.id in group
+                and agent.id != leader
             )
         return False
 

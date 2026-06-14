@@ -6,6 +6,13 @@ avoidance micro-plan for S_OBS. Each tick advances the current leg by time and
 drains energy via the EnergyModel for the active maneuver (P*dt), so total
 mission energy is the exact time integral. The motion model is the single source
 of kinematics; the agent never integrates poses itself.
+
+2.5D (Batch 4): the agent carries its assigned ``layer`` index and the
+``coverage_altitude_m`` of that layer. The altitude feeds the RTH descent term
+only (a budget quantity); horizontal flight is unchanged and stays in the z=0
+plane, so per-layer obstacle slicing and the per-layer return reserve are the
+only multi-layer effects -- and with one layer (altitude == coverage_altitude_m)
+the behaviour is byte-identical to the 2D model.
 """
 from __future__ import annotations
 
@@ -47,6 +54,8 @@ class Agent:
         formation,
         base: Pose,
         recorder: Recorder | None = None,
+        layer: int = 0,
+        coverage_altitude_m: float | None = None,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -58,6 +67,10 @@ class Agent:
         self.formation = formation
         self.base = base
         self.recorder = recorder
+        # 2.5D assignment: which coverage layer this drone flies and its altitude
+        # (altitude feeds only the RTH descent reserve; flight stays horizontal).
+        self.layer = layer
+        self.coverage_altitude_m = coverage_altitude_m
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -131,7 +144,7 @@ class Agent:
             self._launch_ready = True
 
     def view(self) -> DroneStateView:
-        return DroneStateView(self.id, self.battery.frac, self.pose)
+        return DroneStateView(self.id, self.battery.frac, self.pose, self.layer)
 
     # ------------------------------------------------------------------ #
     # external signals                                                   #

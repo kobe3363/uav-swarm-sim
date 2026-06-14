@@ -257,9 +257,10 @@ def test_redistribution_triggers_exclude_swap():
 def test_redistribution_rejects_swap_event(cfg):
     from uav_swarm_sim.planning.weighted_decomposition import WeightedTgcDecomposer
 
-    class _FakeTGC:
-        regions = []
-    redis = Redistributor(WeightedTgcDecomposer(), _FakeTGC(), None, None, None, build_spec(cfg))
+    # class _FakeTGC:
+    #     regions = []
+    # redis = Redistributor(WeightedTgcDecomposer(), _FakeTGC(), None, None, None, build_spec(cfg))
+    redis = Redistributor(WeightedTgcDecomposer(), None, None, None, build_spec(cfg))
     with pytest.raises(ValueError):
         redis.handle(Event(EventType.SWAP_DONE, 0.0, {}), None, None, {}, 0.0)
 
