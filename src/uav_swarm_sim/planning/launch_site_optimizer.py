@@ -15,34 +15,42 @@ that decouples site choice from partition shape). Distances use the motion
 model's flyable leg cost; energies use the shared EnergyModel so prediction and
 simulation never drift.
 
+Operational staging constraint
+------------------------------
+A Ground Control Station cannot sit inside the survey polygon (the swamp / field
+/ hazard area being covered). Launch candidates are therefore drawn from a
+flyable STAGING RING just OUTSIDE ``env.area`` -- ``area.buffer(standoff) minus
+area`` -- never from inside it. Because synthetic obstacles live only inside
+``area``, every point in that ring is clear, so the ring is the realizable form
+of "clear of obstacles AND outside the target." (Note: ``env.free_space`` is
+``area.difference(obstacles)`` and is a SUBSET of ``area``; requiring a site to be
+in ``free_space`` *and* outside ``area`` is unsatisfiable, so the staging ring --
+outside ``area``, where everything is clear -- is what realizes the intent.)
+
+Only candidate GENERATION encodes this constraint; the scoring loop is unchanged.
+
 Energy feasibility + exact fatigue (Batch 6.3)
 ----------------------------------------------
-The optimizer is energy-AWARE and now fatigue-EXACT:
+The optimizer is energy-AWARE and fatigue-EXACT:
 
   * A candidate site is FEASIBLE only if a single drone can reach the furthest
     navigable (free-space) point from it and return on one usable battery,
     including vertical takeoff/landing.
-  * Infeasible candidates are DISCARDED BEFORE SCORING -- they never enter the
-    min-max normalization at all.
+  * Infeasible candidates are DISCARDED BEFORE SCORING.
   * For every feasible candidate the optimizer applies the exact B6.2 workload
     math from this site (site-specific transit overhead) to compute the EXACT
     number of fleet battery swaps, and that exact integer is criterion 3.
 
-This is a deliberate change from Batch 6.1, where the feasibility gate was
-applied only at SELECTION (after scoring the full candidate set) so that the
-chosen site stayed byte-identical to the pre-feasibility behavior. That
-byte-identity is INTENTIONALLY ABANDONED here: filtering before scoring changes
-the normalization domain, and the crude transit-cycle swap proxy is replaced by
-the rigorous workload count. Both shifts move the J landscape and will change
-which site wins on some configurations; regression fixtures are expected to be
-re-baselined in a subsequent pass.
+Regression fixtures are expected to be re-baselined: filtering before scoring,
+the exact swap term, and the staging-ring candidate domain all move the J
+landscape relative to earlier batches.
 
 The canonical swap/workload helpers (``coverage_path_length``,
 ``per_sortie_coverage_budget_j``, ``required_sorties``, ``fleet_swaps``) live in
-this core module so that the optimizer AND the standalone suitability plotter
-share ONE implementation. ``experiments/fleet_sizing.py`` currently keeps its own
-arithmetically-identical copy; unifying it onto these helpers (so the analyzer
-and the optimizer can never drift apart) is a queued follow-up.
+this core module so the optimizer AND the standalone suitability plotter share
+ONE implementation. ``experiments/fleet_sizing.py`` currently keeps its own
+arithmetically-identical copy; unifying it onto these helpers is a queued
+follow-up.
 """
 from __future__ import annotations
 
@@ -72,6 +80,13 @@ _RESERVE_FRAC = 0.05
 # length. MUST match experiments/fleet_sizing.py (TURN_FACTOR_DEFAULT) so the
 # optimizer's swap count agrees with the fleet-sizing analyzer's.
 TURN_FACTOR_DEFAULT = 1.15
+
+# How far outside the survey area the flyable STAGING ring extends (metres). The
+# Ground Control Station / launch pad is placed in this peripheral band, never
+# inside the target polygon. Single source of truth: the suitability plotter
+# imports this so its ring matches the optimizer's candidate domain exactly.
+# Tune here (or lift into LaunchConfig later) to widen/narrow the staging band.
+_STAGING_STANDOFF_M = 250.0
 
 
 class InfeasibleMissionError(RuntimeError):
@@ -233,17 +248,54 @@ def fleet_swaps(total_sorties_int: int, n_drones: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# candidate generation / provisional work layout                             #
+# staging region + candidate generation                                       #
 # --------------------------------------------------------------------------- #
+def _staging_region(env: EnvironmentMap):
+    """The flyable STAGING band just OUTSIDE the survey area:
+    ``area.buffer(standoff) minus area``.
+
+    Obstacles are generated only inside ``area``, so the entire ring is clear
+    ground -- the realizable "staging periphery" where the GCS/launch pad lives.
+    Returns a (Multi)Polygon; may be used for ``.bounds`` / ``.covers``.
+    """
+    return env.area.buffer(_STAGING_STANDOFF_M).difference(env.area)
+
+
+def _sample_staging(region, n: int, rng: np.random.Generator) -> list[tuple[float, float]]:
+    """Rejection-sample ``n`` points uniformly within the staging ring."""
+    if region.is_empty or n <= 0:
+        return []
+    minx, miny, maxx, maxy = region.bounds
+    out: list[tuple[float, float]] = []
+    guard = 0
+    while len(out) < n and guard < 2000 * max(n, 1):
+        guard += 1
+        x = float(rng.uniform(minx, maxx))
+        y = float(rng.uniform(miny, maxy))
+        if region.covers(Point(x, y)):
+            out.append((x, y))
+    return out
+
+
 def _candidate_sites(cfg: LaunchConfig, env: EnvironmentMap, rng: np.random.Generator) -> list[tuple[float, float]]:
+    """Candidate launch sites, STRICTLY in the staging periphery (outside the
+    survey area). Any point inside ``env.area`` is discarded before scoring.
+
+    * explicit ``candidate_sites`` list -> keep only those outside ``area``;
+    * integer ``candidate_sites`` -> sample the staging ring, preferring points
+      nearest the area boundary (shortest transit into the work region).
+    """
+    area = env.area
     if not isinstance(cfg.candidate_sites, int):
-        return [tuple(s) for s in cfg.candidate_sites]
-    # sample free points biased toward the boundary (launch pads sit at the periphery)
-    pool = env.sample_free(cfg.candidate_sites * 6, rng)
+        # author-specified pads: drop any that fall inside the target polygon
+        return [tuple(s) for s in cfg.candidate_sites if not area.contains(Point(s))]
+
+    region = _staging_region(env)
+    pool = _sample_staging(region, cfg.candidate_sites * 6, rng)
     if not pool:
         return []
-    boundary = env.area.exterior
-    pool.sort(key=lambda p: boundary.distance(Point(p)))  # closest to boundary first
+    boundary = area.exterior
+    pool.sort(key=lambda p: boundary.distance(Point(p)))  # closest to the area edge first
     return pool[: cfg.candidate_sites]
 
 
@@ -327,11 +379,11 @@ def optimize(
     if not rows:
         usable = spec.battery_capacity_j * (1.0 - _RESERVE_FRAC)
         raise InfeasibleMissionError(
-            "No launch site can both reach all navigable bounds and retain a "
-            f"per-sortie coverage budget (usable {usable:.0f} J at altitude "
-            f"{altitude_m:.0f} m; {len(candidates)} candidate sites evaluated). "
-            "Increase battery capacity, lower the coverage altitude, or shrink "
-            "the area."
+            "No staging-periphery launch site can both reach all navigable bounds "
+            f"and retain a per-sortie coverage budget (usable {usable:.0f} J at "
+            f"altitude {altitude_m:.0f} m; {len(candidates)} candidate sites "
+            "evaluated). Increase battery capacity, lower the coverage altitude, "
+            "shrink the area, or reduce the staging standoff."
         )
 
     # --- Batch 6.3 Part 1.3: min-max normalize over the FEASIBLE set only,    ---

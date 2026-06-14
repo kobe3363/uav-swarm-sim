@@ -146,6 +146,9 @@ python -m uav_swarm_sim.experiments.run_scale_tiers --config config/default.yaml
 
 # §2.4: launch-site optimization study
 python -m uav_swarm_sim.experiments.run_launch_site_study --config config/default.yaml --out runs/launch
+
+
+python -m uav_swarm_sim.experiments.plot_launch_suitability
 ```
 
 Each run writes figures (environment, partition, trajectories, per-agent state Gantt, battery traces, embedded-vs-time-weighted `π` bars, comparison box plots, Monte-Carlo convergence), a `result.json`/CSV, and a structured log. Runs are **deterministic** given `(config, master_seed, replication, algorithm, planner)`.

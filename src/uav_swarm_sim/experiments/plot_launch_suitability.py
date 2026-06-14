@@ -1,28 +1,42 @@
-"""B6.3 standalone launch-suitability heat map.
+"""B6.3 standalone launch-suitability heat map (staging-periphery edition).
 
-Renders, over the navigable area, how good each candidate launch point is in terms
-of the EXACT fleet fatigue (battery-swap count) the mission would incur if the
-fleet launched from there -- using the very same canonical workload math the
-``launch_site_optimizer`` now scores with, so the picture and the optimizer's
-choice are consistent by construction.
+Renders, over the flyable STAGING ring that surrounds the survey area, how good
+each candidate launch point is in terms of the EXACT fleet fatigue (battery-swap
+count) the mission would incur if the fleet launched from there -- using the very
+same canonical workload math the ``launch_site_optimizer`` scores with, so the
+picture and the optimizer's choice are consistent by construction.
+
+Staging constraint
+------------------
+A Ground Control Station cannot sit inside the survey polygon (swamp / field /
+hazard area). Valid launch points lie in the staging ring just OUTSIDE
+``env.area`` (where, since obstacles live only inside ``area``, the ground is
+clear). The heat map therefore forms a ring AROUND an uncoloured target polygon:
+no suitability is rendered inside ``env.area``.
 
 For each grid cell (cell size = the platform's effective swath) the script:
-  1. runs the energy feasibility gate (reach the furthest navigable point and
-     return on one usable battery, incl. vertical takeoff/landing);
-  2. if feasible, computes the EXACT number of fleet swaps for N = fleet.n_drones
-     via ``required_sorties`` + ``fleet_swaps`` (site-specific transit overhead);
-  3. colours the cell by swap zone.
+  1. masks the cell if its centroid is inside ``env.area`` (target polygon) or
+     outside the staging ring;
+  2. otherwise runs the energy feasibility gate (reach the furthest navigable
+     point and return on one usable battery, incl. vertical takeoff/landing);
+  3. if feasible, computes the EXACT fleet swaps for N = fleet.n_drones via
+     ``required_sorties`` + ``fleet_swaps`` (site-specific transit overhead);
+  4. colours the cell by swap zone.
 
 Zones (N = fleet.n_drones):
   A green   : swaps == 0
   B yellow  : 0 < swaps < N/2
   C orange  : N/2 <= swaps <= N
   D red     : N  < swaps <= 2N
-  masked    : swaps > 2N  OR infeasible (left uncoloured)
+  masked    : swaps > 2N  OR infeasible  OR inside area  OR outside the staging ring
 
-Overlay: wireframe of the free-space boundary and every obstacle, plus a large
-star at the base pose the (updated) optimizer actually selects on the same seeded
-streams the simulation uses.
+Grid extent comes from the staging ring's bounds (``area.buffer(standoff)``), so
+the whole peripheral band is visible -- NOT ``free_space.bounds`` (which is a
+subset of ``area`` and would hide the periphery entirely).
+
+Overlay: wireframe of the survey-area boundary, the free-space boundary, every
+obstacle, plus a large star at the base pose the (updated) optimizer selects on
+the same seeded streams the simulation uses.
 
 Standalone on purpose: matplotlib lives here, never in the core engine. Run from
 the repo root, e.g.::
@@ -50,7 +64,9 @@ from ..planning.launch_site_optimizer import (
     TURN_FACTOR_DEFAULT,
     InfeasibleMissionError,
     _RESERVE_FRAC,
+    _STAGING_STANDOFF_M,
     _furthest_free_vertex_dist,
+    _staging_region,
     fleet_swaps,
     furthest_point_feasible,
     optimize,
@@ -109,20 +125,29 @@ def _zone(swaps: int, n: int) -> int:
 
 
 def _suitability_grid(env, spec, em, n_drones, altitude_m, step_m):
-    """Build the zone grid (NaN where masked). Returns (zone_2d, extent)."""
-    minx, miny, maxx, maxy = env.area.bounds
+    """Build the zone grid (NaN where masked) over the STAGING ring.
+
+    A cell is colourable only if its centroid is OUTSIDE the survey area and
+    INSIDE the staging ring; cells inside ``env.area`` are explicitly masked so
+    the target polygon renders hollow. Extent is the staging ring's bounds.
+    """
+    region = _staging_region(env)            # flyable band outside the survey area
+    area = env.area
+    minx, miny, maxx, maxy = region.bounds   # ring bbox -> captures the whole periphery
     xs = np.arange(minx + step_m / 2.0, maxx, step_m)
     ys = np.arange(miny + step_m / 2.0, maxy, step_m)
     area_m2 = float(env.free_space.area)
     centroid = env.free_space.centroid
     cx, cy = centroid.x, centroid.y
-    free = env.free_space
 
     zone = np.full((len(ys), len(xs)), np.nan)
     for j, y in enumerate(ys):
         for i, x in enumerate(xs):
-            if not free.covers(Point(x, y)):
-                continue  # not a navigable launch point -> masked
+            p = Point(x, y)
+            if area.contains(p):
+                continue  # inside the survey polygon -> never a staging site (masked)
+            if not region.covers(p):
+                continue  # beyond the staging band -> masked
             furthest = _furthest_free_vertex_dist(env, (x, y))
             if not furthest_point_feasible(em, spec, furthest, altitude_m):
                 continue  # cannot reach-and-return -> masked
@@ -172,12 +197,13 @@ def _render(env, base_pose, zone, extent, n_drones, out_path):
         cmap=cmap, norm=norm, alpha=0.75, aspect="equal", interpolation="nearest",
     )
 
-    # wireframe overlays
-    _plot_boundary(ax, env.free_space, color="#222222", linewidth=1.2, zorder=3)
+    # wireframe overlays: survey-area outline (the hollow target), free space, obstacles
+    _plot_boundary(ax, env.area, color="#000000", linewidth=1.6, zorder=4)
+    _plot_boundary(ax, env.free_space, color="#555555", linewidth=1.0, zorder=3)
     for ob in env.obstacles:
-        _plot_boundary(ax, ob.polygon, color="#444444", linewidth=0.8, zorder=3)
+        _plot_boundary(ax, ob.polygon, color="#777777", linewidth=0.8, zorder=3)
 
-    # selected base pose
+    # selected base pose (in the staging ring)
     ax.scatter(
         [base_pose.x], [base_pose.y], marker="*", s=620,
         facecolor="#ffffff", edgecolor="#000000", linewidth=1.6, zorder=6,
@@ -190,11 +216,11 @@ def _render(env, base_pose, zone, extent, n_drones, out_path):
         Patch(facecolor=_ZONE_COLORS[1], edgecolor="none", label=f"B  0 < swaps < {half:g}"),
         Patch(facecolor=_ZONE_COLORS[2], edgecolor="none", label=f"C  {half:g} ≤ swaps ≤ {n_drones}"),
         Patch(facecolor=_ZONE_COLORS[3], edgecolor="none", label=f"D  {n_drones} < swaps ≤ {2 * n_drones}"),
-        Patch(facecolor="none", edgecolor="#999999", label="masked  > 2N / infeasible"),
+        Patch(facecolor="none", edgecolor="#999999", label="masked  (target / >2N / infeasible)"),
     ]
     ax.legend(handles=legend, loc="upper right", framealpha=0.9, fontsize=9, title=f"swap zones (N={n_drones})")
 
-    ax.set_title("Launch-site suitability — exact fleet battery swaps")
+    ax.set_title("Launch-site suitability — staging periphery, exact fleet swaps")
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.grid(True, alpha=0.15)
@@ -207,7 +233,7 @@ def _render(env, base_pose, zone, extent, n_drones, out_path):
 # entrypoint                                                                   #
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Launch-site suitability map (exact fleet swaps).")
+    ap = argparse.ArgumentParser(description="Launch-site suitability map (staging periphery, exact fleet swaps).")
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--out", default="launch_suitability_map.png")
     args = ap.parse_args(argv)
@@ -230,7 +256,8 @@ def main(argv=None) -> int:
     colored = int(np.count_nonzero(~np.isnan(zone)))
     print(f"[launch suitability map saved to {args.out}]")
     print(f"  grid {zone.shape[1]}x{zone.shape[0]} cells @ {step_m:.0f} m  |  "
-          f"{colored} navigable/feasible cells  |  base ({base_pose.x:,.1f}, {base_pose.y:,.1f})")
+          f"staging standoff {_STAGING_STANDOFF_M:.0f} m  |  "
+          f"{colored} staging/feasible cells  |  base ({base_pose.x:,.1f}, {base_pose.y:,.1f})")
     return 0
 
 
