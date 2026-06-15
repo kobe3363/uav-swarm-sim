@@ -13,7 +13,15 @@
 # baseline; FIXED_WING and VTOL tables are COARSER extrapolations and should be
 # read as relative, structurally-consistent estimates, not calibrated absolutes.
 # =============================================================================
-
+telemetry:
+  enabled: true
+  gpx_path: "runs/my_run/tracks.gpx"
+  llm_log_path: "runs/my_run/events.jsonl"
+  fix_interval_s: 30.0          # periodic GPX fix cadence (seconds)
+  origin_lat: 54.6872           # tangent-plane false origin
+  origin_lon: 25.2797
+  epoch_iso: "2026-01-01T00:00:00Z"
+  
 fleet:
   n_drones: 5                 # default = small/heuristic tier (<=15)
   battery_capacity_wh: 100.0  # ~6S 5000 mAh (22.2 V x 4.5 Ah) class pack

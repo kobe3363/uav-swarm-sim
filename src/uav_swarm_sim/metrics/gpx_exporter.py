@@ -60,5 +60,7 @@ def build_gpx(
 
 
 def write_gpx(telemetry, path, **kwargs) -> None:
+    import os
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(build_gpx(telemetry, **kwargs))

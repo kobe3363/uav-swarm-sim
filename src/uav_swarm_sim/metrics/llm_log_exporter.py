@@ -28,5 +28,7 @@ def build_jsonl(telemetry) -> str:
 
 
 def write_jsonl(telemetry, path) -> None:
+    import os
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(build_jsonl(telemetry))
