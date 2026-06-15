@@ -72,7 +72,7 @@ from ..metrics.state_history import StateHistory
 from ..execution.agent import Agent
 from ..execution.events import EventBus
 from ..execution.failure_model import FailureModel
-from ..execution.fleet import Fleet
+from ..execution.fleet import Fleet, deploy_ring_poses
 from ..execution.formation_manager import FormationManager
 from ..execution.redistribution import Redistributor
 from ..execution.rth_calculator import RthCalculator
@@ -154,11 +154,23 @@ class SimulationEngine:
             self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
         )
 
+        # 2.5D (Task 2.4): distribute the N drones on a ring around the launch
+        # pose instead of stacking them at one (x, y). This is the single source
+        # of every drone's t=0 pose -- it feeds BOTH the decomposer seeds
+        # (init_views below) and the agents' home/spawn pose, so the partition no
+        # longer collapses on identical seeds and the SafetyMonitor sees no
+        # overlap. N == 1 yields R == 0 (the base pose), keeping the single-drone
+        # single-layer case byte-identical. See fleet.deploy_ring_poses.
+        self.deploy_poses = deploy_ring_poses(
+            self.launch_pose, cfg.fleet.n_drones, self.spec.dims_m,
+            cfg.safety.min_separation_m,
+        )
+
         # --- mission planning: area coverage OR target visit -------------- #
         self._mission_type = cfg.mission.type
         self._weight_targets = cfg.mission.weight_targets_by_battery
         init_views = [
-            DroneStateView(i, 1.0, self.launch_pose) for i in range(cfg.fleet.n_drones)
+            DroneStateView(i, 1.0, self.deploy_poses[i]) for i in range(cfg.fleet.n_drones)
         ]
         self.assignment = {}          # drone_id -> list[(x, y)] (target mode only)
         self.layer_of: dict[int, int] = {}   # drone_id -> assigned layer index
@@ -217,12 +229,12 @@ class SimulationEngine:
             battery = Battery(self.spec.battery_capacity_j, cfg.battery_zones, 1.0)
             i_layer = self.layer_of.get(i, 0)
             agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
-                          self.formation, self.launch_pose, recorder=self.history,
+                          self.formation, self.deploy_poses[i], recorder=self.history,
                           layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer))
             if self._mission_type is MissionType.TARGET_VISIT:
                 plan = self.plans.get(i)
                 if plan is not None and plan.waypoints:
-                    transit = self.motion.plan(self.launch_pose, plan.waypoints[0].pose,
+                    transit = self.motion.plan(self.deploy_poses[i], plan.waypoints[0].pose,
                                                ManeuverType.CRUISE)
                     agent.assign(plan, transit)
             else:
@@ -230,7 +242,7 @@ class SimulationEngine:
                 if zone is not None:
                     plan = (grid.coverage(zone, self.spec) if grid is not None
                             else boustrophedon(zone, self.spec, self.motion, self.em))
-                    transit = self.motion.plan(self.launch_pose, zone.entry_pose, ManeuverType.CRUISE)
+                    transit = self.motion.plan(self.deploy_poses[i], zone.entry_pose, ManeuverType.CRUISE)
                     agent.assign(plan, transit)
                     self.plans[i] = plan
             agents.append(agent)
