@@ -201,6 +201,25 @@ def _single_layer_default() -> LayersConfig:
 
 
 @dataclass(frozen=True)
+class TelemetryConfig:
+    """Phase 3 observability outputs (GPX tracks + LLM-ready JSONL event log).
+
+    OFF by default and side-effect-free when disabled, so a run with telemetry
+    off is byte-identical to the pre-Phase-3 baseline. Deliberately NOT present
+    in default.yaml: ``config_hash`` is computed from the raw YAML, so omitting
+    the section leaves the hash (and every fixture that asserts it) unchanged.
+    Enable it via an override or by adding a ``telemetry:`` block when wanted.
+    """
+    enabled: bool = False
+    gpx_path: str = "telemetry_tracks.gpx"
+    llm_log_path: str = "telemetry_events.jsonl"
+    fix_interval_s: float = 30.0     # periodic GPX position-fix cadence (s)
+    origin_lat: float = 54.6872      # local-tangent-plane false origin (Vilnius)
+    origin_lon: float = 25.2797
+    epoch_iso: str = "2026-01-01T00:00:00Z"   # GPX <time> = epoch + sim seconds
+
+
+@dataclass(frozen=True)
 class Config:
     fleet: FleetConfig
     platform: PlatformConfig
@@ -221,6 +240,7 @@ class Config:
     tier_thresholds: tuple[int, int]
     layers: LayersConfig = field(default_factory=_single_layer_default)
     config_hash: str = field(default="")
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -459,12 +479,24 @@ def _build(raw: dict, config_hash: str) -> Config:
     if len(tt) != 2:
         raise ConfigError("tier_thresholds must have exactly 2 values")
 
+    tl = raw.get("telemetry", {}) or {}
+    telemetry = TelemetryConfig(
+        enabled=bool(tl.get("enabled", False)),
+        gpx_path=str(tl.get("gpx_path", "telemetry_tracks.gpx")),
+        llm_log_path=str(tl.get("llm_log_path", "telemetry_events.jsonl")),
+        fix_interval_s=float(tl.get("fix_interval_s", 30.0)),
+        origin_lat=float(tl.get("origin_lat", 54.6872)),
+        origin_lon=float(tl.get("origin_lon", 25.2797)),
+        epoch_iso=str(tl.get("epoch_iso", "2026-01-01T00:00:00Z")),
+    )
+
     return Config(
         fleet=fleet, platform=platform, sensor=sensor, aero=aero, env=env,
         launch=launch, battery_zones=battery_zones, swap=swap, failure=failure,
         safety=safety, rth=rth, sim=sim, mc=mc, mission=mission, dynamic_obstacles=dynamic_obstacles, viz=viz, tier_thresholds=tt,  # type: ignore[arg-type]
         layers=layers,
         config_hash=config_hash,
+        telemetry=telemetry,
     )
 
 

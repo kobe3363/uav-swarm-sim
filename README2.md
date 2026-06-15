@@ -18,6 +18,7 @@ A discrete-time, Monte-Carlo simulation that, for a fleet of identical reconnais
 4. Enforces strict fleet logistics: finite **Shared Battery Pool** and exact battery swap cycle counting.
 5. Flies kinematically realistic coverage paths under a seven-state behavioral automaton. Features include: dynamic return-to-home, proactive obstacle avoidance, event-driven redistribution, and rigorous **Terminal State** evaluation (Mission Success vs. Physics-Dictated Failure).
 6. Measures the result both deterministically (energy, duration, swap metrics) and stochastically (stationary distribution over states, efficiency score), with statistical convergence.
+7. Optionally exports a structured **telemetry log**: GPX 1.1 tracks for GIS visualization and a JSONL event log for automated LLM-based mission analysis.
 
 It is written for **clarity at a thesis defense**: one module per idea, strictly typed interfaces, and a direct mapping from every quantitative claim in the thesis to exactly one place in the code.
 
@@ -32,7 +33,7 @@ The package layout deliberately mirrors the three methodology layers of the thes
 | `physical_model/` | Grey-box component energy model; aerodynamic formation correction; Dubins kinematics; the `MotionModel` abstraction; **1-D vertical takeoff/landing and inter-layer climbs**. Realistic Turn aerodynamic penalties. |
 | `planning/` | GeoJSON parsing; 3D Prism Poisson obstacles; Layered Environment mapping (`LayerStack`); GVG + TGC construction; the weighted decomposition (central contribution); optimal launch-site optimization with exact swap math; target-visit and dynamic obstacle routines. |
 | `execution/` | The seven-state automaton; the agent and fleet; dynamic RTH calculator; event-driven redistribution; proactive safety monitor; battery-swap station with **finite Shared Battery Pool**; strictly decoupled hazard-failure vs. battery-depletion failure (`MISSION_FAILED`). |
-| `metrics/` | State-history recording; deterministic mission metrics; SMDP estimation (embedded chain + mean sojourns); the stationary distribution with the embedded→time-weighted correction; Monte-Carlo runner. |
+| `metrics/` | State-history recording; deterministic mission metrics; SMDP estimation (embedded chain + mean sojourns); the stationary distribution with the embedded→time-weighted correction; Monte-Carlo runner; **event-driven telemetry collector with GPX track and LLM-ready JSONL exporters**. |
 | `infrastructure/` | Typed configuration; reproducible RNG; logging; the `SimulationEngine` orchestrator; visualization. |
 | `experiments/` | CLI entry points composing the layers into thesis experiments (e.g., Fleet Sizing Pareto Analyzer, Decomposition Comparisons). |
 
@@ -51,12 +52,15 @@ The package layout deliberately mirrors the three methodology layers of the thes
     SimulationEngine dt-loop (Fail-Fast execution):
        fleet init (Circular Deployment) → safety → agents step (incl. inter-layer transit)
        → swap station (Shared Pool) → Terminal Evaluation (SUCCESS / FAILED / INCOMPLETE)
+       → [if telemetry enabled] periodic position fixes + event capture
        ▼
     Metrics: SMDP estimate → stationary π → efficiency score
+       ▼
+    [if telemetry enabled] GPX tracks + JSONL event log written to disk
 
 ---
 
-## 3. Terminal States and Realistic Dynamics (Phase 2 Updates)
+## 3. Terminal States and Realistic Dynamics (Phase 2)
 
 The simulation enforces strict, mutually exclusive terminal outcomes evaluated at the end of each simulation tick, preventing unrealistic "zombie" computations:
 - **`MISSION_SUCCESS`**: 100% of the area is covered AND every surviving drone has returned to the launch site (`S0_IDLE`).
@@ -66,7 +70,77 @@ The simulation enforces strict, mutually exclusive terminal outcomes evaluated a
 
 ---
 
-## 4. The S_FAIL Dual View (Physical vs. Analysis Layer)
+## 4. Event-Driven Telemetry and Observability (Phase 3)
+
+When enabled, the simulation engine emits a structured event log of every mission **discontinuity** — not raw per-tick dumps, but semantically classified transitions with per-phase deltas and instantaneous agent snapshots. This feeds two output formats:
+
+- **GPX 1.1 tracks** — one `<trk>` per drone, for loading directly into QGIS, Google Earth, or mission planners. Planar simulation coordinates are projected to geographic WGS-84 via a local tangent-plane (equirectangular) approximation with a configurable false origin. Altitude `z` maps to `<ele>` exactly, so 3D viewers render the layer structure correctly.
+- **JSONL event log** — a compact, causal trace of the mission (run header → events → run summary) small enough for an LLM context window. Each event carries a semantic verb (`OBSTACLE`, `SWAP_REQ`, `SWAP_DONE`, `FAIL`, `TERMINAL`), the state transition (`from`/`to`/`reason`), battery fraction and zone, position, and per-phase deltas (`Δt`, `ΔE`, `Δdist`). Sparse by design: fields appear only where they apply.
+
+The telemetry layer is architecturally **decoupled** from the simulation core. It shares the agent's existing `Recorder.open/close` protocol via a `FanoutRecorder` and pulls snapshots read-only from the live fleet. No changes to `agent.py`, `state_history.py`, or `core_types.py` were required. When disabled (the default), no telemetry objects are constructed and the run is **byte-identical** to the pre-Phase-3 baseline.
+
+### Enabling Telemetry
+
+Add a `telemetry:` block to your scenario YAML file (e.g. `config/default.yaml` or any scenario-specific YAML you pass with `--config`). Place it at the **top level** of the file, alongside existing blocks like `fleet:`, `sensor:`, `sim:`, etc.:
+
+```yaml
+# config/default.yaml (or any scenario YAML)
+# ... existing blocks: fleet, sensor, sim, env, etc. ...
+
+telemetry:
+  enabled: true
+  gpx_path: "runs/my_run/tracks.gpx"
+  llm_log_path: "runs/my_run/events.jsonl"
+  fix_interval_s: 30.0                     # periodic GPX position-fix cadence (seconds)
+  origin_lat: 54.6872                      # tangent-plane false origin latitude (default: Vilnius)
+  origin_lon: 25.2797                      # tangent-plane false origin longitude
+  epoch_iso: "2026-01-01T00:00:00Z"        # GPX <time> = this epoch + sim seconds
+```
+
+When the simulation run finishes, two files appear at the configured paths. All fields have defaults, so the minimal enablement is just:
+
+```yaml
+telemetry:
+  enabled: true
+```
+
+which writes `telemetry_tracks.gpx` and `telemetry_events.jsonl` to the working directory with Vilnius as the projection origin.
+
+When the `telemetry:` block is **absent** from the YAML (or `enabled: false`), the feature does not exist — no objects are constructed, no files are written, and the `config_hash` is unchanged because the hash is computed from the raw YAML before parsing.
+
+### Telemetry Output Schema
+
+**JSONL** (one JSON object per line):
+
+```
+{"kind":"run_header","config_hash":"...","platform":"MULTIROTOR","n_drones":5,...}
+{"kind":"event","t":10.0,"event":"STATE","drone":0,"from":"S0_IDLE","to":"S1_TRANSIT","reason":"launch","batt_frac":0.99,...}
+{"kind":"event","t":300.0,"event":"OBSTACLE","drone":0,"from":"S2_MISSION","to":"S_OBS","reason":"obstacle_threat",...}
+{"kind":"event","t":1180.0,"event":"TERMINAL","reason":"coverage_complete","outcome":"MISSION_SUCCESS","coverage_frac":1.0}
+{"kind":"run_summary","outcome":"MISSION_SUCCESS","coverage_frac":1.0,"t_end_s":1180.0,"per_drone_sorties":{"0":2},...}
+```
+
+**GPX** (standard GPX 1.1, one `<trk>` per drone):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="uav-swarm-sim" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>drone_0</name>
+    <trkseg>
+      <trkpt lat="54.68720000" lon="25.27970000">
+        <ele>100.00</ele>
+        <time>2026-01-01T00:00:00Z</time>
+      </trkpt>
+      ...
+    </trkseg>
+  </trk>
+</gpx>
+```
+
+---
+
+## 5. The S_FAIL Dual View (Physical vs. Analysis Layer)
 
 Failure is modeled **differently and deliberately** in two separate layers:
 
@@ -75,7 +149,7 @@ Failure is modeled **differently and deliberately** in two separate layers:
 
 ---
 
-## 5. Platform support and the energy-coefficient caveat
+## 6. Platform support and the energy-coefficient caveat
 
 Runs simulate **one** homogeneous platform (`FIXED_WING`, `MULTIROTOR`, or `VTOL`).
 
@@ -83,7 +157,7 @@ Runs simulate **one** homogeneous platform (`FIXED_WING`, `MULTIROTOR`, or `VTOL
 
 ---
 
-## 6. Installation
+## 7. Installation
 
 Requires **Python 3.12+**.
 
@@ -92,7 +166,7 @@ Requires **Python 3.12+**.
 
 ---
 
-## 7. Running Experiments
+## 8. Running Experiments
 
 Entry points live in `src/uav_swarm_sim/experiments/`.
 
@@ -108,13 +182,16 @@ Entry points live in `src/uav_swarm_sim/experiments/`.
     # Smoke test
     pytest tests/test_smoke.py
 
+To run any experiment **with telemetry enabled**, add the `telemetry:` block to the YAML you pass via `--config` (see Section 4 above). The GPX and JSONL files will be written to the configured paths when the run completes.
+
 ---
 
-## 8. Development Roadmap & Horizon
+## 9. Development Roadmap & Horizon
 
 The core architecture, 2.5D logic, and B6 Exact Fleet Sizing math are complete (151/151 Green Tests). The simulation is currently executing the final engineering phases:
 
-- **Phase 2 (Active/Complete):** Strict terminal states, finite battery logistics, circular deployment, and boustrophedon turn penalties.
-- **Phase 3 (Planned):** Observability and Telemetry. Exporting highly detailed CSV/GPX traces of every drone's spatial position and state for external GIS routing analysis.
-- **Phase 4 (Planned):** Automated AI analysis (LLM as a judge) over simulation logs to auto-diagnose mission failures.
+- **Phase 2 (Complete):** Strict terminal states, finite battery logistics, circular deployment, boustrophedon turn penalties, and pre-flight trajectory validation mechanism (Task 2.5 Q1).
+- **Phase 3 (Complete):** Observability and Telemetry. An event-driven telemetry collector logs mission discontinuities (state transitions, obstacle encounters, swaps, terminal verdicts) alongside periodic position fixes. Two exporters serialize the single in-memory log: **GPX 1.1** tracks (one `<trk>` per drone, local tangent-plane projection, exact `<ele>` altitudes) for QGIS / Google Earth, and **JSONL** (sparse, semantic, causal event rows with per-phase energy/time/distance deltas) for the Phase 4 LLM judge. The collector is a read-only probe via a fan-out recorder — it never feeds back into physics, energy, or the SMDP. Disabled by default; enable via a `telemetry:` config block.
+- **Phase 4 (Planned):** Automated AI analysis (LLM as a judge) over the JSONL telemetry logs to auto-diagnose mission failures.
+- **Task 2.5 Q2 (Planned):** Stateful S_OBS recovery sub-FSM (EVADE/HOLD/REJOIN) wired into the trajectory validation mechanism.
 - **Final B6 Experiment (Planned):** The multi-layer Altitude-Tradeoff Study (Vertical energy cost vs. per-layer obstacle sparsity reduction).

@@ -167,3 +167,21 @@ class LegRepair(Enum):
     RESMOOTHED = "resmoothed"
     LINEAR = "linear"
     BLOCKED = "blocked"
+
+
+class TelemetryEventKind(Enum):
+    """Semantic verb for one row of the Phase 3 event-driven telemetry log
+    (metrics/telemetry_log.py; consumed by the GPX and LLM-log exporters).
+
+    Derived from the agent's state transition (or a run-level hook) so the
+    Phase-4 LLM judge gets a salient label without inferring intent from raw
+    state pairs. The transition's full from/to/reason are still carried alongside.
+    """
+    START = "START"            # initial state entry (t=0)
+    STATE = "STATE"            # generic state transition
+    OBSTACLE = "OBSTACLE"      # entered S_OBS (obstacle / threat encounter)
+    SWAP_REQ = "SWAP_REQ"      # entered S_SWAP (battery swap requested)
+    SWAP_DONE = "SWAP_DONE"    # left S_SWAP -> S0_IDLE (swap complete)
+    FAIL = "FAIL"              # entered S_FAIL (drone lost)
+    LEG_REPAIR = "LEG_REPAIR"  # pre-flight trajectory repair (Task 2.5 Q2 hook)
+    TERMINAL = "TERMINAL"      # mission terminal verdict (success / failure)

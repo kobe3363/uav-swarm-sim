@@ -69,6 +69,7 @@ from ..planning.weighted_decomposition import (
 )
 from ..metrics import mission_metrics
 from ..metrics.state_history import StateHistory
+from ..metrics.telemetry_log import TelemetryLog, FanoutRecorder
 from ..execution.agent import Agent
 from ..execution.events import EventBus
 from ..execution.failure_model import FailureModel
@@ -199,6 +200,15 @@ class SimulationEngine:
         sm = StateMachine(cfg.battery_zones)
         self.bus = EventBus()
         self.history = StateHistory()
+        # Phase 3 telemetry: optional, OFF by default, a read-only probe. When on,
+        # each agent's single recorder fans out to [StateHistory, TelemetryLog];
+        # when off, the recorder IS StateHistory -> byte-identical to before.
+        if cfg.telemetry.enabled:
+            self.telemetry = TelemetryLog(fix_interval_s=cfg.telemetry.fix_interval_s)
+            recorder = FanoutRecorder([self.history, self.telemetry])
+        else:
+            self.telemetry = None
+            recorder = self.history
         self.swap_station = SwapStation(
             cfg.swap, self.launch_pose, cfg.fleet.total_reserve_batteries
         )
@@ -229,7 +239,7 @@ class SimulationEngine:
             battery = Battery(self.spec.battery_capacity_j, cfg.battery_zones, 1.0)
             i_layer = self.layer_of.get(i, 0)
             agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
-                          self.formation, self.deploy_poses[i], recorder=self.history,
+                          self.formation, self.deploy_poses[i], recorder=recorder,
                           layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer))
             if self._mission_type is MissionType.TARGET_VISIT:
                 plan = self.plans.get(i)
@@ -258,9 +268,16 @@ class SimulationEngine:
         )
         self.replan_times: list[float] = []
 
-        # open initial S0 sojourns
+        # Phase 3: bind telemetry to the live fleet (so it can read pose/battery/
+        # energy) and stamp the run header, before any sojourn opens.
+        if self.telemetry is not None:
+            self.telemetry.bind_fleet(self.fleet)
+            self.telemetry.set_header(self._telemetry_header())
+
+        # open initial S0 sojourns (via the recorder so telemetry, when enabled,
+        # sees each drone's t=0 entry; the recorder IS history when disabled)
         for a in agents:
-            self.history.open(a.id, AgentState.S0_IDLE, 0.0)
+            recorder.open(a.id, AgentState.S0_IDLE, 0.0)
 
     # ------------------------------------------------------------------ #
     def run(self) -> MissionResult:
@@ -270,6 +287,7 @@ class SimulationEngine:
         complete = False
         self._outcome = Outcome.MISSION_INCOMPLETE
         t = 0.0
+        self._last_fix_t = -1e9   # Phase 3: periodic GPX position-fix clock
         for step in range(cfg.sim.max_timesteps):
             t = step * dt
             self.failure.step(self.fleet.airborne(), dt, t, self.bus)
@@ -297,6 +315,12 @@ class SimulationEngine:
                 self.history.record_position(a.id, t, a.pose.x, a.pose.y, a.state)
             if self._dynfield is not None:
                 self.history.record_dynamic_obstacles(t, self._dynfield.snapshot(), self.sensing.mode)
+            # Phase 3: coarse periodic position fixes so long uniform phases still
+            # render as lines in GPX (telemetry off -> this block is skipped).
+            if self.telemetry is not None and (t - self._last_fix_t) >= self.telemetry.fix_interval_s:
+                self._last_fix_t = t
+                for a in self.fleet.active():
+                    self.telemetry.record_fix(a.id, t)
             # Phase 2 (Tasks 2.1b + 2.2): mutually-exclusive terminal evaluation,
             # right after event routing + position logging. Failure is tested
             # before success; the first match halts the dt loop.
@@ -309,6 +333,18 @@ class SimulationEngine:
         t_end = t
         self.history.finalize(t_end)
         coverage_frac = self._coverage_frac()
+        if self.telemetry is not None:
+            self.telemetry.finalize(t_end)
+            self.telemetry.set_summary(
+                outcome=self._outcome.value,
+                coverage_frac=round(coverage_frac, 4),
+                t_end_s=round(t_end, 1),
+                n_failed=self.fleet.n_failed,
+                pool_exhausted=self.swap_station.pool_exhausted,
+                reserve_remaining=self.swap_station.reserve_remaining,
+                **self.telemetry.derive_counts(),
+            )
+            self._export_telemetry()
         metrics = mission_metrics.compute(
             self.history, self.fleet, self.partition, t_end,
             planning_time_s=self.planning_time_s,
@@ -396,6 +432,36 @@ class SimulationEngine:
                 return False
         return True
 
+    def _telemetry_header(self) -> dict:
+        """Run-setup object emitted once at the top of the LLM event log."""
+        cfg = self.cfg
+        try:
+            area_m2 = round(float(self.env.area.area), 1)
+        except Exception:
+            area_m2 = None
+        return {
+            "config_hash": cfg.config_hash,
+            "platform": self.spec.platform.value,
+            "n_drones": cfg.fleet.n_drones,
+            "area_m2": area_m2,
+            "altitudes_m": list(cfg.layers.altitudes_m),
+            "reserve_batteries": cfg.fleet.total_reserve_batteries,
+            "launch_weights": {"dist": cfg.launch.w_distance,
+                               "energy": cfg.launch.w_energy,
+                               "swaps": cfg.launch.w_swaps},
+            "dt_s": cfg.sim.dt_s,
+            "mission_type": cfg.mission.type.value,
+        }
+
+    def _export_telemetry(self) -> None:
+        """Write the GPX tracks + JSONL event log to the configured paths."""
+        from ..metrics.gpx_exporter import write_gpx
+        from ..metrics.llm_log_exporter import write_jsonl
+        tc = self.cfg.telemetry
+        write_gpx(self.telemetry, tc.gpx_path,
+                  lat0=tc.origin_lat, lon0=tc.origin_lon, epoch_iso=tc.epoch_iso)
+        write_jsonl(self.telemetry, tc.llm_log_path)
+
     def _evaluate_terminal(self, t: float) -> Outcome | None:
         """Mutually-exclusive terminal check (Phase 2, Tasks 2.1b + 2.2).
 
@@ -409,7 +475,8 @@ class SimulationEngine:
         deliberately populate S_FAIL for the elevated-hazard Monte-Carlo / SMDP
         statistics) are naturally excluded and never halt the run.
         """
-        coverage_complete = self._coverage_frac() >= _COVERAGE_COMPLETE_FRAC
+        cov = self._coverage_frac()
+        coverage_complete = cov >= _COVERAGE_COMPLETE_FRAC
 
         # ---- Condition 1: MISSION_FAILED (fail-fast) ----------------------- #
         # (a) any AIRBORNE drone whose battery has reached 0 -> forced S_FAIL.
@@ -417,9 +484,16 @@ class SimulationEngine:
         if depleted:
             for a in depleted:
                 self.fleet.kill(a.id, t)        # freeze mid-flight in S_FAIL
+            if self.telemetry is not None:
+                self.telemetry.record_terminal(
+                    t, Outcome.MISSION_FAILED, "battery_depleted",
+                    coverage_frac=cov, n_depleted=len(depleted))
             return Outcome.MISSION_FAILED
         # (b) shared swap reserve exhausted before coverage is complete.
         if self.swap_station.pool_exhausted and not coverage_complete:
+            if self.telemetry is not None:
+                self.telemetry.record_terminal(
+                    t, Outcome.MISSION_FAILED, "pool_exhausted", coverage_frac=cov)
             return Outcome.MISSION_FAILED
 
         # ---- Condition 2: MISSION_SUCCESS ---------------------------------- #
@@ -429,6 +503,9 @@ class SimulationEngine:
         # guards the t=0 / empty-plan edge; AND-ing the area gate keeps the
         # explicit Task 2.2 coverage condition and never relaxes the timing.
         if coverage_complete and self._mission_complete():
+            if self.telemetry is not None:
+                self.telemetry.record_terminal(
+                    t, Outcome.MISSION_SUCCESS, "coverage_complete", coverage_frac=cov)
             return Outcome.MISSION_SUCCESS
 
         return None
