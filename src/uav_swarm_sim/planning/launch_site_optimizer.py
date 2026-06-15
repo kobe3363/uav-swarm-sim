@@ -46,11 +46,11 @@ the exact swap term, and the staging-ring candidate domain all move the J
 landscape relative to earlier batches.
 
 The canonical swap/workload helpers (``coverage_path_length``,
-``per_sortie_coverage_budget_j``, ``required_sorties``, ``fleet_swaps``) live in
-this core module so the optimizer AND the standalone suitability plotter share
-ONE implementation. ``experiments/fleet_sizing.py`` currently keeps its own
-arithmetically-identical copy; unifying it onto these helpers is a queued
-follow-up.
+``coverage_energy_j``, ``per_sortie_coverage_budget_j``, ``required_sorties``,
+``fleet_swaps``) live in this core module so the optimizer AND the standalone
+suitability plotter share ONE implementation. ``experiments/fleet_sizing.py``
+keeps its own arithmetically-identical copy; unifying it onto these helpers is a
+queued follow-up.
 """
 from __future__ import annotations
 
@@ -76,10 +76,11 @@ from .weighted_decomposition import WeightedTgcDecomposer
 # reserve elsewhere -- the tool and the simulation agree on "usable").
 _RESERVE_FRAC = 0.05
 
-# Boustrophedon turn-around overhead multiplier on the ideal area/swath sweep
-# length. MUST match experiments/fleet_sizing.py (TURN_FACTOR_DEFAULT) so the
-# optimizer's swap count agrees with the fleet-sizing analyzer's.
-TURN_FACTOR_DEFAULT = 1.15
+# Task 2.3: the old `TURN_FACTOR_DEFAULT = 1.15` distance-inflation proxy is
+# GONE. Boustrophedon turn-around overhead is now charged as real TURN-rate
+# energy over the U-turn connectors (see ``coverage_energy_j``), matching how the
+# engine executes the plan (COVERAGE strips + TURN connectors). The fleet-sizing
+# analyzer uses the arithmetically-identical formulation, so the two still agree.
 
 # How far outside the survey area the flyable STAGING ring extends (metres). The
 # Ground Control Station / launch pad is placed in this peripheral band, never
@@ -168,21 +169,57 @@ def _furthest_free_vertex_dist(env: EnvironmentMap, from_xy: tuple[float, float]
 # import these so the suitability map and the chosen site agree by            #
 # construction. Formulas are IDENTICAL to experiments/fleet_sizing.py.        #
 # --------------------------------------------------------------------------- #
-def coverage_path_length(
-    area_m2: float,
-    effective_swath_m: float,
-    turn_factor: float = TURN_FACTOR_DEFAULT,
-) -> float:
-    """Total boustrophedon sweep length to cover ``area_m2`` with a sensor of
-    effective swath ``effective_swath_m``, inflated by ``turn_factor`` for the
-    turn-around overhead between adjacent passes."""
+def _coverage_geometry(area_m2: float, effective_swath_m: float) -> tuple[float, float, float]:
+    """Boustrophedon decomposition of a zone of ``area_m2`` swept at strip
+    spacing ``effective_swath_m``. Returns ``(strip_length_m, n_turns,
+    turn_distance_m)``.
+
+    Total strip length = area / swath (exact for area coverage). Assuming a
+    square-ish footprint (perpendicular extent ~ sqrt(area)), the sweep has
+    ~ sqrt(area)/swath parallel strips joined by (n_strips - 1) U-turn
+    connectors, each a lateral hop of one strip spacing. This mirrors the
+    engine's boustrophedon leg structure (COVERAGE strips alternating with TURN
+    connectors); n_turns is kept real-valued, the analytical-floor convention.
+    """
     if effective_swath_m <= 0.0:
         raise ValueError("effective_swath_m must be > 0")
     if area_m2 < 0.0:
         raise ValueError("area_m2 must be >= 0")
-    if turn_factor < 1.0:
-        raise ValueError("turn_factor must be >= 1.0")
-    return (area_m2 / effective_swath_m) * turn_factor
+    strip_length_m = area_m2 / effective_swath_m
+    n_strips = math.sqrt(area_m2) / effective_swath_m
+    n_turns = max(0.0, n_strips - 1.0)
+    turn_distance_m = n_turns * effective_swath_m
+    return strip_length_m, n_turns, turn_distance_m
+
+
+def coverage_path_length(area_m2: float, effective_swath_m: float) -> float:
+    """Total distance a drone flies to sweep ``area_m2``: the boustrophedon
+    strips (area / swath) PLUS the U-turn connectors between them. Pure geometry,
+    no fudge multiplier. NOTE: energy is NOT a single rate over this length --
+    strips are charged at COVERAGE, connectors at TURN; use ``coverage_energy_j``
+    for energy."""
+    strip_length_m, _n_turns, turn_distance_m = _coverage_geometry(area_m2, effective_swath_m)
+    return strip_length_m + turn_distance_m
+
+
+def coverage_energy_j(
+    em: EnergyModel, spec: PlatformSpec, area_m2: float, effective_swath_m: float
+) -> float:
+    """Energy (J) to fly the boustrophedon coverage of ``area_m2``, matching how
+    the engine executes it: COVERAGE-rate energy over the straight strips PLUS
+    TURN-rate energy over the U-turn connectors. Connectors are flown at
+    ``v_cruise`` -- the same ``spec.speed_for(TURN)`` the motion model assigns to
+    a TURN leg -- so this equals the engine's per-leg integral (P_coverage and
+    P_turn resolved from ``power_w``), modulo the analytical strip/turn-count
+    estimate. Replaces the old ``(area/swath) * 1.15`` charged wholly at COVERAGE.
+    """
+    strip_length_m, _n_turns, turn_distance_m = _coverage_geometry(area_m2, effective_swath_m)
+    strip_j = em.distance_energy(strip_length_m, ManeuverType.COVERAGE, spec.v_coverage)
+    turn_j = (
+        em.distance_energy(turn_distance_m, ManeuverType.TURN, spec.v_cruise)
+        if turn_distance_m > 0.0 else 0.0
+    )
+    return strip_j + turn_j
 
 
 def per_sortie_coverage_budget_j(
@@ -223,15 +260,15 @@ def required_sorties(
     transit_dist_m: float,
     altitude_m: float,
     effective_swath_m: float,
-    turn_factor: float = TURN_FACTOR_DEFAULT,
     reserve_frac: float = _RESERVE_FRAC,
 ) -> int:
     """Integer number of coverage sorties needed to sweep ``area_m2`` from a site
     ``transit_dist_m`` from the work centroid. ``ceil(total coverage energy /
-    per-sortie coverage budget)``, floored at 1. Propagates
-    ``InfeasibleMissionError`` from the budget when overhead eats the battery."""
-    cov_len_m = coverage_path_length(area_m2, effective_swath_m, turn_factor)
-    cov_energy_j = em.distance_energy(cov_len_m, ManeuverType.COVERAGE, spec.v_coverage)
+    per-sortie coverage budget)``, floored at 1. Coverage energy is now the
+    strips-at-COVERAGE + connectors-at-TURN total (``coverage_energy_j``), no
+    longer a distance fudge. Propagates ``InfeasibleMissionError`` from the
+    budget when overhead eats the battery."""
+    cov_energy_j = coverage_energy_j(em, spec, area_m2, effective_swath_m)
     budget_j = per_sortie_coverage_budget_j(em, spec, transit_dist_m, altitude_m, reserve_frac)
     return max(1, math.ceil(cov_energy_j / budget_j))
 
@@ -363,7 +400,7 @@ def optimize(
         try:
             sorties_int = required_sorties(
                 em, spec, area_m2, transit_site_m, altitude_m, swath_m,
-                TURN_FACTOR_DEFAULT, _RESERVE_FRAC,
+                _RESERVE_FRAC,
             )
         except InfeasibleMissionError:
             # passes the reach-and-return gate but leaves no coverage budget from

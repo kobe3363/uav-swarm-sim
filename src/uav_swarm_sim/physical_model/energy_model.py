@@ -51,6 +51,12 @@ class EnergyModel:
         other case it is ignored (multirotors receive no energy benefit -- their
         downwash is a safety constraint, handled elsewhere -- and COVERAGE is
         never discounted).
+
+        Every maneuver -- TURN included -- resolves its OWN ``power_w`` table
+        coefficient here, so a boustrophedon U-turn connector (ManeuverType.TURN)
+        is charged at the TURN rate, distinct from the COVERAGE strips around it.
+        This is the per-leg rate the analytical coverage math (launch_site_
+        optimizer / fleet_sizing) now mirrors instead of a flat distance fudge.
         """
         p = self._spec.power_w[m]
         if m in _FORMATION_ELIGIBLE and self._spec.platform in _FORMATION_PLATFORMS:

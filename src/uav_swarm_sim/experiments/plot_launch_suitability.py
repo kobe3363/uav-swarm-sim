@@ -61,7 +61,6 @@ from ..planning.environment_map import EnvironmentMap
 from ..planning.geojson_parser import load_area
 from ..planning.gvg_builder import build_gvg
 from ..planning.launch_site_optimizer import (
-    TURN_FACTOR_DEFAULT,
     InfeasibleMissionError,
     _RESERVE_FRAC,
     _STAGING_STANDOFF_M,
@@ -155,7 +154,7 @@ def _suitability_grid(env, spec, em, n_drones, altitude_m, step_m):
             try:
                 sorties = required_sorties(
                     em, spec, area_m2, transit, altitude_m,
-                    spec.swath_width_m, TURN_FACTOR_DEFAULT, _RESERVE_FRAC,
+                    spec.swath_width_m, _RESERVE_FRAC,
                 )
             except InfeasibleMissionError:
                 continue  # no coverage budget from here -> masked
