@@ -67,6 +67,26 @@ class MotionModel(ABC):
         new_t = min(t_elapsed + dt, path.total_duration_s)
         return path.pose_at_time(new_t), new_t
 
+    def straight_leg(self, start: Pose, goal: Pose, maneuver: ManeuverType) -> Path:
+        """A pure straight chord ``start -> goal`` at the maneuver speed, IGNORING
+        the turn-radius constraint. This is the linear-corridor fallback used by
+        ``planning.trajectory_validation`` when Dubins smoothing bulges a turn arc
+        outside the corridor and clips an obstacle buffer: the GVG/boustrophedon
+        skeleton is clear by construction, so the chord is collision-safe even
+        though it is kinematically abrupt (arrival heading = chord bearing; the
+        next leg re-plans from there, so any Dubins infeasibility stays local to
+        this one leg). Identical for both kinematics -- it is THE chord -- and it
+        matches a holonomic leg's straight phase. Altitude is held (horizontal).
+        """
+        v = self._spec.speed_for(maneuver)
+        dx, dy = goal.x - start.x, goal.y - start.y
+        dist = math.hypot(dx, dy)
+        if dist <= 1e-9:
+            return Path(())
+        bearing = math.atan2(dy, dx)
+        p0 = Pose(start.x, start.y, bearing, start.z)
+        return Path.from_segments([straight_segment(p0, dist, maneuver, v)])
+
 
 class DubinsModel(MotionModel):
     """Fixed-wing and VTOL cruise: minimum-turn-radius Dubins kinematics."""

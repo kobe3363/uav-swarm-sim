@@ -138,3 +138,32 @@ class Outcome(Enum):
     MISSION_SUCCESS = "MISSION_SUCCESS"
     MISSION_FAILED = "MISSION_FAILED"
     MISSION_INCOMPLETE = "MISSION_INCOMPLETE"
+
+
+class LegRepair(Enum):
+    """Outcome of pre-flight trajectory validation for a single smoothed leg
+    (Task 2.5, Q1; see planning/trajectory_validation.py).
+
+    A linear GVG/boustrophedon corridor is clear by construction, but Dubins
+    smoothing can bulge a turn arc outside it and clip an obstacle buffer.
+    ``plan_clear_leg`` validates every leg against the BUFFERED obstacle union
+    before it is flown and repairs a clipping leg with a bounded ladder:
+
+    CLEAN      -- the smoothed leg was already clear; returned unchanged. This is
+                  the ONLY outcome for a holonomic platform (r_min == 0 produces
+                  straight legs), so the multirotor baseline stays byte-identical.
+    RESMOOTHED -- cleared by subdivide-and-resmooth: a midpoint was inserted on
+                  the chord and each half re-Dubins'd (shorter arcs bulge less).
+    LINEAR     -- fell back to the straight corridor chord at the same maneuver.
+                  Provably clear (the skeleton came from the obstacle-aware
+                  decomposition); kinematically abrupt, marginally cheaper.
+    BLOCKED    -- even the chord clips: the corridor is genuinely obstructed (a
+                  dynamic / newly-discovered obstacle straddles it). NOT a
+                  smoothing artifact; the caller must escalate (runtime S_OBS
+                  recovery, or a TGC reroute with a logged coverage gap) rather
+                  than fly into it.
+    """
+    CLEAN = "clean"
+    RESMOOTHED = "resmoothed"
+    LINEAR = "linear"
+    BLOCKED = "blocked"

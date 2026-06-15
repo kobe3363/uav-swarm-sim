@@ -97,17 +97,35 @@ class EnvironmentMap:
             return False
         return self._obstacles_union is None or not line.intersects(self._obstacles_union)
 
-    def path_clear(self, path: Path, step_m: float = 2.0) -> bool:
+    def first_obstruction(self, path: Path, step_m: float = 2.0) -> float | None:
+        """Approximate arc-length (m) of the first point on ``path`` that leaves
+        free space or whose chord to the previous sample crosses a buffered
+        obstacle; ``None`` if the whole path is clear. Same buffered-clearance
+        test as ``path_clear`` (every pose in ``free_space`` AND every chord
+        ``segment_clear``), but it reports WHERE the first violation is so the
+        trajectory validator can log the clip and the runtime S_OBS recovery can
+        pick a downstream rejoin point. The location is the sample index times
+        ``step_m`` -- exact enough for diagnostics, not a precise contact point.
+        """
         poses = path.sample(step_m)
         if not poses:
-            return True
-        for ps in poses:
-            if not self.free_space.covers(Point(ps.as_xy())):
-                return False
-        for a, b in zip(poses, poses[1:]):
-            if not self.segment_clear(a, b):
-                return False
-        return True
+            return None
+        if not self.free_space.covers(Point(poses[0].as_xy())):
+            return 0.0
+        for i in range(1, len(poses)):
+            a, b = poses[i - 1], poses[i]
+            if not self.free_space.covers(Point(b.as_xy())) or not self.segment_clear(a, b):
+                return i * step_m
+        return None
+
+    def path_clear(self, path: Path, step_m: float = 2.0) -> bool:
+        """True iff every point of the smoothed ``path`` stays in free space and
+        no chord crosses a buffered obstacle. Validated against the BUFFERED
+        union (``free_space`` / ``_obstacles_union``), which is strictly stronger
+        than the raw-penetration ``in_obstacle`` trigger the SafetyMonitor uses --
+        so a path that passes here can never raise S_OBS. Thin wrapper over
+        ``first_obstruction`` (single source of truth for the sampling)."""
+        return self.first_obstruction(path, step_m) is None
 
     def occupancy_grid(self, cell_m: float) -> tuple[np.ndarray, GridFrame]:
         minx, miny, maxx, maxy = self.area.bounds
