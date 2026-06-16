@@ -195,6 +195,39 @@ Drone 1 depleted its battery mid-mission at t=1180s while in S2_MISSION, halting
 - [OK] root_cause_consistent_with_terminal - model=BATTERY_DEPLETION_AIRBORNE deterministic_hint=BATTERY_DEPLETION_AIRBORNE
 ```
 
+### Interactive analysis (the mission-analyst prompt)
+
+The programmatic judge above returns a machine-checkable JSON verdict. For quick, **human-readable** interpretation — when you (or an examiner) want a narrative diagnosis and you also have the **figures** in hand — the repository ships a ready-to-use **mission-analyst system prompt** at `docs/mission_analyst_prompt.md`. Paste it as the system prompt in any Claude (or other LLM) chat, attach the run's artifacts, and ask *"analyze this run."* Unlike the CLI judge, it reads the plots as well as the logs and returns a structured written report. The two interfaces are complementary: the CLI judge for a scriptable, auditable verdict; the prompt for the readable story.
+
+**What to pass to it** (any subset works; more is sharper, and it will request what is missing):
+
+| Input | Why it helps |
+|---|---|
+| **`events.jsonl`** | The richest single input; enables transition-level dissection (`from`→`to` loops, the `per_drone_obstacle_events` tally). **Attach this first.** |
+| **The config YAML** (`default.yaml` or your scenario) | Turns generic advice ("raise the reserve") into concrete edits ("`rth.reserve_frac` 0.05 → 0.15"). |
+| **The console summary line** | `[single] aborted=… coverage=… energy=… duration=… workload_std=… efficiency=…` — the headline deterministic metrics. |
+| **Figures** | `state_gantt.png` (most diagnostic), `battery.png`, `pi_bars.png`, `partition.png`, `paths.png`, `environment.png`, `replay.gif`. |
+| **Context** | The decomposition algorithm, the seed, whether dynamic obstacles or a nonzero `failure.hazard_rate_per_hour` were active, and **what outcome you expected** (so it can judge *why* a result is unsatisfying, not just *what* it is). |
+
+**What to expect back** — a written report with eight sections:
+
+1. **Verdict** — outcome + single most likely root cause + confidence.
+2. **Mission setup** — platform, fleet, area, layers, logistics, decomposition, seed.
+3. **What happened** — a chronological narrative grounded in events and figures.
+4. **Per-drone notes** — a table of each drone's behavior and fate.
+5. **Problems identified (ranked)** — each as *Observation (with evidence) → Hypothesis → Confidence*.
+6. **Recommendations (ranked)** — concrete named config knobs with expected effect.
+7. **Anomalies & caveats** — contradictions between sources, suspicious values.
+8. **What would sharpen the analysis** — the specific follow-up artifact to provide next.
+
+The analyst is **grounding-disciplined**: it cites the figure / drone / timestamp behind each claim, separates observation from hypothesis, and *flags contradictions between sources rather than papering over them* — for example, a `coverage_frac` of 0 reported alongside heavy `S2_MISSION` time is surfaced as a likely accounting issue to investigate, not silently accepted. It typically ends by requesting one specific follow-up artifact, so treat it as a conversation: answer its question and it will go deeper.
+
+**Tips:**
+- Lead with `events.jsonl`. With figures alone the analyst reasons well but cannot quote exact transitions or per-drone counts.
+- Provide the config every run — it is what makes the recommendations actionable rather than generic.
+- State your intent ("I expected full coverage in under 1500 s") to give it a target to diagnose against.
+- If you run both the CLI judge and the prompt, reconcile their verdicts; agreement raises confidence, disagreement is itself a useful signal.
+
 ---
 
 ## 6. The S_FAIL Dual View (Physical vs. Analysis Layer)
