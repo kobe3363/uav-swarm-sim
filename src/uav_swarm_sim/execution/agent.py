@@ -40,6 +40,15 @@ from ..physical_model.motion_model import MotionModel
 from .rth_calculator import RthCalculator
 from .state_machine import AgentContext, StateMachine
 
+# Task 2.5 Q2 (stateful S_OBS recovery): if the validated avoidance + leg-skip
+# still cannot clear the corridor after this many CONSECUTIVE obstacle re-entries
+# (no clean coverage progress in between), the drone is boxed in -- it abandons
+# the region and returns home (S_OBS -> S3_RTH) instead of thrashing to depletion.
+# Only consulted when the SafetyMonitor sends recovery-mode threat signals
+# (safety.obstacle_recovery enabled); otherwise it is inert and the agent's S_OBS
+# behaviour is byte-identical to the pre-Q2 baseline.
+_OBS_REENTRY_BUDGET = 6
+
 
 class Recorder(Protocol):
     def open(self, agent_id: int, state: AgentState, t: float) -> None: ...
@@ -105,6 +114,13 @@ class Agent:
         self._last_rth_t = -1e9
         self._swap_done = False
 
+        # Task 2.5 Q2 (stateful S_OBS recovery). Dormant unless the SafetyMonitor
+        # sends recovery-mode threat signals; all three default to the inert state
+        # so the pre-Q2 S_OBS behaviour is byte-identical when the flag is off.
+        self._obs_avoidance: Path | None = None   # validated EVADE plan from the monitor
+        self._obs_skip_leg: bool = False          # REJOIN: skip the obstructed coverage leg
+        self._obs_reentries: int = 0              # consecutive obstacle re-entries (escalation)
+
     # ------------------------------------------------------------------ #
     # setup                                                              #
     # ------------------------------------------------------------------ #
@@ -157,9 +173,15 @@ class Agent:
     def signal_failure(self) -> None:
         self._failure = True
 
-    def signal_threat(self, on: bool) -> None:
+    def signal_threat(self, on: bool, avoidance: Path | None = None,
+                      skip_leg: bool = False) -> None:
+        # The optional ``avoidance``/``skip_leg`` carry the SafetyMonitor's
+        # recovery decision (Task 2.5 Q2). With the default arguments this is the
+        # original signal exactly, so the off path is unchanged.
         if on and not self._threat and self.state.is_airborne and self.state is not AgentState.S_OBS:
             self._threat = True
+            self._obs_avoidance = avoidance
+            self._obs_skip_leg = skip_leg
         elif not on:
             self._threat = False
 
@@ -219,6 +241,10 @@ class Agent:
             self._t = 0.0
             if self.state is AgentState.S2_MISSION:
                 self._cov_idx = self._leg_idx
+                # clean coverage progress -> reset the Q2 thrash counter (guarded so
+                # it is a no-op, and thus byte-identical, when recovery is off).
+                if self._obs_reentries:
+                    self._obs_reentries = 0
 
     def _phase_done(self) -> bool:
         return self._leg_idx >= len(self._legs)
@@ -266,9 +292,23 @@ class Agent:
             self._set_legs([])
         elif dst is AgentState.S_OBS:
             self._obs_return = self.state
-            self._obs_legs_saved = (self._legs, self._leg_idx)
             self._threat = False
-            self._set_legs([self._avoidance_plan()])
+            # EVADE: prefer the monitor's obstacle-aware validated detour; fall back
+            # to the blind lateral sidestep (the only behaviour when recovery is off).
+            plan = self._obs_avoidance if self._obs_avoidance is not None else self._avoidance_plan()
+            if self._obs_skip_leg:
+                self._obs_reentries += 1
+                if self._obs_reentries > _OBS_REENTRY_BUDGET:
+                    # boxed in: abandon the region and return home (reuses the
+                    # existing S_OBS -> S3_RTH transition via obs_return_state).
+                    self._obs_return = AgentState.S3_RTH
+                    self._obs_legs_saved = None
+                    self._obs_reentries = 0
+                else:
+                    self._obs_legs_saved = (self._legs, self._leg_idx)
+            else:
+                self._obs_legs_saved = (self._legs, self._leg_idx)
+            self._set_legs([plan])
         elif dst is AgentState.S_FAIL:
             self._set_legs([])
 
@@ -278,10 +318,27 @@ class Agent:
 
         if dst in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S3_RTH) and \
                 tr.src is AgentState.S_OBS and self._obs_legs_saved is not None:
-            # resume the interrupted leg queue after avoidance
-            self._legs, self._leg_idx = self._obs_legs_saved
+            saved_legs, saved_idx = self._obs_legs_saved
+            if self._obs_skip_leg and dst is AgentState.S2_MISSION:
+                # REJOIN: do NOT re-fly the obstructed coverage leg (it caused the
+                # threat and cannot be covered anyway) -- advance past it. This is
+                # what structurally kills the S_OBS ping-pong: coverage legs are
+                # consumed monotonically, so a blocked strip is never retried.
+                self._legs = saved_legs
+                self._leg_idx = min(saved_idx + 1, len(saved_legs))
+                self._t = 0.0
+                self._cov_idx = self._leg_idx
+            else:
+                # original behaviour: resume the interrupted leg queue after avoidance
+                self._legs, self._leg_idx = saved_legs, saved_idx
             self._obs_legs_saved = None
             self._threat_cleared = False
+        # leaving avoidance: clear the Q2 sub-state (idempotent -> a no-op, hence
+        # byte-identical, when recovery is off since these are already False/None).
+        if tr.src is AgentState.S_OBS:
+            self._threat_cleared = False
+            self._obs_skip_leg = False
+            self._obs_avoidance = None
 
     def _set_legs(self, legs: list[Path]) -> None:
         self._legs = [p for p in legs if p is not None]
