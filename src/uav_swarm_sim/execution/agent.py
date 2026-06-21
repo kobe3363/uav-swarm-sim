@@ -240,9 +240,8 @@ class Agent:
             self._leg_idx += 1
             self._t = 0.0
             if self.state is AgentState.S2_MISSION:
-                self._cov_idx = self._leg_idx
-                # clean coverage progress -> reset the Q2 thrash counter (guarded so
-                # it is a no-op, and thus byte-identical, when recovery is off).
+                self._cov_idx += 1  # FIX: Increment global progress, don't overwrite with local slice index
+                # clean coverage progress -> reset the Q2 thrash counter...
                 if self._obs_reentries:
                     self._obs_reentries = 0
 
@@ -320,14 +319,11 @@ class Agent:
                 tr.src is AgentState.S_OBS and self._obs_legs_saved is not None:
             saved_legs, saved_idx = self._obs_legs_saved
             if self._obs_skip_leg and dst is AgentState.S2_MISSION:
-                # REJOIN: do NOT re-fly the obstructed coverage leg (it caused the
-                # threat and cannot be covered anyway) -- advance past it. This is
-                # what structurally kills the S_OBS ping-pong: coverage legs are
-                # consumed monotonically, so a blocked strip is never retried.
+                # REJOIN: do NOT re-fly the obstructed coverage leg...
                 self._legs = saved_legs
                 self._leg_idx = min(saved_idx + 1, len(saved_legs))
                 self._t = 0.0
-                self._cov_idx = self._leg_idx
+                self._cov_idx += 1  # FIX: Increment global progress to bypass obstructed leg
             else:
                 # original behaviour: resume the interrupted leg queue after avoidance
                 self._legs, self._leg_idx = saved_legs, saved_idx
