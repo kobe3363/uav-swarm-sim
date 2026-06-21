@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 
+from scipy.spatial import KDTree
 from shapely.geometry import Point, Polygon
 
 from ..infrastructure.config import SafetyConfig
@@ -61,11 +62,15 @@ class SafetyMonitor:
         airborne = [a for a in agents if a.state.is_airborne and a.state.name != "S_OBS"]
         preds = {a.id: self._predicted_poses(a) for a in airborne}
         recovery = bool(getattr(self._cfg, "obstacle_recovery", False))
+        # Predicted intra-layer separation conflicts, resolved ONCE per tick with
+        # a KDTree neighbour query instead of the per-agent O(n^2) pairwise scan
+        # (Batch 3). Byte-identical to the former loop -- see _separation_yielders.
+        sep_yielders = self._separation_yielders(airborne, preds)
 
         for a in airborne:
             if t < self._cooldown_until.get(a.id, -1.0):
                 continue  # recently avoided -> let it fly before re-checking
-            threat = self._threatened(a, airborne, preds)
+            threat = self._threatened(a, airborne, preds, sep_yielders)
             if threat:
                 # Task 2.5 Q2 (gated): for a genuine OBSTACLE threat, hand the agent
                 # an obstacle-validated detour and tell it to skip the obstructed
@@ -90,26 +95,20 @@ class SafetyMonitor:
                 return True
         return False
 
-    def _threatened(self, a, airborne, preds) -> bool:
+    def _threatened(self, a, airborne, preds, sep_yielders) -> bool:
         # Inter-drone conflicts during formation phases (transit/RTH) are governed
         # by the FormationManager (spacing), not collision avoidance -- ignore them
         # here to avoid launch/return thrashing.
         a_formation = a.state in (AgentState.S1_TRANSIT, AgentState.S3_RTH)
         a_layer = getattr(a, "layer", 0)
 
-        # pairwise predicted separation (lower-id yields), skipped if both formation
-        # or on different layers (vertically separated -> cannot collide).
-        if not a_formation:
-            for b in airborne:
-                if b.id <= a.id:
-                    continue
-                if getattr(b, "layer", 0) != a_layer:
-                    continue
-                if b.state in (AgentState.S1_TRANSIT, AgentState.S3_RTH):
-                    continue
-                for pa, pb in zip(preds[a.id], preds[b.id]):
-                    if math.dist(pa.as_xy(), pb.as_xy()) < self._cfg.min_separation_m:
-                        return True
+        # pairwise predicted separation (lower-id yields). The conflict set is
+        # computed once per tick in _separation_yielders (KDTree); membership here
+        # is exactly equivalent to the former inline O(n^2) pairwise scan -- the
+        # non-formation set, same-layer, time-aligned, strict-min_sep rule are all
+        # encoded in that set, so a formation-phase drone is never a member.
+        if a.id in sep_yielders:
+            return True
 
         # genuine obstacle penetration on THIS agent's layer (raw obstacle
         # polygons; not boundary/buffer)
@@ -128,6 +127,58 @@ class SafetyMonitor:
                     if wake.covers(Point(p.as_xy())):
                         return True
         return False
+
+    def _separation_yielders(self, airborne, preds) -> set[int]:
+        """Drones that must yield this tick for predicted intra-layer separation.
+
+        Computed once per tick with a per-layer, per-predicted-timestep KDTree
+        neighbour query, replacing the former per-agent O(n^2) pairwise loop. The
+        result is byte-identical to that loop, by construction:
+
+          * only NON-formation drones participate (formation/transit drones are
+            spaced by the FormationManager); ``airborne`` already excludes S_OBS,
+            so the participant set is exactly the S1/S3-excluded remainder;
+          * only same-LAYER drones are compared (different layers are vertically
+            separated and cannot collide);
+          * poses are compared at the SAME predicted timestep (the old ``zip`` of
+            the two pose lists) -- an agent whose prediction is shorter than k (a
+            spent leg collapses to a single pose) drops out at step k, matching
+            ``zip``'s truncation;
+          * ``query_pairs(min_sep)`` returns candidate pairs within the radius
+            (distance <= min_sep); each is then confirmed with the EXACT original
+            strict ``math.dist < min_sep`` test, so the boundary is identical;
+          * for each confirmed pair the LOWER-id drone yields (the old
+            ``b.id <= a.id: continue`` direction).
+        """
+        sep = self._cfg.min_separation_m
+        participants = [
+            a for a in airborne
+            if a.state not in (AgentState.S1_TRANSIT, AgentState.S3_RTH)
+        ]
+        by_layer: dict[int, list] = {}
+        for a in participants:
+            by_layer.setdefault(getattr(a, "layer", 0), []).append(a)
+
+        yielders: set[int] = set()
+        for group in by_layer.values():
+            if len(group) < 2:
+                continue
+            max_k = max(len(preds[a.id]) for a in group)
+            for k in range(max_k):
+                pts: list[tuple[float, float]] = []
+                ids: list[int] = []
+                for a in group:
+                    pa = preds[a.id]
+                    if len(pa) > k:
+                        pts.append(pa[k].as_xy())
+                        ids.append(a.id)
+                if len(pts) < 2:
+                    continue
+                tree = KDTree(pts)
+                for i, j in tree.query_pairs(sep):
+                    if math.dist(pts[i], pts[j]) < sep:
+                        yielders.add(ids[i] if ids[i] < ids[j] else ids[j])
+        return yielders
 
     def avoidance_plan(self, agent, env=None) -> Path:
         """An obstacle-VALIDATED lateral detour (Task 2.5 Q2). Tries increasing

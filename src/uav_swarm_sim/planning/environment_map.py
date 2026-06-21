@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import shapely
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.ops import unary_union
 
@@ -51,6 +52,20 @@ class EnvironmentMap:
             self.free_space: Polygon = area.difference(self._obstacles_union)
         else:
             self.free_space = area
+        # Prepared-geometry acceleration (Batch 3b): cache GEOS's internal STR
+        # index on these FIXED geometries so the many point-in-polygon (covers)
+        # and segment-intersection queries the SafetyMonitor and trajectory
+        # validators issue are pruned by bounding box instead of scanning every
+        # boundary segment. This is purely an index -- every predicate RESULT is
+        # byte-identical. Note ``intersects`` consults only the *receiver's*
+        # index, so the segment tests below are written ``union.intersects(line)``
+        # (prepared receiver) rather than ``line.intersects(union)``.
+        if self._raw_union is not None:
+            shapely.prepare(self._raw_union)
+        if self._obstacles_union is not None:
+            shapely.prepare(self._obstacles_union)
+        shapely.prepare(self.free_space)
+        shapely.prepare(self.area)
 
     # --- queries ----------------------------------------------------------- #
     def clearance(self, p: tuple[float, float]) -> float:
@@ -107,13 +122,13 @@ class EnvironmentMap:
         """
         if self._raw_union is None:
             return False
-        return LineString([a.as_xy(), b.as_xy()]).intersects(self._raw_union)
+        return self._raw_union.intersects(LineString([a.as_xy(), b.as_xy()]))
 
     def segment_clear(self, a: Pose, b: Pose) -> bool:
         line = LineString([a.as_xy(), b.as_xy()])
         if not self.area.covers(line):
             return False
-        return self._obstacles_union is None or not line.intersects(self._obstacles_union)
+        return self._obstacles_union is None or not self._obstacles_union.intersects(line)
 
     def first_obstruction(self, path: Path, step_m: float = 2.0) -> float | None:
         """Approximate arc-length (m) of the first point on ``path`` that leaves

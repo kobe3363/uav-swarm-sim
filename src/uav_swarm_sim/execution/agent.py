@@ -24,6 +24,8 @@ from __future__ import annotations
 import math
 from typing import Protocol
 
+from scipy.fftpack import dst
+
 from ..infrastructure.core_types import (
     CoveragePlan,
     DroneStateView,
@@ -110,7 +112,8 @@ class Agent:
         self._threat_cleared = False
         self._coverage_complete = False
         self._obs_return = AgentState.S1_TRANSIT
-        self._obs_legs_saved: tuple[list[Path], int] | None = None
+        # FIX: Add float to the tuple to hold _t
+        self._obs_legs_saved: tuple[list[Path], int, float] | None = None
         self._last_rth_t = -1e9
         self._swap_done = False
 
@@ -292,21 +295,21 @@ class Agent:
         elif dst is AgentState.S_OBS:
             self._obs_return = self.state
             self._threat = False
-            # EVADE: prefer the monitor's obstacle-aware validated detour; fall back
-            # to the blind lateral sidestep (the only behaviour when recovery is off).
+            # EVADE: prefer the monitor's obstacle-aware validated detour...
             plan = self._obs_avoidance if self._obs_avoidance is not None else self._avoidance_plan()
             if self._obs_skip_leg:
                 self._obs_reentries += 1
                 if self._obs_reentries > _OBS_REENTRY_BUDGET:
-                    # boxed in: abandon the region and return home (reuses the
-                    # existing S_OBS -> S3_RTH transition via obs_return_state).
+                    # boxed in: abandon the region and return home...
                     self._obs_return = AgentState.S3_RTH
                     self._obs_legs_saved = None
                     self._obs_reentries = 0
                 else:
-                    self._obs_legs_saved = (self._legs, self._leg_idx)
+                    # FIX: Save self._t
+                    self._obs_legs_saved = (self._legs, self._leg_idx, self._t) 
             else:
-                self._obs_legs_saved = (self._legs, self._leg_idx)
+                # FIX: Save self._t
+                self._obs_legs_saved = (self._legs, self._leg_idx, self._t)
             self._set_legs([plan])
         elif dst is AgentState.S_FAIL:
             self._set_legs([])
@@ -317,16 +320,18 @@ class Agent:
 
         if dst in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S3_RTH) and \
                 tr.src is AgentState.S_OBS and self._obs_legs_saved is not None:
-            saved_legs, saved_idx = self._obs_legs_saved
+            # FIX: Unpack saved_t
+            saved_legs, saved_idx, saved_t = self._obs_legs_saved 
             if self._obs_skip_leg and dst is AgentState.S2_MISSION:
                 # REJOIN: do NOT re-fly the obstructed coverage leg...
                 self._legs = saved_legs
                 self._leg_idx = min(saved_idx + 1, len(saved_legs))
                 self._t = 0.0
-                self._cov_idx += 1  # FIX: Increment global progress to bypass obstructed leg
+                self._cov_idx += 1
             else:
                 # original behaviour: resume the interrupted leg queue after avoidance
                 self._legs, self._leg_idx = saved_legs, saved_idx
+                self._t = saved_t  # FIX: Restore the exact time progress!
             self._obs_legs_saved = None
             self._threat_cleared = False
         # leaving avoidance: clear the Q2 sub-state (idempotent -> a no-op, hence

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import matplotlib
 
+from shapely.geometry import MultiPolygon, GeometryCollection
+
 matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -57,14 +59,31 @@ def plot_partition(env, partition, launch, out: Path) -> Path:
     fig, ax = plt.subplots(figsize=(8, 6))
     xs, ys = env.area.exterior.xy
     ax.plot(xs, ys, color="black", lw=1.0)
+    
     for i, (did, zone) in enumerate(sorted(partition.zones.items())):
-        _poly_patches(ax, zone.polygon, color=_ZONE_CMAP(i % 20), alpha=0.55)
+        color = _ZONE_CMAP(i % 20)
+        geom = zone.polygon
+        
+        # --- FIX: Handle geometry fractured by obstacle subtraction ---
+        if getattr(geom, "geom_type", "") in ("MultiPolygon", "GeometryCollection"):
+            # Unpack the fractured pieces and plot them individually
+            for poly in geom.geoms:
+                if poly.geom_type == "Polygon":
+                    _poly_patches(ax, poly, color=color, alpha=0.55)
+        else:
+            # Standard single Polygon handling
+            _poly_patches(ax, geom, color=color, alpha=0.55)
+        # --------------------------------------------------------------
+        
         ax.plot(zone.entry_pose.x, zone.entry_pose.y, "o", color="black", ms=3)
+        
     for o in env.obstacles:
         _poly_patches(ax, o.polygon, color="#444444", alpha=0.9)
+        
     if launch is not None:
         ax.plot(launch.x, launch.y, "*", color="red", ms=16, label="launch")
         ax.legend(loc="upper right")
+        
     ax.set_aspect("equal")
     ax.set_title(f"Partition ({partition.algo.value})")
     return _save(fig, out)
