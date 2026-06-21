@@ -130,6 +130,14 @@ class SafetyConfig:
     min_separation_m: float
     obstacle_buffer_m: float
     predict_horizon_s: float
+    # Task 2.5 Q2: when true, the SafetyMonitor sends recovery-mode threat
+    # signals (validated detour + obstructed-leg skip + boxed-in escalation),
+    # activating the stateful S_OBS recovery in Agent that prevents the
+    # obstacle-avoidance limit cycle. Defaults false so any config that does
+    # not set it is byte-identical to the pre-Q2 behaviour and its provenance
+    # hash is unchanged (the hash is taken over the raw YAML, which is absent
+    # this key unless explicitly added).
+    obstacle_recovery: bool = False
 
 
 @dataclass(frozen=True)
@@ -426,6 +434,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         min_separation_m=float(_require(sf, "min_separation_m", "safety")),
         obstacle_buffer_m=float(_require(sf, "obstacle_buffer_m", "safety")),
         predict_horizon_s=float(_require(sf, "predict_horizon_s", "safety")),
+        obstacle_recovery=bool(sf.get("obstacle_recovery", False)),
     )
     rt = _require(raw, "rth", "")
     rth = RTHConfig(

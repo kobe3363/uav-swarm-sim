@@ -206,6 +206,7 @@ safety:
   min_separation_m: 10.0
   obstacle_buffer_m: 5.0
   predict_horizon_s: 5.0      # proactive monitoring lookahead
+  obstacle_recovery: true     # Task 2.5 Q2: skip obstructed coverage legs + boxed-in RTH (prevents S_OBS thrashing)
 
 rth:
   check_interval_s: 5.0
