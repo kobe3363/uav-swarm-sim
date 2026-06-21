@@ -525,12 +525,21 @@ class SimulationEngine:
                 else:
                     visited += min(len(tgts), 1 + a._cov_idx)
             return min(1.0, visited / total)
+            
+        # AREA COVERAGE
         total = self.partition.total_area_m2
         if total <= 0:
             return 1.0
         covered = 0.0
         for aid, zone in self.partition.zones.items():
             a = self.fleet.agents.get(aid)
-            if a is not None and a._cov_idx >= len(a._cov_legs):
-                covered += zone.area_m2
+            if a is not None:
+                if len(a._cov_legs) > 0:
+                    # FIX: Give partial coverage credit based on legs completed
+                    fraction_done = min(1.0, a._cov_idx / len(a._cov_legs))
+                    covered += fraction_done * zone.area_m2
+                elif a._cov_idx >= len(a._cov_legs):
+                    # Fallback for empty leg plans
+                    covered += zone.area_m2
+                    
         return min(1.0, covered / total)
