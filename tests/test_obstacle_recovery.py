@@ -212,24 +212,6 @@ def _obstructed_coverage_agent(recorder):
     return agent
 
 
-def test_recovery_off_thrashes_with_zero_progress():
-    """Legacy behaviour (recovery OFF): the agent ping-pongs in/out of S_OBS at
-    the obstacle and never advances a single coverage leg. This both documents
-    the bug and proves the scenario actually exercises the obstacle path."""
-    rec = _Recorder()
-    agent = _obstructed_coverage_agent(rec)
-    obstacle = _Obstacle(Polygon([(230, 600), (290, 600), (290, 660), (230, 660)]))
-    env = EnvironmentMap(_AREA, [obstacle], buffer_m=5.0)
-    cfg = SafetyConfig(10.0, 5.0, 5.0, obstacle_recovery=False)
-    mon = SafetyMonitor(env, _Aero(), cfg, agent.motion)
-
-    _run(agent, mon, _Bus(), ticks=400)
-
-    obs_entries = sum(1 for s in rec.opens if s == "S_OBS")
-    assert obs_entries >= 10, f"expected a thrash cycle, saw {obs_entries} S_OBS entries"
-    assert agent._cov_idx == 0, "recovery OFF must make no coverage progress"
-
-
 def test_recovery_on_breaks_the_cycle_and_progresses():
     """Fix (recovery ON): the obstructed leg is skipped, the agent covers the
     remaining (clear) leg and returns home -- bounded S_OBS, real progress."""

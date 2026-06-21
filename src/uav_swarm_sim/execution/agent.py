@@ -231,7 +231,7 @@ class Agent:
         e = self.em.segment_energy(man, dt, f)
         self.battery.drain(e)
         self.energy_consumed_j += e
-        new_pose, new_t = self.motion.advance(leg, self._t, dt)
+        new_pose, new_t = self.motion.advance(leg, self._t, dt, current_pose=self.pose)
         if new_pose is not None:
             # 2.5D path length: measure displacement in 3D so an executed
             # altitude change counts. Flight is in the z=0 plane today, so this

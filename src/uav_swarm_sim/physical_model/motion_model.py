@@ -58,14 +58,49 @@ class MotionModel(ABC):
             return descent_path(self._spec, dz, start) if dz > 0 else Path(())
         return None
 
-    def advance(self, path: Path, t_elapsed: float, dt: float) -> tuple[Pose | None, float]:
+    def advance(self, path: Path, t_elapsed: float, dt: float, current_pose: Pose | None = None) -> tuple[Pose | None, float]:
         """Advance a path by time. Returns (new pose, new elapsed time).
-
-        Time-based (not arc-length) so holonomic in-place rotations progress
-        correctly. The agent owns ``t_elapsed`` per active path.
+        
+        If current_pose is provided, the model smoothly converges back to the 
+        mathematical path rather than teleporting (preventing 'teleport loops' 
+        when returning from off-path avoidance maneuvers).
         """
         new_t = min(t_elapsed + dt, path.total_duration_s)
-        return path.pose_at_time(new_t), new_t
+        ideal_new_pose = path.pose_at_time(new_t)
+        
+        # If no current position is given, or the path is finished, fall back to pure math
+        if current_pose is None or ideal_new_pose is None:
+            return ideal_new_pose, new_t
+            
+        ideal_old_pose = path.pose_at_time(t_elapsed)
+        if ideal_old_pose is None:
+            return ideal_new_pose, new_t
+
+        # 1. Compute how far the ideal path moved in this dt
+        ideal_dx = ideal_new_pose.x - ideal_old_pose.x
+        ideal_dy = ideal_new_pose.y - ideal_old_pose.y
+        ideal_step = math.hypot(ideal_dx, ideal_dy)
+        
+        # Give a minimum fallback speed if the ideal path is stationary (e.g., hovering/turning)
+        max_dist = max(ideal_step, 6.0 * dt) 
+        
+        # 2. Vector from our ACTUAL physical position to the IDEAL new position
+        err_dx = ideal_new_pose.x - current_pose.x
+        err_dy = ideal_new_pose.y - current_pose.y
+        dist_to_ideal = math.hypot(err_dx, err_dy)
+        
+        # 3. If we are physically very close to the ideal line, snap to it to avoid micro-drifting
+        if dist_to_ideal < 0.1:
+            return ideal_new_pose, new_t
+            
+        # 4. Otherwise, fly towards the ideal target, bounded by the max distance we can travel
+        move_frac = min(1.0, max_dist / dist_to_ideal)
+        
+        new_x = current_pose.x + err_dx * move_frac
+        new_y = current_pose.y + err_dy * move_frac
+        
+        # Return the physically integrated position, matching the ideal path's heading and altitude
+        return Pose(new_x, new_y, ideal_new_pose.heading, ideal_new_pose.z), new_t
 
     def straight_leg(self, start: Pose, goal: Pose, maneuver: ManeuverType) -> Path:
         """A pure straight chord ``start -> goal`` at the maneuver speed, IGNORING
