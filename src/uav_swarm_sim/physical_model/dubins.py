@@ -96,7 +96,7 @@ def _lrl(a: float, b: float, d: float) -> _Word | None:
         return None
     p = mod2pi(2 * math.pi - math.acos(tmp))
     t = mod2pi(-a + math.atan2(-ca + cb, d + sa - sb) + p / 2.0)
-    q = mod2pi(mod2pi(b) - a + 2 * math.pi * 0 - t + p)
+    q = mod2pi(mod2pi(b) - a - t + p)
     return _Word(t, p, q, ("L", "R", "L"))
 
 
@@ -149,17 +149,25 @@ def _endpoint_ok(segs: list[PathSegment], goal: Pose, r_min: float) -> bool:
 
 
 def _best_word(start: Pose, goal: Pose, r_min: float) -> _Word | None:
+    # Validation is SEPARATED from selection: every candidate word is
+    # reconstructed and endpoint-checked FIRST, then the shortest of the
+    # *validated* words is kept. The previous form nested the reconstruction
+    # check inside the ``w.length_norm < best.length_norm`` branch, conflating
+    # "is this shorter than the incumbent" with "should this be validated";
+    # validating up front makes the planner correct by construction (it cannot
+    # depend on iteration order or on an incumbent for which words get checked).
     alpha, beta, d = _normalized_inputs(start, goal, r_min)
     best: _Word | None = None
     for fn in _WORD_FNS:
         w = fn(alpha, beta, d)
         if w is None:
             continue
+        # verify by reconstruction before considering for selection
+        segs = _segments_for_word(start, w, r_min, 1.0, ManeuverType.CRUISE)
+        if not _endpoint_ok(segs, goal, r_min):
+            continue
         if best is None or w.length_norm < best.length_norm:
-            # verify by reconstruction before accepting
-            segs = _segments_for_word(start, w, r_min, 1.0, ManeuverType.CRUISE)
-            if _endpoint_ok(segs, goal, r_min):
-                best = w
+            best = w
     return best
 
 

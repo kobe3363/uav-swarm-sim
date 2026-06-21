@@ -91,6 +91,24 @@ class EnvironmentMap:
             return False
         return self._raw_union.covers(Point(p))
 
+    def segment_in_obstacle(self, a: Pose, b: Pose) -> bool:
+        """True iff the straight segment a->b crosses any RAW obstacle polygon
+        (unbuffered). Exact Shapely-segment intersection -- the segment analogue
+        of ``in_obstacle`` -- replacing point-sampling that can tunnel straight
+        through an obstacle thinner than the sample spacing.
+
+        Deliberately tested against the RAW union (like ``in_obstacle``), NOT the
+        buffered union: this is the 'genuine penetration' predicate, used by the
+        SafetyMonitor to validate that an evasive detour does not itself fly into
+        an obstacle. ``segment_clear`` (buffered + must-stay-in-area) is the
+        strictly stronger clearance predicate used for trajectory validation;
+        the two are intentionally distinct, mirroring the ``in_obstacle`` /
+        ``contains`` split above.
+        """
+        if self._raw_union is None:
+            return False
+        return LineString([a.as_xy(), b.as_xy()]).intersects(self._raw_union)
+
     def segment_clear(self, a: Pose, b: Pose) -> bool:
         line = LineString([a.as_xy(), b.as_xy()])
         if not self.area.covers(line):

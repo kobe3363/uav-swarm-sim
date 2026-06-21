@@ -154,10 +154,13 @@ class SafetyMonitor:
                     agent.pose.y + base * ly + base * fy, h)
         return self._motion.plan(agent.pose, side, ManeuverType.CRUISE)
 
-    def _chord_clear(self, a: Pose, b: Pose, env, n: int = 8) -> bool:
-        for k in range(n + 1):
-            x = a.x + (b.x - a.x) * k / n
-            y = a.y + (b.y - a.y) * k / n
-            if env.in_obstacle((x, y)):
-                return False
-        return True
+    def _chord_clear(self, a: Pose, b: Pose, env) -> bool:
+        """True iff the straight chord a->b does not cross any RAW obstacle on
+        the agent's layer. Exact Shapely-segment test (``segment_in_obstacle``)
+        replacing the former 9-point sampling, which could tunnel straight
+        through a wall thinner than the sample spacing -- accepting a detour that
+        in fact flies into the obstacle. Raw (unbuffered) to stay consistent with
+        the ``in_obstacle`` penetration trigger this detour resolves. Reached only
+        via ``avoidance_plan`` under recovery mode, so the default path is
+        unaffected."""
+        return not env.segment_in_obstacle(a, b)
