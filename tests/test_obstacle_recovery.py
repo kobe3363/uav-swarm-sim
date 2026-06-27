@@ -67,7 +67,12 @@ class _Motion:
         v = _SPEED.get(maneuver, 12.0) or 12.0
         return Path.from_segments([straight_segment(Pose(a.x, a.y, h, a.z), d, maneuver, v)])
 
-    def advance(self, leg: Path, t: float, dt: float):
+    def advance(self, leg: Path, t: float, dt: float, current_pose: Pose | None = None):
+        # Mirrors the real MotionModel.advance fallback (current_pose=None): pure
+        # path-following. The smooth-convergence branch added in production is
+        # real-motion physics, deliberately out of scope for these control-logic
+        # doubles -- and a no-op here anyway, since this double never drifts off
+        # the ideal path, so current_pose would always equal the ideal pose.
         new_t = min(t + dt, leg.total_duration_s)
         return leg.pose_at_time(new_t), new_t
 
