@@ -58,30 +58,48 @@ def plot_environment(env, gvg, out: Path) -> Path:
 def plot_partition(env, partition, launch, out: Path) -> Path:
     fig, ax = plt.subplots(figsize=(8, 6))
     xs, ys = env.area.exterior.xy
-    ax.plot(xs, ys, color="black", lw=1.0)
+    
+    # Thicker outer environment boundary
+    ax.plot(xs, ys, color="black", lw=1.5, zorder=10)
+    
+    # Use tab10 for high contrast (no light/dark variations of the same color)
+    cmap = plt.get_cmap("tab10")
     
     for i, (did, zone) in enumerate(sorted(partition.zones.items())):
-        color = _ZONE_CMAP(i % 20)
+        color = cmap(i % 10)
         geom = zone.polygon
         
-        # --- FIX: Handle geometry fractured by obstacle subtraction ---
+        # Helper to draw both the colored fill and a distinct cell boundary
+        def _draw_poly(p):
+            if p.is_empty:
+                return
+            px, py = p.exterior.xy
+            # Fill the interior
+            ax.fill(px, py, color=color, alpha=0.5)
+            # Draw a distinct dashed border around this specific drone's cell
+            ax.plot(px, py, color="black", lw=0.8, ls="--")
+        
+        # Handle geometry fractured by obstacle subtraction
         if getattr(geom, "geom_type", "") in ("MultiPolygon", "GeometryCollection"):
-            # Unpack the fractured pieces and plot them individually
             for poly in geom.geoms:
                 if poly.geom_type == "Polygon":
-                    _poly_patches(ax, poly, color=color, alpha=0.55)
-        else:
-            # Standard single Polygon handling
-            _poly_patches(ax, geom, color=color, alpha=0.55)
-        # --------------------------------------------------------------
-        
-        ax.plot(zone.entry_pose.x, zone.entry_pose.y, "o", color="black", ms=3)
+                    _draw_poly(poly)
+        elif getattr(geom, "geom_type", "") == "Polygon":
+            _draw_poly(geom)
+            
+        # Draw the entry point and label the drone ID in the center of its zone
+        if not geom.is_empty:
+            cx, cy = geom.centroid.x, geom.centroid.y
+            ax.text(cx, cy, f"D{did}", fontsize=10, ha='center', va='center', 
+                    fontweight='bold', color='black', zorder=6)
+            ax.plot(zone.entry_pose.x, zone.entry_pose.y, "o", 
+                    markerfacecolor=color, markeredgecolor="black", ms=6, zorder=5)
         
     for o in env.obstacles:
         _poly_patches(ax, o.polygon, color="#444444", alpha=0.9)
         
     if launch is not None:
-        ax.plot(launch.x, launch.y, "*", color="red", ms=16, label="launch")
+        ax.plot(launch.x, launch.y, "*", color="red", ms=16, label="launch", zorder=20)
         ax.legend(loc="upper right")
         
     ax.set_aspect("equal")
