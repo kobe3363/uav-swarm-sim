@@ -131,31 +131,28 @@ class SimulationOutput:
     """One simulation's folder within a run; owns plan.json, results.json, and
     all of that simulation's artifacts (png/gif/gpx)."""
 
-    def __init__(self, name: str, directory: Path, run_id: str, run_name: str) -> None:
-        self.name = name
-        self.id = uuid4().hex[:12]
-        self.dir = directory
-        self.run_id = run_id
-        self.run_name = run_name
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self.config_hash: str | None = None
-        self.status: str = "created"
+def __init__(self, name: str, directory: Path, run_id: str, run_name: str) -> None:
+    self.name = name
+    self.id = uuid4().hex[:12]
+    self.created_at = _now_utc_iso()
+    self.dir = directory
+    self.run_id = run_id
+    self.run_name = run_name
+    self.dir.mkdir(parents=True, exist_ok=True)
+    self.config_hash: str | None = None
+    self.status: str = "created"
 
-    def path(self, filename: str) -> Path:
-        """Absolute path for an artifact (figure/gif/gpx) inside this folder."""
-        return self.dir / filename
-
-    def identity(self, config_hash: str | None = None) -> dict:
-        if config_hash is not None:
-            self.config_hash = config_hash
-        return {
-            "run_id": self.run_id,
-            "run_name": self.run_name,
-            "simulation_id": self.id,
-            "simulation_name": self.name,
-            "config_hash": self.config_hash,
-            "created_at": _now_utc_iso(),
-        }
+def identity(self, config_hash: str | None = None) -> dict:
+    if config_hash is not None:
+        self.config_hash = config_hash
+    return {
+        "run_id": self.run_id,
+        "run_name": self.run_name,
+        "simulation_id": self.id,
+        "simulation_name": self.name,
+        "config_hash": self.config_hash,
+        "created_at": self.created_at,
+    }
 
     def write_plan(self, plan: dict) -> Path:
         self.config_hash = plan.get("identity", {}).get("config_hash", self.config_hash)
