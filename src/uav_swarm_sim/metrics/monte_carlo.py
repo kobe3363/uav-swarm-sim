@@ -90,18 +90,25 @@ def run(run_once: Callable[[int], SingleRunResult], mc_cfg: MCConfig) -> MCResul
 
 
 def single_run_from_history(
-    history, close_failure_loop: bool = True, failure_repair_s: float = 600.0
+    history, close_failure_loop: bool = True, failure_repair_s: float = 600.0,
+    *, metrics=None, outcome=None, aborted: bool = False,
 ) -> SingleRunResult:
-    """Adapter: history -> SMDP estimate -> stationary pi -> efficiency.
+    """Adapter: history -> SMDP estimate -> stationary pi -> efficiency -> SingleRunResult.
 
-    Used by the Batch-6 engine wrapper and by tests. Returns an aborted result
-    (efficiency NaN) if the chain is not ergodic.
+    The single source of truth for turning one mission's history into a
+    SingleRunResult (used by the comparison runner and by tests). Returns an
+    aborted result (efficiency NaN) if the chain is not ergodic; otherwise
+    threads the caller's mission-level ``aborted`` flag through (SMDP-only
+    callers leave it False). ``metrics`` and ``outcome``, when supplied, are
+    attached for downstream aggregation (per-metric stats, mission-outcome
+    counts).
     """
     est = estimate(history, close_failure_loop, failure_repair_s)
     try:
         _, pi_time = stationary(est)
     except ValueError:
-        return SingleRunResult(est.states, {}, float("nan"), aborted=True)
+        return SingleRunResult(est.states, {}, float("nan"), metrics=metrics,
+                               aborted=True, outcome=outcome)
     pi_map = {s: float(pi_time[i]) for i, s in enumerate(est.states)}
-    eff = efficiency(pi_time, est.states)
-    return SingleRunResult(est.states, pi_map, eff)
+    return SingleRunResult(est.states, pi_map, efficiency(pi_time, est.states),
+                           metrics=metrics, aborted=aborted, outcome=outcome)

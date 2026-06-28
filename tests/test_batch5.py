@@ -197,6 +197,18 @@ def test_single_run_from_history_roundtrip():
     assert r.efficiency > 0
 
 
+def test_single_run_from_history_threads_metrics_outcome_and_aborted():
+    # the comparison runner relies on this helper attaching the mission-level
+    # metrics/outcome and threading its abort flag even when the chain IS ergodic
+    h = _cyclic_history(25, {S.S0_IDLE: 1, S.S1_TRANSIT: 1, S.S2_MISSION: 10, S.S3_RTH: 1, S.S_SWAP: 1})
+    sentinel_metrics = object()
+    r = single_run_from_history(h, metrics=sentinel_metrics, outcome="MISSION_SUCCESS", aborted=True)
+    assert r.efficiency > 0                 # ergodic -> real efficiency computed
+    assert r.metrics is sentinel_metrics    # metrics attached
+    assert r.outcome == "MISSION_SUCCESS"   # outcome attached
+    assert r.aborted is True                # caller's flag threaded through (not forced False)
+
+
 # --------------------------------------------------------------------------- #
 # validation verdicts                                                         #
 # --------------------------------------------------------------------------- #
