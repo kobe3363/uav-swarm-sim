@@ -63,10 +63,20 @@ def _variant(cfg, rng, label, algo, planner) -> VariantResult:
     return vr
 
 
+# The headline decomposition comparison peers (paired-seed, identical pipeline):
+# three position-based baselines vs. the battery-weighted contribution. Named
+# here as the single source of truth for "what gets compared".
+DECOMPOSITION_PEERS: tuple[DecompositionAlgo, ...] = (
+    DecompositionAlgo.CLASSIC_VORONOI,   # Euclidean Voronoi    (position-based)
+    DecompositionAlgo.KMEANS,            # position k-means     (position-based)
+    DecompositionAlgo.TGC_BASIC,         # unweighted TGC       (position-based)
+    DecompositionAlgo.WEIGHTED_VORONOI,  # battery-weighted TGC (the contribution)
+)
+
+
 def compare_decomposition(cfg: Config, rng: RngFactory) -> list[VariantResult]:
     out = []
-    for algo in (DecompositionAlgo.CLASSIC_VORONOI, DecompositionAlgo.TGC_BASIC,
-                 DecompositionAlgo.WEIGHTED_VORONOI):
+    for algo in DECOMPOSITION_PEERS:
         out.append(_variant(cfg, rng, algo.value, algo, PlannerKind.DUBINS))
     return out
 
@@ -82,8 +92,12 @@ def compare_tiers(cfg: Config, n_values: list[int], rng: RngFactory) -> dict[int
     out: dict[int, list[VariantResult]] = {}
     for n in n_values:
         cfg_n = _with_override(cfg, n)
+        # the thesis tier question is heuristic (k-means) vs. the weighted TGC
+        # contribution; run both per n on paired seeds so the per-scale gap is
+        # attributable to the algorithm.
         out[n] = [
             _variant(cfg_n, rng, f"n={n} weighted", DecompositionAlgo.WEIGHTED_VORONOI, PlannerKind.DUBINS),
+            _variant(cfg_n, rng, f"n={n} kmeans", DecompositionAlgo.KMEANS, PlannerKind.DUBINS),
         ]
     return out
 

@@ -1,10 +1,20 @@
-"""The <=15-drone tier -- C. Liu's coupled heuristic.
+"""Coupled k-means decomposition: a first-class comparison peer AND the
+<=15-drone tier heuristic (C. Liu's coupled allocation).
 
 K-means clustering of the work (area-weighted) with greedy drone-to-cluster
 assignment on a motion cost matrix (Dubins flyable length for FW/VTOL, Euclidean
 for multirotor). Trajectory shape is therefore considered already at allocation
-time. ``weighted=True`` uses capacity-constrained clustering whose target mass is
-proportional to battery level (the heuristic-tier mirror of the central weighting).
+time.
+
+The ``weighted`` flag selects the instance's identity (see ``name``):
+  * ``weighted=False`` -> ``DecompositionAlgo.KMEANS``: the POSITION-based
+    baseline (clusters by spatial position only), a peer of the Euclidean
+    Voronoi baseline in the headline comparison against the battery-weighted
+    contribution.
+  * ``weighted=True``  -> ``DecompositionAlgo.WEIGHTED_VORONOI``: capacity-
+    constrained clustering whose target mass is proportional to battery level --
+    the heuristic-tier mirror of the central weighting, used by the small-swarm
+    tier selector.
 """
 from __future__ import annotations
 
@@ -27,13 +37,18 @@ from .tgc import TGCGraph
 
 
 class KMeansHeuristicDecomposer(Decomposer):
-    name = DecompositionAlgo.WEIGHTED_VORONOI  # heuristic realization of the weighted partition
-
     def __init__(self, motion: MotionModel, weighted: bool, rng: np.random.Generator, iters: int = 50) -> None:
         self._motion = motion
         self._weighted = weighted
         self._rng = rng
         self._iters = iters
+        # First-class identity reflects what this instance actually computes:
+        # weighted=False is the position-based k-means BASELINE (a thesis
+        # comparison peer); weighted=True is the heuristic-tier realization of
+        # the battery-weighted partition (used by the <=15-drone tier selector).
+        self.name = (
+            DecompositionAlgo.WEIGHTED_VORONOI if weighted else DecompositionAlgo.KMEANS
+        )
 
     def decompose(
         self,
@@ -71,7 +86,7 @@ class KMeansHeuristicDecomposer(Decomposer):
             geoms = [w.geom for w in assigned[d.id]]
             regions = [tgc_by_id.get(w.id) or Region(w.id, w.geom, w.area, w.anchor) for w in assigned[d.id]]
             zones[d.id] = build_zone(d.id, regions, geoms, d.pose)
-        return Partition(DecompositionAlgo.WEIGHTED_VORONOI, zones, time.perf_counter() - t0)
+        return Partition(self.name, zones, time.perf_counter() - t0)
 
     # ---- k-means ---------------------------------------------------------- #
     def _kmeans(self, pts, mass, k, drones):
