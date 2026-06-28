@@ -30,6 +30,7 @@ class SingleRunResult:
     efficiency: float
     metrics: object | None = None
     aborted: bool = False
+    outcome: object | None = None  # Outcome enum (mission terminal outcome), distinct from `aborted`
 
 
 @dataclass
