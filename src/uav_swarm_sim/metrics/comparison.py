@@ -15,10 +15,7 @@ from ..infrastructure.config import Config
 from ..infrastructure.enums import AgentState, DecompositionAlgo, PlannerKind
 from ..infrastructure.rng import RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
-from .monte_carlo import MCResult, SingleRunResult, run
-from .smdp_estimator import estimate
-from .stationary_distribution import stationary
-from .efficiency_score import efficiency
+from .monte_carlo import MCResult, SingleRunResult, run, single_run_from_history
 
 
 @dataclass
@@ -46,15 +43,9 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
         sink.total_energy_j.append(m.total_energy_j)
         sink.planning_time_s.append(m.planning_time_s)
         sink.replan_time_s.extend(m.replan_times_s)
-        est = estimate(result.history, close_failure_loop=True)
-        try:
-            _, pi_time = stationary(est)
-        except ValueError:
-            return SingleRunResult(est.states, {}, float("nan"), metrics=m, aborted=True,
-                                   outcome=result.outcome)
-        pi_map = {s: float(pi_time[i]) for i, s in enumerate(est.states)}
-        return SingleRunResult(est.states, pi_map, efficiency(pi_time, est.states), metrics=m,
-                               aborted=result.aborted, outcome=result.outcome)
+        # single source of truth for the history -> SingleRunResult reduction
+        return single_run_from_history(result.history, metrics=m, outcome=result.outcome,
+                                       aborted=result.aborted)
     return run_once
 
 
