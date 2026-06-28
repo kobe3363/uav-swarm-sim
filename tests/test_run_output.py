@@ -59,7 +59,7 @@ def test_jsonable_handles_enums_tuples_paths_and_configs(cfg):
     })
     assert j["algo"] == "weighted_voronoi"
     assert j["dims"] == [1.0, 2.0, 3.0]
-    assert j["p"] == "a/b"
+    assert j["p"] == str(Path("a/b"))  # OS-agnostic: Windows uses a backslash
     assert j["cfg_fleet"]["n_drones"] == 5
     # round-trips through json
     assert json.loads(json.dumps(j))["algo"] == "weighted_voronoi"
