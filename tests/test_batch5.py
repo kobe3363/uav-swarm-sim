@@ -200,15 +200,30 @@ def test_single_run_from_history_roundtrip():
 # --------------------------------------------------------------------------- #
 # validation verdicts                                                         #
 # --------------------------------------------------------------------------- #
-def test_validation_directional_and_magnitude():
+def test_internal_validation_passes_on_consistent_results():
     rows = validate_all({
-        "workload_classic": 200.0, "workload_weighted": 60.0,
-        "duration_classic": 219.8, "duration_weighted": 157.8,
-        "plan_time_heuristic": 6.0, "plan_time_tgc": 0.1,
-        "replan_per_task_s": 5e-4,
+        "mc_converged": True, "mc_ci": 0.005, "mc_tol": 0.01,
+        "pi_sum": 1.0, "pi_min": 0.0,
+        "energy_seed_a": 12345.0, "energy_seed_b": 12345.0,
+        "energy_weighted_full": 9000.0, "energy_tgc_basic_full": 9000.0,
+        "workload_weighted": 60.0, "workload_classic": 200.0,
     })
-    verdicts = {r.claim.split()[0]: r.verdict for r in rows}
+    assert rows  # non-empty
     assert all("FAIL" not in r.verdict for r in rows)
-    # a failing direction is caught
-    bad = validate_all({"workload_classic": 60.0, "workload_weighted": 200.0})
-    assert bad[0].verdict == "FAIL"
+    claims = " | ".join(r.claim for r in rows)
+    assert "Monte Carlo converged" in claims
+    assert "stationary pi sums to 1" in claims
+    assert "degenerates to unweighted" in claims
+
+
+def test_internal_validation_flags_violations():
+    # non-convergence, malformed pi (sum != 1, negative), non-determinism, and a
+    # broken weighting degeneracy must each be caught as FAIL.
+    rows = validate_all({
+        "mc_converged": False, "mc_ci": 0.05, "mc_tol": 0.01,
+        "pi_sum": 0.8, "pi_min": -0.01,
+        "energy_seed_a": 100.0, "energy_seed_b": 250.0,
+        "energy_weighted_full": 9000.0, "energy_tgc_basic_full": 7000.0,
+    })
+    verdicts = [r.verdict for r in rows]
+    assert verdicts and all(v == "FAIL" for v in verdicts), verdicts
