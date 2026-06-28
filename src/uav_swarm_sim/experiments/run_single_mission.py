@@ -42,9 +42,9 @@ def main(argv=None) -> int:
     ap.add_argument("--run-name", default=None, help="override run folder name")
     args = ap.parse_args(argv)
 
-    # telemetry on => GPX tracks written for this demo; overrides do not affect
-    # config_hash (computed from the raw YAML), so the hash stays comparable.
-    overrides = {"telemetry.enabled": True}
+# telemetry on => GPX tracks written for this demo; overrides are applied
+# before computing cfg.config_hash, so the hash reflects these values.
+overrides = {"telemetry.enabled": True}
     if args.seed is not None:
         overrides["sim.master_seed"] = args.seed
     cfg = load_config(args.config, overrides)
