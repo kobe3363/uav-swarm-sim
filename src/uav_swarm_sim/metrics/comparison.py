@@ -102,8 +102,32 @@ def compare_tiers(cfg: Config, n_values: list[int], rng: RngFactory) -> dict[int
     return out
 
 
+def tier_crossover(ns: list[int], series_a: list[float], series_b: list[float]) -> float | None:
+    """Fleet size at which ``series_a`` overtakes ``series_b`` for a
+    LOWER-IS-BETTER metric (a goes from >= b to < b as n increases).
+
+    Returns a fractional fleet size via linear interpolation of the zero
+    crossing of (a - b) between the two bracketing fleet sizes, or ``None`` if a
+    never overtakes b across the swept range (no such sign change). ``ns`` is
+    assumed sorted ascending; the three sequences must be the same length.
+
+    This is the empirical break-even the fine-grained sweep exists to locate
+    (e.g. the n at which the battery-weighted TGC starts beating position
+    k-means), turning the thesis's "16-49: measure rather than assume" into a
+    concrete number.
+    """
+    if not (len(ns) == len(series_a) == len(series_b)) or len(ns) < 2:
+        return None
+    diff = [a - b for a, b in zip(series_a, series_b)]
+    for i in range(1, len(ns)):
+        d0, d1 = diff[i - 1], diff[i]
+        if d0 >= 0.0 and d1 < 0.0:  # a was >= b, becomes < b: a overtakes b here
+            frac = d0 / (d0 - d1)   # zero crossing of the line through (n0,d0),(n1,d1)
+            return ns[i - 1] + frac * (ns[i] - ns[i - 1])
+    return None
+
+
 def _with_override(cfg: Config, n: int) -> Config:
-    from ..infrastructure.config import load_config
     # rebuild from the same hash inputs is not trivial; instead mutate a copy via dataclasses.replace
     import dataclasses
     fleet = dataclasses.replace(cfg.fleet, n_drones=n)
