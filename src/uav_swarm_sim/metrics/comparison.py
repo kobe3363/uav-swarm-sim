@@ -50,10 +50,11 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
         try:
             _, pi_time = stationary(est)
         except ValueError:
-            return SingleRunResult(est.states, {}, float("nan"), metrics=m, aborted=True)
+            return SingleRunResult(est.states, {}, float("nan"), metrics=m, aborted=True,
+                                   outcome=result.outcome)
         pi_map = {s: float(pi_time[i]) for i, s in enumerate(est.states)}
         return SingleRunResult(est.states, pi_map, efficiency(pi_time, est.states), metrics=m,
-                               aborted=result.aborted)
+                               aborted=result.aborted, outcome=result.outcome)
     return run_once
 
 
@@ -61,6 +62,11 @@ def _variant(cfg, rng, label, algo, planner) -> VariantResult:
     vr = VariantResult(label=label, mc=None)  # type: ignore[arg-type]
     vr.mc = run(_runner(cfg, rng, algo, planner, vr), cfg.mc)
     return vr
+
+
+# public alias: run ONE variant's Monte-Carlo batch (same paired-seed RngFactory
+# must be shared across variants to keep the comparison paired).
+run_variant = _variant
 
 
 # The headline decomposition comparison peers (paired-seed, identical pipeline):

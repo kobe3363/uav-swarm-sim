@@ -126,9 +126,17 @@ def test_single_mission_cli(tmp_path):
     raw["sim"]["dt_s"] = 1.0
     cfgp = tmp_path / "cfg.yaml"
     cfgp.write_text(yaml.safe_dump(raw))
-    rc = run_single_mission.main(["--config", str(cfgp), "--out", str(tmp_path / "out")])
+    rc = run_single_mission.main([
+        "--config", str(cfgp), "--base", str(tmp_path / "runs"),
+        "--run-name", "run-test", "--name", "weighted",
+    ])
     assert rc == 0
-    assert (tmp_path / "out" / "partition.png").exists()
+    sim_dir = tmp_path / "runs" / "run-test" / "simulation-weighted"
+    # structured run/simulation layout: artifacts + both JSON logs + manifest
+    assert (sim_dir / "partition.png").exists()
+    assert (sim_dir / "plan.json").exists()
+    assert (sim_dir / "results.json").exists()
+    assert (tmp_path / "runs" / "run-test" / "run.json").exists()
 
 
 def test_launch_site_cli(tmp_path):
