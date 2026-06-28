@@ -94,12 +94,21 @@ class StateMachine:
         if s is S.S2_MISSION:
             if ctx.threat_flag:
                 return Transition(s, S.S_OBS, "obstacle_threat")
-            if ctx.battery_zone is BatteryZone.TERMINAL:
-                return Transition(s, S.S3_RTH, "terminal_battery")  # anomaly: RTH should pre-empt
+            # The dynamic route-vs-return reserve (guideline 3.1) is the PRIMARY
+            # early-return trigger; it must pre-empt the crude battery-zone nets so
+            # a return it triggers is attributed to the live energy calculation,
+            # not to a threshold the calculation should already have anticipated.
             if ctx.rth_decision:
                 return Transition(s, S.S3_RTH, "rth_energy")
+            # Battery-zone guards are progressively-severe last-resort nets, reached
+            # only if the dynamic reserve did not fire (e.g. a sudden between-check
+            # energy spike). CRITICAL (the higher threshold) is tested before
+            # TERMINAL, so a normally-draining drone returns at the CRITICAL
+            # boundary and never reaches TERMINAL while still covering.
             if ctx.battery_zone is BatteryZone.CRITICAL:
                 return Transition(s, S.S3_RTH, "critical_battery")
+            if ctx.battery_zone is BatteryZone.TERMINAL:
+                return Transition(s, S.S3_RTH, "terminal_battery")
             if ctx.coverage_complete:
                 return Transition(s, S.S3_RTH, "coverage_complete")
             return None
