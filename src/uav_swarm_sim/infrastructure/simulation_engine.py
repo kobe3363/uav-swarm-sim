@@ -116,6 +116,10 @@ class SimulationEngine:
             return TgcBasicDecomposer()
         if self.algo is DecompositionAlgo.WEIGHTED_VORONOI:
             return WeightedTgcDecomposer()
+        if self.algo is DecompositionAlgo.KMEANS:
+            # position-based k-means baseline (weighted=False), a first-class
+            # comparison peer; same paired stream so it is reproducible.
+            return KMeansHeuristicDecomposer(motion, weighted=False, rng=kmeans_rng)
         # no explicit algo: pick by scale tier
         from ..execution.algorithm_selector import select
 

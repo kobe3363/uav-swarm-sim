@@ -11,7 +11,7 @@ from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
 from uav_swarm_sim.infrastructure import visualization as viz
-from uav_swarm_sim.metrics.comparison import compare_decomposition
+from uav_swarm_sim.metrics.comparison import DECOMPOSITION_PEERS, compare_decomposition
 from uav_swarm_sim.metrics.smdp_estimator import estimate
 from uav_swarm_sim.metrics.stationary_distribution import stationary
 
@@ -76,7 +76,10 @@ def test_compare_decomposition_runs():
     cfg = _smoke_cfg()
     variants = compare_decomposition(cfg, RngFactory(cfg.sim.master_seed))
     labels = {v.label for v in variants}
-    assert labels == {"classic_voronoi", "tgc_basic", "weighted_voronoi"}
+    # the comparison must run exactly the declared peer set (now four: the three
+    # position-based baselines + the battery-weighted contribution)
+    assert labels == {algo.value for algo in DECOMPOSITION_PEERS}
+    assert "kmeans" in labels
     for v in variants:
         assert v.mc.n_runs >= 2
 

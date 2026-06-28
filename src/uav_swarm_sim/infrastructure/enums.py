@@ -65,10 +65,13 @@ class BatteryZone(Enum):
 class DecompositionAlgo(Enum):
     """Labels match the thesis comparison output exactly.
 
-    WEIGHTED_VORONOI is the thesis-facing name for the battery-weighted TGC
-    decomposition (the central contribution).
+    Position-based baselines: CLASSIC_VORONOI (Euclidean Voronoi), KMEANS
+    (position k-means), TGC_BASIC (unweighted topological). WEIGHTED_VORONOI is
+    the thesis-facing name for the battery-weighted TGC decomposition (the
+    central contribution).
     """
     CLASSIC_VORONOI = "classic_voronoi"
+    KMEANS = "kmeans"
     TGC_BASIC = "tgc_basic"
     WEIGHTED_VORONOI = "weighted_voronoi"
 
