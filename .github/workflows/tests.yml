@@ -24,7 +24,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10' # Pakeiskite į Python versiją, kurią naudojate projekte (pvz., '3.11' ar '3.12')
+        python-version: '3.12' # Pakeiskite į Python versiją, kurią naudojate projekte (pvz., '3.11' ar '3.12')
 
     # 3. Įdiegiamos projekto priklausomybės
     - name: Install dependencies
