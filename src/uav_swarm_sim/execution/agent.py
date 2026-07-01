@@ -72,6 +72,7 @@ class Agent:
         recorder: Recorder | None = None,
         layer: int = 0,
         coverage_altitude_m: float | None = None,
+        sensor_power_w: float = 0.0,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -87,6 +88,7 @@ class Agent:
         # (altitude feeds only the RTH descent reserve; flight stays horizontal).
         self.layer = layer
         self.coverage_altitude_m = coverage_altitude_m
+        self._sensor_power_w = sensor_power_w  # camera/gimbal payload draw while filming (S2)
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -204,8 +206,8 @@ class Agent:
         if self.state is AgentState.S_OBS and self._phase_done():
             self._threat_cleared = True
 
-        # periodic RTH check while in coverage
-        if self.state is AgentState.S2_MISSION and (t - self._last_rth_t) >= self.rth.check_interval_s:
+        # periodic RTH check while in coverage (filming or ferrying)
+        if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY) and (t - self._last_rth_t) >= self.rth.check_interval_s:
             self._last_rth_t = t
             self._rth_decision = self.rth.decide(self) == "RETURN_NOW"
         else:
@@ -229,6 +231,8 @@ class Agent:
         man = leg.maneuver_at_time(self._t) or ManeuverType.CRUISE
         f = self.formation.power_factor(self, t, man) if self.formation else 1.0
         e = self.em.segment_energy(man, dt, f)
+        if man is ManeuverType.COVERAGE:
+            e += self.em.sensor_energy(dt, self._sensor_power_w)  # camera on only while filming a strip
         self.battery.drain(e)
         self.energy_consumed_j += e
         new_pose, new_t = self.motion.advance(leg, self._t, dt, current_pose=self.pose)
@@ -242,8 +246,8 @@ class Agent:
         if new_t >= leg.total_duration_s - 1e-9:
             self._leg_idx += 1
             self._t = 0.0
-            if self.state is AgentState.S2_MISSION:
-                self._cov_idx += 1  # FIX: Increment global progress, don't overwrite with local slice index
+            if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY):
+                self._cov_idx += 1  # global coverage progress: strips AND connectors
                 # clean coverage progress -> reset the Q2 thrash counter...
                 if self._obs_reentries:
                     self._obs_reentries = 0
@@ -262,12 +266,33 @@ class Agent:
             plan_assigned=self.plan is not None,
             at_zone_entry=(self.state is AgentState.S1_TRANSIT and self._phase_done()),
             rth_decision=getattr(self, "_rth_decision", False),
-            coverage_complete=(self.state is AgentState.S2_MISSION and self._phase_done()),
+            coverage_complete=(self.state in (AgentState.S2_MISSION, AgentState.S_FERRY) and self._phase_done()),
             landed_at_base=(self.state is AgentState.S3_RTH and self._phase_done()),
             own_plan_incomplete=(self._cov_idx < len(self._cov_legs)),
             swap_done=self._swap_done,
             obs_return_state=self._obs_return,
+            on_connector=self._on_connector(),
         )
+
+    def _on_connector(self) -> bool:
+        """True while the active coverage leg is a camera-off connector -- drives
+        the S2_MISSION <-> S_FERRY toggle.
+
+        Connectors are defined STRUCTURALLY by _build_coverage_legs: even global
+        leg indices are COVERAGE strips, odd ones are inter-strip connectors. We
+        key off _cov_idx parity rather than the current segment's maneuver, because
+        on holonomic (multirotor) paths a productive strip leg still begins/ends
+        with in-place-yaw TURN segments -- reading the per-segment maneuver would
+        spuriously flip to S_FERRY mid-strip and corrupt the state history, the
+        efficiency, and the camera-on/off semantics. Tour (target-visit) plans have
+        no strip/connector structure, so they never ferry."""
+        if self.state not in (AgentState.S2_MISSION, AgentState.S_FERRY):
+            return False
+        if getattr(self, "_leg_mode", "boustrophedon") == "tour":
+            return False
+        if self._cov_idx >= len(self._cov_legs):
+            return False
+        return (self._cov_idx % 2) == 1
 
     def _apply_transition(self, tr, t: float, bus) -> None:
         if self.recorder is not None:
@@ -318,11 +343,12 @@ class Agent:
         if self.recorder is not None:
             self.recorder.open(self.id, dst, t)
 
-        if dst in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S3_RTH) and \
+        if dst in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S3_RTH,
+                   AgentState.S_FERRY) and \
                 tr.src is AgentState.S_OBS and self._obs_legs_saved is not None:
             # FIX: Unpack saved_t
             saved_legs, saved_idx, saved_t = self._obs_legs_saved 
-            if self._obs_skip_leg and dst is AgentState.S2_MISSION:
+            if self._obs_skip_leg and dst in (AgentState.S2_MISSION, AgentState.S_FERRY):
                 # REJOIN: do NOT re-fly the obstructed coverage leg...
                 self._legs = saved_legs
                 self._leg_idx = min(saved_idx + 1, len(saved_legs))
@@ -366,18 +392,33 @@ class Agent:
     # RTH lookahead                                                      #
     # ------------------------------------------------------------------ #
     def lookahead(self) -> tuple[float, Pose]:
-        """Energy of the next coverage leg(s) and the pose at its end."""
+        """Energy of the next coverage leg(s) and the pose at its end.
+
+        Mirrors execution exactly: propulsion via path_energy plus the camera
+        payload term the leg's COVERAGE segments will draw (see _tick_dynamics), so
+        the dynamic route-vs-return reserve sees the true continue-cost while
+        filming rather than underestimating it and deferring to the battery nets.
+        """
         if self._cov_idx >= len(self._cov_legs):
             return 0.0, self.pose
         leg = self._cov_legs[self._cov_idx]
-        e_next = self.em.path_energy(leg)
+        e_next = self.em.path_energy(leg) + self._leg_sensor_energy(leg)
         p_next = leg.end_pose or self.pose
         # include the following connector if present
         if self._cov_idx + 1 < len(self._cov_legs):
             conn = self._cov_legs[self._cov_idx + 1]
-            e_next += self.em.path_energy(conn)
+            e_next += self.em.path_energy(conn) + self._leg_sensor_energy(conn)
             p_next = conn.end_pose or p_next
         return e_next, p_next
+
+    def _leg_sensor_energy(self, leg) -> float:
+        """Camera payload energy this leg will draw at execution: sensor power over
+        its COVERAGE segments only (zero for TURN connectors, and byte-identical to
+        the old lookahead when sensor_power_w == 0)."""
+        if self._sensor_power_w <= 0.0:
+            return 0.0
+        cov_dur = sum(s.duration_s for s in leg.segments if s.maneuver is ManeuverType.COVERAGE)
+        return self.em.sensor_energy(cov_dur, self._sensor_power_w)
 
     def signal_threat_cleared(self) -> None:
         self._threat_cleared = True

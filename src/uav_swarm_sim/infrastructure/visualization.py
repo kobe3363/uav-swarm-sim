@@ -24,6 +24,7 @@ STATE_COLORS = {
     AgentState.S0_IDLE: "#9e9e9e",
     AgentState.S1_TRANSIT: "#1f77b4",
     AgentState.S2_MISSION: "#2ca02c",
+    AgentState.S_FERRY: "#17becf",
     AgentState.S3_RTH: "#ff7f0e",
     AgentState.S_SWAP: "#9467bd",
     AgentState.S_OBS: "#d62728",

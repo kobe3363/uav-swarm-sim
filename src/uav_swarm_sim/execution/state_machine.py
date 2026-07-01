@@ -34,6 +34,7 @@ class AgentContext:
     own_plan_incomplete: bool = False
     swap_done: bool = False
     obs_return_state: AgentState = AgentState.S1_TRANSIT
+    on_connector: bool = False  # active coverage leg is a camera-off connector (S2<->S_FERRY toggle)
 
 
 @dataclass(frozen=True)
@@ -54,12 +55,18 @@ ALLOWED: set[tuple[AgentState, AgentState]] = {
     (S.S2_MISSION, S.S3_RTH),
     (S.S2_MISSION, S.S_OBS),
     (S.S2_MISSION, S.S_FAIL),
+    (S.S2_MISSION, S.S_FERRY),
+    (S.S_FERRY, S.S2_MISSION),
+    (S.S_FERRY, S.S3_RTH),
+    (S.S_FERRY, S.S_OBS),
+    (S.S_FERRY, S.S_FAIL),
     (S.S3_RTH, S.S_OBS),
     (S.S3_RTH, S.S_SWAP),
     (S.S3_RTH, S.S0_IDLE),
     (S.S3_RTH, S.S_FAIL),
     (S.S_OBS, S.S1_TRANSIT),
     (S.S_OBS, S.S2_MISSION),
+    (S.S_OBS, S.S_FERRY),
     (S.S_OBS, S.S3_RTH),
     (S.S_OBS, S.S_FAIL),
     (S.S_SWAP, S.S0_IDLE),
@@ -71,6 +78,27 @@ class StateMachine:
 
     def __init__(self, zones_cfg: BatteryZonesConfig) -> None:
         self._zones = zones_cfg
+
+    def _coverage_guards(self, s: AgentState, ctx: AgentContext) -> Transition | None:
+        """Triggers that interrupt coverage from EITHER S2_MISSION or S_FERRY.
+
+        The dynamic route-vs-return reserve (guideline 3.1) is the PRIMARY early-
+        return trigger and pre-empts the crude battery-zone nets, so a return it
+        triggers is attributed to the live energy calculation. The battery-zone
+        guards are progressively-severe last-resort nets; CRITICAL (the higher
+        threshold) is tested before TERMINAL, so a normally-draining drone returns
+        at the CRITICAL boundary and never reaches TERMINAL while still covering.
+        (Irreversible failure is handled for all airborne states in ``step``.)
+        """
+        if ctx.threat_flag:
+            return Transition(s, S.S_OBS, "obstacle_threat")
+        if ctx.rth_decision:
+            return Transition(s, S.S3_RTH, "rth_energy")
+        if ctx.battery_zone is BatteryZone.CRITICAL:
+            return Transition(s, S.S3_RTH, "critical_battery")
+        if ctx.battery_zone is BatteryZone.TERMINAL:
+            return Transition(s, S.S3_RTH, "terminal_battery")
+        return None
 
     def step(self, ctx: AgentContext) -> Transition | None:
         s = ctx.state
@@ -91,24 +119,19 @@ class StateMachine:
                 return Transition(s, S.S2_MISSION, "zone_entry")
             return None
 
-        if s is S.S2_MISSION:
-            if ctx.threat_flag:
-                return Transition(s, S.S_OBS, "obstacle_threat")
-            # The dynamic route-vs-return reserve (guideline 3.1) is the PRIMARY
-            # early-return trigger; it must pre-empt the crude battery-zone nets so
-            # a return it triggers is attributed to the live energy calculation,
-            # not to a threshold the calculation should already have anticipated.
-            if ctx.rth_decision:
-                return Transition(s, S.S3_RTH, "rth_energy")
-            # Battery-zone guards are progressively-severe last-resort nets, reached
-            # only if the dynamic reserve did not fire (e.g. a sudden between-check
-            # energy spike). CRITICAL (the higher threshold) is tested before
-            # TERMINAL, so a normally-draining drone returns at the CRITICAL
-            # boundary and never reaches TERMINAL while still covering.
-            if ctx.battery_zone is BatteryZone.CRITICAL:
-                return Transition(s, S.S3_RTH, "critical_battery")
-            if ctx.battery_zone is BatteryZone.TERMINAL:
-                return Transition(s, S.S3_RTH, "terminal_battery")
+        if s in (S.S2_MISSION, S.S_FERRY):
+            # guards that interrupt coverage apply identically whether the drone is
+            # filming a strip (S2_MISSION) or ferrying between strips (S_FERRY)
+            g = self._coverage_guards(s, ctx)
+            if g is not None:
+                return g
+            # camera on/off toggle, driven by the active leg: a COVERAGE strip is
+            # productive (camera on, S2_MISSION); a connector is camera-off
+            # repositioning (S_FERRY) -- real flight energy, no coverage benefit.
+            if s is S.S2_MISSION and ctx.on_connector:
+                return Transition(s, S.S_FERRY, "ferry_start")
+            if s is S.S_FERRY and not ctx.on_connector:
+                return Transition(s, S.S2_MISSION, "ferry_end")
             if ctx.coverage_complete:
                 return Transition(s, S.S3_RTH, "coverage_complete")
             return None

@@ -73,6 +73,7 @@ class PlatformConfig:
 class SensorConfig:
     swath_width_m: float
     overlap_frac: float
+    sensor_power_w: float = 0.0  # camera/gimbal payload draw while filming (W); 0 => no camera-energy term
 
 
 @dataclass(frozen=True)
@@ -354,6 +355,7 @@ def _build(raw: dict, config_hash: str) -> Config:
     sensor = SensorConfig(
         swath_width_m=float(_require(s, "swath_width_m", "sensor")),
         overlap_frac=float(_require(s, "overlap_frac", "sensor")),
+        sensor_power_w=float(s.get("sensor_power_w", 0.0)),
     )
     a = _require(raw, "aero", "")
     aero = AeroConfig(
@@ -556,6 +558,8 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("sensor.swath_width_m must be > 0")
     if not (0.0 <= cfg.sensor.overlap_frac < 1.0):
         raise ConfigError("sensor.overlap_frac must be in [0, 1)")
+    if cfg.sensor.sensor_power_w < 0:
+        raise ConfigError("sensor.sensor_power_w must be >= 0")
 
     if not (0.0 < cfg.aero.formation_drag_reduction < 1.0):
         raise ConfigError("aero.formation_drag_reduction must be in (0, 1)")

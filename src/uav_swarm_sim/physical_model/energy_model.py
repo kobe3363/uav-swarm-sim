@@ -74,6 +74,14 @@ class EnergyModel:
         """
         return self.power(m, formation_factor) * duration_s
 
+    def sensor_energy(self, duration_s: float, sensor_power_w: float) -> float:
+        """Payload energy (J) for running the survey sensor for a duration: the
+        camera/gimbal draw while photographing. Charged ONLY when the camera is on
+        (the COVERAGE strips, S2_MISSION); it is zero during camera-off ferrying.
+        This is a payload term, separate from and additive to the propulsion energy.
+        """
+        return max(0.0, sensor_power_w) * duration_s
+
     def path_energy(
         self, path: Path, factor_fn: Callable[[PathSegment], float] | None = None
     ) -> float:
