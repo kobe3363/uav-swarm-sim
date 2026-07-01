@@ -275,5 +275,49 @@ def test_recovery_escalates_to_rth_when_boxed_in():
     assert obs_entries <= _OBS_REENTRY_BUDGET + 1, f"escalation too slow: {obs_entries} entries"
 
 
+def test_threat_while_ferrying_resumes_coverage_not_stuck():
+    """A threat encountered while ferrying between strips (S_FERRY on a TURN
+    connector) must, after avoidance, RESTORE the saved coverage legs and resume
+    coverage -- not leave the agent stuck flying the avoidance detour. The leg
+    restore had originally been gated on returning to S1/S2/S3 only, so the new
+    S_OBS -> S_FERRY resume path would have dropped the interrupted connector."""
+    agent, _ = _make_agent()
+    motion = agent.motion
+    wps = [
+        Waypoint(Pose(150, 630, 0.0), ManeuverType.COVERAGE, 6.0),
+        Waypoint(Pose(450, 630, 0.0), ManeuverType.COVERAGE, 6.0),
+        Waypoint(Pose(450, 750, math.pi), ManeuverType.COVERAGE, 6.0),
+        Waypoint(Pose(150, 750, math.pi), ManeuverType.COVERAGE, 6.0),
+    ]
+    plan = CoveragePlan(0, wps, 0.0, 0.0)
+    agent.assign(plan, motion.plan(agent.base, Pose(150, 630, 0.0), ManeuverType.CRUISE))
+    # drop the agent onto the connector leg (odd index = TURN) in S_FERRY
+    agent.state = AgentState.S_FERRY
+    agent._legs = list(agent._cov_legs)
+    agent._leg_idx = 1
+    agent._t = 0.0
+    agent._cov_idx = 1
+    coverage_legs = agent._legs
+    assert agent._on_connector(), "setup must place the agent on a TURN connector"
+
+    bus = _Bus()
+    # threat with a tiny explicit detour so avoidance finishes in a couple of steps
+    detour = motion.plan(agent.pose, Pose(agent.pose.x + 3.0, agent.pose.y, 0.0), ManeuverType.CRUISE)
+    agent.signal_threat(True, avoidance=detour)
+    agent.step(0.5, 0.0, bus)
+    assert agent.state is AgentState.S_OBS
+    assert agent._obs_legs_saved is not None, "coverage legs must be saved on S_OBS entry"
+
+    # clear the threat, let the short detour complete: the agent must leave S_OBS
+    agent.signal_threat(False)
+    for k in range(1, 40):
+        agent.step(0.5, 0.5 * k, bus)
+        if agent.state is not AgentState.S_OBS:
+            break
+    assert agent.state in (AgentState.S_FERRY, AgentState.S2_MISSION), "must resume coverage"
+    assert agent._obs_legs_saved is None, "saved-leg slot must be consumed on resume"
+    assert agent._legs is coverage_legs, "must resume the coverage legs, not the detour plan"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

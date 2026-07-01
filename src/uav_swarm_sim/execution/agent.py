@@ -333,11 +333,12 @@ class Agent:
         if self.recorder is not None:
             self.recorder.open(self.id, dst, t)
 
-        if dst in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S3_RTH) and \
+        if dst in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S3_RTH,
+                   AgentState.S_FERRY) and \
                 tr.src is AgentState.S_OBS and self._obs_legs_saved is not None:
             # FIX: Unpack saved_t
             saved_legs, saved_idx, saved_t = self._obs_legs_saved 
-            if self._obs_skip_leg and dst is AgentState.S2_MISSION:
+            if self._obs_skip_leg and dst in (AgentState.S2_MISSION, AgentState.S_FERRY):
                 # REJOIN: do NOT re-fly the obstructed coverage leg...
                 self._legs = saved_legs
                 self._leg_idx = min(saved_idx + 1, len(saved_legs))
