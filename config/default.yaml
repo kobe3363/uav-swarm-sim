@@ -112,10 +112,13 @@ platforms:
 sensor:
   swath_width_m: 100.0        # raw sensor ground footprint width
   overlap_frac: 0.5           # 50% side overlap -> effective strip = 50 m
-  sensor_power_w: 15.0        # camera + gimbal payload draw while filming a strip
-                              # (symbolic; charged only in S2_MISSION, off during S_FERRY)
                               # (recon sweep; lower than the 70% used for dense
                               #  3-D mapping in §1.3.4, traded for fewer strips)
+  sensor_power_w: 0.0         # camera + gimbal payload draw while filming a strip,
+                              # charged only in S2_MISSION (off during S_FERRY).
+                              # Default 0 keeps every default.yaml load byte-identical
+                              # to the pre-camera baseline; studies opt in with a
+                              # symbolic value (e.g. 15.0) via config or override.
 
 aero:
   formation_drag_reduction: 0.1514   # Guo et al. 2025, homogeneous formation (15.14%)

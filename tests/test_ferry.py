@@ -156,5 +156,13 @@ def test_holonomic_strip_yaw_does_not_toggle_to_ferry():
     assert Agent._on_connector(a) is False
 
 
+def test_default_config_ships_camera_off_for_byte_identity():
+    """default.yaml sets sensor_power_w=0 so every engine/integration test that
+    loads it stays byte-identical to the pre-camera baseline. Camera payload energy
+    is an explicit opt-in (studies set a symbolic value like 15.0). Re-enabling it
+    in the default must be a conscious change -- this guards that boundary."""
+    assert load_config(CONFIG_PATH).sensor.sensor_power_w == 0.0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
