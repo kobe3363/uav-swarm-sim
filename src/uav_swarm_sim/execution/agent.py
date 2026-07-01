@@ -382,18 +382,33 @@ class Agent:
     # RTH lookahead                                                      #
     # ------------------------------------------------------------------ #
     def lookahead(self) -> tuple[float, Pose]:
-        """Energy of the next coverage leg(s) and the pose at its end."""
+        """Energy of the next coverage leg(s) and the pose at its end.
+
+        Mirrors execution exactly: propulsion via path_energy plus the camera
+        payload term the leg's COVERAGE segments will draw (see _tick_dynamics), so
+        the dynamic route-vs-return reserve sees the true continue-cost while
+        filming rather than underestimating it and deferring to the battery nets.
+        """
         if self._cov_idx >= len(self._cov_legs):
             return 0.0, self.pose
         leg = self._cov_legs[self._cov_idx]
-        e_next = self.em.path_energy(leg)
+        e_next = self.em.path_energy(leg) + self._leg_sensor_energy(leg)
         p_next = leg.end_pose or self.pose
         # include the following connector if present
         if self._cov_idx + 1 < len(self._cov_legs):
             conn = self._cov_legs[self._cov_idx + 1]
-            e_next += self.em.path_energy(conn)
+            e_next += self.em.path_energy(conn) + self._leg_sensor_energy(conn)
             p_next = conn.end_pose or p_next
         return e_next, p_next
+
+    def _leg_sensor_energy(self, leg) -> float:
+        """Camera payload energy this leg will draw at execution: sensor power over
+        its COVERAGE segments only (zero for TURN connectors, and byte-identical to
+        the old lookahead when sensor_power_w == 0)."""
+        if self._sensor_power_w <= 0.0:
+            return 0.0
+        cov_dur = sum(s.duration_s for s in leg.segments if s.maneuver is ManeuverType.COVERAGE)
+        return self.em.sensor_energy(cov_dur, self._sensor_power_w)
 
     def signal_threat_cleared(self) -> None:
         self._threat_cleared = True
