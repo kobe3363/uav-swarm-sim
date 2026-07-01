@@ -112,6 +112,8 @@ platforms:
 sensor:
   swath_width_m: 100.0        # raw sensor ground footprint width
   overlap_frac: 0.5           # 50% side overlap -> effective strip = 50 m
+  sensor_power_w: 15.0        # camera + gimbal payload draw while filming a strip
+                              # (symbolic; charged only in S2_MISSION, off during S_FERRY)
                               # (recon sweep; lower than the 70% used for dense
                               #  3-D mapping in §1.3.4, traded for fewer strips)
 

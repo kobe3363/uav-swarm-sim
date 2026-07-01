@@ -29,6 +29,7 @@ class AgentState(Enum):
     S_SWAP = "S_SWAP"
     S_OBS = "S_OBS"
     S_FAIL = "S_FAIL"
+    S_FERRY = "S_FERRY"  # repositioning between coverage strips, camera OFF (non-productive flight)
 
     @property
     def is_airborne(self) -> bool:
@@ -40,6 +41,7 @@ class AgentState(Enum):
             AgentState.S2_MISSION,
             AgentState.S3_RTH,
             AgentState.S_OBS,
+            AgentState.S_FERRY,
         }
 
 

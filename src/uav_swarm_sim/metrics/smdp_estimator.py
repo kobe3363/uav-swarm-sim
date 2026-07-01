@@ -33,6 +33,7 @@ STATE_ORDER: list[AgentState] = [
     AgentState.S0_IDLE,
     AgentState.S1_TRANSIT,
     AgentState.S2_MISSION,
+    AgentState.S_FERRY,
     AgentState.S3_RTH,
     AgentState.S_SWAP,
     AgentState.S_OBS,

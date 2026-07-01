@@ -244,7 +244,8 @@ class SimulationEngine:
             i_layer = self.layer_of.get(i, 0)
             agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
                           self.formation, self.deploy_poses[i], recorder=recorder,
-                          layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer))
+                          layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer),
+                          sensor_power_w=cfg.sensor.sensor_power_w)
             if self._mission_type is MissionType.TARGET_VISIT:
                 plan = self.plans.get(i)
                 if plan is not None and plan.waypoints:

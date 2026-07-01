@@ -72,6 +72,7 @@ class Agent:
         recorder: Recorder | None = None,
         layer: int = 0,
         coverage_altitude_m: float | None = None,
+        sensor_power_w: float = 0.0,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -87,6 +88,7 @@ class Agent:
         # (altitude feeds only the RTH descent reserve; flight stays horizontal).
         self.layer = layer
         self.coverage_altitude_m = coverage_altitude_m
+        self._sensor_power_w = sensor_power_w  # camera/gimbal payload draw while filming (S2)
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -204,8 +206,8 @@ class Agent:
         if self.state is AgentState.S_OBS and self._phase_done():
             self._threat_cleared = True
 
-        # periodic RTH check while in coverage
-        if self.state is AgentState.S2_MISSION and (t - self._last_rth_t) >= self.rth.check_interval_s:
+        # periodic RTH check while in coverage (filming or ferrying)
+        if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY) and (t - self._last_rth_t) >= self.rth.check_interval_s:
             self._last_rth_t = t
             self._rth_decision = self.rth.decide(self) == "RETURN_NOW"
         else:
@@ -229,6 +231,8 @@ class Agent:
         man = leg.maneuver_at_time(self._t) or ManeuverType.CRUISE
         f = self.formation.power_factor(self, t, man) if self.formation else 1.0
         e = self.em.segment_energy(man, dt, f)
+        if man is ManeuverType.COVERAGE:
+            e += self.em.sensor_energy(dt, self._sensor_power_w)  # camera on only while filming a strip
         self.battery.drain(e)
         self.energy_consumed_j += e
         new_pose, new_t = self.motion.advance(leg, self._t, dt, current_pose=self.pose)
@@ -242,8 +246,8 @@ class Agent:
         if new_t >= leg.total_duration_s - 1e-9:
             self._leg_idx += 1
             self._t = 0.0
-            if self.state is AgentState.S2_MISSION:
-                self._cov_idx += 1  # FIX: Increment global progress, don't overwrite with local slice index
+            if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY):
+                self._cov_idx += 1  # global coverage progress: strips AND connectors
                 # clean coverage progress -> reset the Q2 thrash counter...
                 if self._obs_reentries:
                     self._obs_reentries = 0
@@ -262,12 +266,23 @@ class Agent:
             plan_assigned=self.plan is not None,
             at_zone_entry=(self.state is AgentState.S1_TRANSIT and self._phase_done()),
             rth_decision=getattr(self, "_rth_decision", False),
-            coverage_complete=(self.state is AgentState.S2_MISSION and self._phase_done()),
+            coverage_complete=(self.state in (AgentState.S2_MISSION, AgentState.S_FERRY) and self._phase_done()),
             landed_at_base=(self.state is AgentState.S3_RTH and self._phase_done()),
             own_plan_incomplete=(self._cov_idx < len(self._cov_legs)),
             swap_done=self._swap_done,
             obs_return_state=self._obs_return,
+            on_connector=self._on_connector(),
         )
+
+    def _on_connector(self) -> bool:
+        """True while the active coverage leg is a camera-off connector (TURN) --
+        drives the S2_MISSION <-> S_FERRY toggle. The boustrophedon builder types
+        strips as COVERAGE and inter-strip connectors as TURN."""
+        if self.state not in (AgentState.S2_MISSION, AgentState.S_FERRY):
+            return False
+        if self._leg_idx >= len(self._legs):
+            return False
+        return self._legs[self._leg_idx].maneuver_at_time(self._t) is ManeuverType.TURN
 
     def _apply_transition(self, tr, t: float, bus) -> None:
         if self.recorder is not None:

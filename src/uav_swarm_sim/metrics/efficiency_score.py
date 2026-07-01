@@ -1,33 +1,26 @@
 """The scalar verdict: useful work over flight-plus-service overhead.
 
-efficiency = pi_time[S2] / (pi_time[S1] + pi_time[S3] + pi_time[S_OBS] + pi_time[S_SWAP])
+efficiency = pi_time[S2] / (pi_time[S1] + pi_time[S_FERRY] + pi_time[S3] + pi_time[S_OBS] + pi_time[S_SWAP])
 
 The denominator is the time the drone spends NOT doing useful mission work but
-still airborne or in service: outbound transit (S1), return-to-home (S3),
-obstacle avoidance (S_OBS), and battery swap (S_SWAP). S0 and S_FAIL appear in
-neither numerator nor denominator: idle ground time is not flight overhead, and
-failure time is accounted by the replacement device. Swap time is included
-(original Decision 2): swap is mission overhead under a throughput-oriented
-metric, so strategies that economize swaps via the weighted decomposition are
-rewarded exactly where the thesis claims.
+still airborne or in service: outbound transit (S1), camera-off repositioning
+between coverage strips (S_FERRY), return-to-home (S3), obstacle avoidance
+(S_OBS), and battery swap (S_SWAP). S0 and S_FAIL appear in neither numerator nor
+denominator: idle ground time is not flight overhead, and failure time is
+accounted by the replacement device. Swap time is included (original Decision 2):
+swap is mission overhead under a throughput-oriented metric, so strategies that
+economize swaps via the weighted decomposition are rewarded exactly where the
+thesis claims.
 
-S1_TRANSIT in the denominator (2.5D re-baseline, Decision 2 continued)
----------------------------------------------------------------------
-Outbound transit was previously excluded while return (S3) was included. That was
-symmetric enough in pure 2D, but once vertical energy is modelled the asymmetry
-bites: the launch climb to the coverage altitude is spent inside S1, while the
-RTH descent is spent inside S3. Counting S3 but not S1 would charge the descent
-overhead and not the (symmetric) climb overhead, biasing the verdict in favour of
-configurations with expensive climbs. Including S1 makes transit overhead -- climb
-included -- count the same as return overhead, which is the throughput meaning of
-the score: only S2 is productive; everything else airborne is overhead.
-
-This changes the efficiency baseline for EVERY scenario (S1 is nonzero even in 2D
-horizontal transit), so it is a deliberate re-baseline, not a byte-identical
-change: the efficiency fixtures are expected to shift.
-
-Must be computed on the TIME-WEIGHTED pi (not the embedded visit frequencies).
-"""
+S_FERRY in the denominator (camera ON only in S2 is productive)
+---------------------------------------------------------------
+Only the COVERAGE strips (camera on, S2_MISSION) photograph the surface and count
+as productive. The inter-strip connectors and any out-of-area repositioning are
+flown with the camera off (S_FERRY): real flight energy, zero coverage benefit.
+Counting S_FERRY as overhead makes pi(S_FERRY) the direct "cost of the survey
+shape" -- concave/elongated shapes spend more time ferrying -- and keeps the
+score's meaning exact: only S2 is productive, everything else airborne is
+overhead. Histories that never ferry are unaffected (pi(S_FERRY)=0)."""
 from __future__ import annotations
 
 import logging
@@ -41,6 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 _DENOM_STATES = (
     AgentState.S1_TRANSIT,
+    AgentState.S_FERRY,
     AgentState.S3_RTH,
     AgentState.S_OBS,
     AgentState.S_SWAP,

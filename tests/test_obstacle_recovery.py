@@ -81,6 +81,9 @@ class _Energy:
     def segment_energy(self, man, dt, f=1.0):
         return _POWER.get(man, 200.0) * dt * f
 
+    def sensor_energy(self, dt, sensor_power_w):
+        return max(0.0, sensor_power_w) * dt
+
     def path_energy(self, path: Path):
         return sum(_POWER.get(s.maneuver, 200.0) * s.duration_s for s in path.segments)
 
