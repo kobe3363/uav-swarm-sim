@@ -246,6 +246,13 @@ python -m uav_swarm_sim.experiments.run_replay --config config/scenarios/smoke.y
 
 # LLM-as-a-judge mission diagnosis over a telemetry log (offline; --dry-run is free, see §12)
 python -m uav_swarm_sim.experiments.run_llm_diagnosis --log runs/demo/events.jsonl --dry-run
+
+# Shape study preflight (see "Shape study preflight" below):
+#   (A3) generate the equal-area shape family + print the shape-descriptor table
+python -m uav_swarm_sim.experiments.generate_shapes --out-dir data/areas/shapes
+#   (A2) is this (shape, fleet, battery) point battery-limited or fuel-surplus?
+python -m uav_swarm_sim.experiments.run_regime_calculator \
+    --geojson data/areas/shapes/square.geojson --n-drones 5 --verify
 ```
 
 Smoke test: `pytest tests/test_smoke.py`. Full suite: `pytest -q`.
@@ -262,6 +269,76 @@ The default config ships `n_drones: 5`, which sits in the **heuristic tier** (�
 ### A note on running at defense scale
 
 Each Monte-Carlo batch runs up to `n_max` missions (adaptive CI stopping usually stops far earlier). The decomposition comparison is four batches; the scale sweep is two methods per fleet size. This can take a while on real configs — start coarse (a few fleet sizes, or a lower `n_max`) to sanity-check, then run the full grid for the final figures.
+
+### Shape study preflight (A2 + A3): is the baseline even in the regime where shape matters?
+
+The next planned study asks a focused question: **does the shape of the survey area change how much the battery-weighted decomposition wins?** Before spending hours on shape sweeps, two standalone tools settle a prerequisite that, if ignored, invalidates the whole study. They do **not** simulate anything expensive — they are fast, analytical, and each answers one question.
+
+#### Why this preflight exists
+
+The weighted decomposition only has anything to *do* when drones are under **energy pressure** — i.e. when a drone cannot cover its assigned zone on a single battery and must land, swap, and continue. That regime is called **battery-limited**. If instead every drone can comfortably finish its zone on one charge (the **fuel-surplus** regime), there are no swaps to rebalance, the weighted method and the position-based baselines behave almost identically, and any shape sweep comes out **flat** — proving nothing. So the first thing to establish, for a given (shape, fleet size, battery), is *which regime you are in*. That is the go/no-go these tools produce.
+
+#### A3 — the equal-area shape family (`generate_shapes.py`)
+
+To attribute an effect to **shape**, every test shape must have the **same area** — otherwise a bigger area needs more energy and you cannot tell shape from size apart. `generate_shapes.py` builds a family of shapes all normalized to **exactly** the same area (default 1 km², to within `1e-6` relative error): a `square`, three rectangles (`2:1`, `4:1`, `8:1`), an `l_shape`, a `disk`, a 5-point `star`, and a `pinwheel`. Each is written as a metric-metre GeoJSON that the normal parser (`planning/geojson_parser.load_area`) reads unchanged, so the shapes drop straight into the rest of the pipeline.
+
+For each shape it also prints a **descriptor row** — two numbers that quantify "how awkward is this shape", both intuitive once unpacked:
+
+- **Solidity = area ÷ convex-hull area.** The convex hull is the shape you'd get by stretching a rubber band around the outline. A convex shape (square, disk, rectangle) fills its own hull completely, so solidity **= 1.0**. A shape with dents or arms (L, star, pinwheel) leaves gaps between itself and the rubber band, so solidity **< 1.0** — the lower the number, the more concave. This is the study's headline concavity variable (hypothesis **H5**): `l_shape ≈ 0.86` > `star ≈ 0.49` > `pinwheel ≈ 0.40`.
+- **Isoperimetric ratio = perimeter² ÷ (4π·area).** A pure circle is the most compact possible shape and scores **1.0**; everything more elongated or more jagged scores higher (more perimeter for the same area). It rises with both elongation (`8:1` rectangle ≈ 3.2) and raggedness (pinwheel ≈ 4.4).
+
+A third figure, **`strips≈`**, estimates how many parallel back-and-forth coverage lanes (the boustrophedon sweep) the shape needs = short side of its tightest bounding rectangle ÷ the effective swath width. It is a quick proxy for coverage effort.
+
+```bash
+python -m uav_swarm_sim.experiments.generate_shapes --out-dir data/areas/shapes
+# prints the descriptor table and writes 8 equal-area GeoJSONs
+```
+
+#### A2 — the regime calculator (`run_regime_calculator.py`)
+
+This is the go/no-go. It compares the **energy needed to cover the area once** against the **energy the fleet actually has**, and reports which regime you are in. It runs no long simulation; its one optional `--verify` step runs a single short mission to prove its arithmetic matches the engine.
+
+**1. `E_cover` — the energy to photograph the whole area once.** This is not a hand-tuned formula. The tool builds the *same* boustrophedon coverage plan the simulator flies, rebuilds the drone's legs exactly as the execution engine does (even leg = a `COVERAGE` strip with the camera on, odd leg = a `TURN` connector between strips), and integrates each leg with the identical `power × dt` energy model. Because the analytical construction mirrors the executed physics leg-for-leg, its total is the exact value the engine's tick-by-tick sum converges to — verified below. `E_cover` is reported as a breakdown:
+
+| Term | What it is |
+|---|---|
+| **Coverage strips** | Propulsion along the survey lanes (the dominant, shape-driven cost) |
+| **Inter-strip connectors** | The `TURN` hops linking one lane to the next |
+| **Camera payload** | Sensor/gimbal energy, charged **only** while photographing (`COVERAGE` segments); zero unless `--sensor-power-w` > 0 |
+| **Round-trip transit** | Cruising from the launch site to the area and back |
+| **Vertical takeoff+landing** | The climb/descent budget. **Flagged:** this is a *reserve/budget* term — in the single-layer engine it is **not** actually drained, so it is reported but sits slightly apart from the flown energy. |
+
+**2. `B_usable` — the energy one drone may actually spend.** A battery is never drained to zero; a reserve floor is kept. Three floors are printed (all read from config, none hard-coded), and the one used is chosen with `--usable-floor`:
+
+- `terminal` *(default)* = down to the terminal reserve (`1 − critical`, i.e. 0.80 of capacity);
+- `return` = down to the level that forces the drone home in the executed sim (`1 − nominal`, 0.60);
+- `rth` = the hard epsilon floor only (`1 − reserve_frac`, 0.95).
+
+> **Thesis-affecting choice.** The floor changes `B_usable`, hence the regime and the crossover fleet size. It is flagged in the output; pick one deliberately and state it in the thesis. The default `terminal` is the conservative battery-zone reserve.
+
+**3. Two tests, because batteries are not shared.** The tool reports two ratios, and this distinction is the important subtlety:
+
+- **Pooled ratio** = `E_cover ÷ (n · B_usable)`. This treats the whole fleet's energy as one shared tank. If it is **> 1**, the total job exceeds the total fuel, so *by counting alone* at least one drone must swap → **definitely battery-limited**. But if it is **< 1**, that does **not** prove fuel-surplus: it only means the fleet has enough energy *on average*. Averages hide imbalance.
+- **Per-drone (assignment-aware) check.** In reality each drone is handed **its own zone** and can only spend **its own** battery on it. So the tool builds the real weighted-Voronoi partition for that fleet, computes each zone's true `E_cover`, and checks the **busiest** drone against one battery. If that single worst zone exceeds `B_usable`, that drone must swap — and the mission is battery-limited **even if the pooled ratio said surplus**.
+
+The final regime is **battery-limited if *either* test trips** (`pooled > 1` **or** `max-zone > 1`). Worked example on the `pinwheel` at `n = 4`: the pooled ratio is `0.92` (which the naive one-tank view would wave through as "surplus"), but the most awkward arm of the pinwheel gives the busiest drone a zone costing `1.31 × B_usable` — so it is correctly flagged **battery-limited**. That gap is precisely the shape-and-imbalance effect the whole study is about, and why the pooled ratio alone is not trusted for the go/no-go.
+
+The tool also prints the per-drone zone table and the **zone imbalance** (busiest ÷ least-busy zone energy) — a direct readout of how unevenly a given shape forces the work to be split.
+
+**4. `--verify` — proof the arithmetic is real.** With `--verify` the tool runs one actual short mission (obstacles and random failures off, multirotor) and compares the energy the engine *actually drained* during the coverage phase against its own analytical number. They agree to under ~1% at the default timestep (the residual is just the engine charging a full `power × dt` on each leg's last partial tick, and it shrinks as the timestep shrinks). The check only counts as clean when the run had **zero battery swaps** — a mid-mission swap makes the engine re-fly the interrupted lane and double-count, so the verifier automatically picks the smallest swap-free fleet, and a run that still swaps is reported as **not clean** rather than a false pass.
+
+```bash
+# default 1 km² square, fleet of 5, with the engine cross-check
+python -m uav_swarm_sim.experiments.run_regime_calculator \
+    --geojson data/areas/shapes/square.geojson --n-drones 5 --verify
+```
+
+**How to read the result.** The report ends with a plain **Go / No-Go**:
+
+- **GO (battery-limited)** → swaps are needed, shape and weighting both matter, run the sweep. Sweep fleet sizes that straddle the printed crossover `n*` so the sweep actually crosses the regime boundary.
+- **NO-GO (fuel-surplus)** → the sweep would be flat. The tool lists how to cross into the interesting regime: use a smaller fleet, a smaller battery, a bigger/thinner area, or turn the camera payload on.
+
+For reference, the shipped 1 km² `square` with the default 100 Wh battery is **fuel-surplus at `n = 5`** (pooled `0.53`, busiest drone `0.76`), with crossover `n* = 3` — so a meaningful sweep on that baseline must include the smaller, battery-limited fleet sizes (roughly `n ≤ 2`), or raise `E_cover` some other way. Establishing that number *is* the reason this tool runs first.
 
 ---
 
@@ -311,6 +388,8 @@ Every quantitative claim maps to exactly one place, and the state/maneuver/algor
 | Monte Carlo with CI-based convergence; empirical break-even; internal validation | `metrics/monte_carlo.py`, `metrics/convergence.py`, `metrics/comparison.py`, `metrics/validation.py` |
 | Reproducible content-addressed RNG (paired-seed Monte Carlo); config + `config_hash` | `infrastructure/rng.py`, `infrastructure/config.py` |
 | Structured run output (plan/results/manifest); GPX + JSONL; grounded LLM judge | `metrics/run_output.py`, `metrics/gpx_exporter.py`, `metrics/llm_log_exporter.py`, `metrics/llm_judge.py` |
+| Shape study preflight: equal-area shape family (solidity / isoperimetric descriptors) | `experiments/generate_shapes.py` |
+| Shape study preflight: battery-limited vs fuel-surplus regime gate (`E_cover` vs pooled `n·B_usable` **and** the per-drone assignment-aware check), analytical `E_cover` verified against the engine | `experiments/run_regime_calculator.py` |
 
 ### Status and where the spec is ahead of the written text
 
@@ -320,7 +399,7 @@ The implementation and its hardening are complete and the regression suite is gr
 2. **The physical-vs-analytical failure treatment** (§5) deserves an explicit sentence distinguishing the irreversible physical failure from the analytical slot-replacement closure.
 3. **The battery-zone thresholds** (HIGH ≥75 / NOMINAL ≥40 / CRITICAL ≥20 / TERMINAL <20) and the **launch-site three-criterion objective** are modeling parameters that should be introduced in the text if cited as results.
 
-Design decisions taken during the build, now reflected in the code: external-literature reproduction was **dropped** (no access to the anchor papers' datasets) in favour of **internal validation** and paired-seed comparative claims (`metrics/validation.py`); **k-means was promoted to a first-class comparison peer** (§7); a **fine-grained adaptive scale sweep** with CI-based stopping locates the empirical break-even, while the three-tier policy remains the *operational* selector informed by it.
+Design decisions taken during the build, now reflected in the code: external-literature reproduction was **dropped** (no access to the anchor papers' datasets) in favour of **internal validation** and paired-seed comparative claims (`metrics/validation.py`); **k-means was promoted to a first-class comparison peer** (§7); a **fine-grained adaptive scale sweep** with CI-based stopping locates the empirical break-even, while the three-tier policy remains the *operational* selector informed by it. The **shape-study preflight tooling** (equal-area shape generator + regime calculator, §11) is in place ahead of the written text; the shape sweep itself, and hypothesis **H5** (shape effect governed by solidity, not raw concavity), remain to be run and written up.
 
 > **Not a study: coverage altitude.** Because obstacles are full-height prisms (always taller than the mission altitude) and the mission is flown at constant altitude, flight altitude does not change which obstacles must be avoided — it only changes one-time climb energy. There is therefore no interior altitude optimum to study; the 2.5D framing here is about modeling the vertical takeoff/RTH segments separately from horizontal coverage, not about optimizing the coverage altitude.
 

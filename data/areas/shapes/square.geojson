@@ -1,0 +1,42 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "shape study: square (metric, meters; equal-area)",
+        "shape": "square",
+        "area_m2": 1000000.0,
+        "solidity": 1.0,
+        "isoperimetric": 1.27324
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              1000.0,
+              0.0
+            ],
+            [
+              1000.0,
+              1000.0
+            ],
+            [
+              0.0,
+              1000.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

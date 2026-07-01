@@ -1,0 +1,50 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "shape study: l_shape (metric, meters; equal-area)",
+        "shape": "l_shape",
+        "area_m2": 1000000.0,
+        "solidity": 0.857143,
+        "isoperimetric": 1.697653
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              1154.7005383792514,
+              0.0
+            ],
+            [
+              1154.7005383792514,
+              577.3502691896257
+            ],
+            [
+              577.3502691896257,
+              577.3502691896257
+            ],
+            [
+              577.3502691896257,
+              1154.7005383792514
+            ],
+            [
+              0.0,
+              1154.7005383792514
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}
