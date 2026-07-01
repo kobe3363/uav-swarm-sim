@@ -275,14 +275,24 @@ class Agent:
         )
 
     def _on_connector(self) -> bool:
-        """True while the active coverage leg is a camera-off connector (TURN) --
-        drives the S2_MISSION <-> S_FERRY toggle. The boustrophedon builder types
-        strips as COVERAGE and inter-strip connectors as TURN."""
+        """True while the active coverage leg is a camera-off connector -- drives
+        the S2_MISSION <-> S_FERRY toggle.
+
+        Connectors are defined STRUCTURALLY by _build_coverage_legs: even global
+        leg indices are COVERAGE strips, odd ones are inter-strip connectors. We
+        key off _cov_idx parity rather than the current segment's maneuver, because
+        on holonomic (multirotor) paths a productive strip leg still begins/ends
+        with in-place-yaw TURN segments -- reading the per-segment maneuver would
+        spuriously flip to S_FERRY mid-strip and corrupt the state history, the
+        efficiency, and the camera-on/off semantics. Tour (target-visit) plans have
+        no strip/connector structure, so they never ferry."""
         if self.state not in (AgentState.S2_MISSION, AgentState.S_FERRY):
             return False
-        if self._leg_idx >= len(self._legs):
+        if getattr(self, "_leg_mode", "boustrophedon") == "tour":
             return False
-        return self._legs[self._leg_idx].maneuver_at_time(self._t) is ManeuverType.TURN
+        if self._cov_idx >= len(self._cov_legs):
+            return False
+        return (self._cov_idx % 2) == 1
 
     def _apply_transition(self, tr, t: float, bus) -> None:
         if self.recorder is not None:

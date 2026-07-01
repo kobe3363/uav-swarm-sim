@@ -119,5 +119,42 @@ def test_sensor_energy_is_power_times_time():
     assert em.sensor_energy(10.0, -5.0) == 0.0         # guard against negative
 
 
+# --------------------------------------------------------------------------- #
+# connector detection: parity, not per-segment maneuver                        #
+# --------------------------------------------------------------------------- #
+def test_holonomic_strip_yaw_does_not_toggle_to_ferry():
+    """On multirotor (holonomic) paths a productive strip leg still begins with an
+    in-place-yaw TURN segment. _on_connector must key off leg-index parity, not the
+    current segment's maneuver, so a strip (even _cov_idx) never reports a connector
+    even while yawing -- otherwise it would flip to S_FERRY mid-strip and corrupt the
+    state history / efficiency / camera semantics."""
+    from uav_swarm_sim.execution.agent import Agent
+    from uav_swarm_sim.infrastructure.core_types import Pose
+    from uav_swarm_sim.physical_model.drone_specs import build_spec
+    from uav_swarm_sim.physical_model.motion_model import make_motion_model
+
+    spec = build_spec(load_config(CONFIG_PATH))          # default platform = MULTIROTOR
+    motion = make_motion_model(spec)
+    # start heading != travel bearing => the strip leg carries an initial yaw TURN
+    strip = motion.plan(Pose(0.0, 0.0, 1.5), Pose(100.0, 0.0, 0.0), ManeuverType.COVERAGE)
+    kinds = {seg.maneuver for seg in strip.segments}
+    assert ManeuverType.TURN in kinds and ManeuverType.COVERAGE in kinds, \
+        "a holonomic strip must contain both the yaw TURN and the COVERAGE scan"
+
+    # minimal stand-in that exercises only the attribute reads in _on_connector
+    class _Stub:
+        pass
+    a = _Stub()
+    a.state = S.S2_MISSION
+    a._leg_mode = "boustrophedon"
+    a._cov_legs = [strip, strip]                          # index 0 = strip, 1 = connector
+    a._cov_idx = 0                                        # even -> strip
+    assert Agent._on_connector(a) is False, "a strip must not report a connector while yawing"
+    a._cov_idx = 1                                        # odd -> connector
+    assert Agent._on_connector(a) is True
+    a._leg_mode = "tour"                                  # target-visit plans never ferry
+    assert Agent._on_connector(a) is False
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
