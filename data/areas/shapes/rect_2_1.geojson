@@ -1,0 +1,42 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "shape study: rect_2_1 (metric, meters; equal-area)",
+        "shape": "rect_2_1",
+        "area_m2": 1000000.0,
+        "solidity": 1.0,
+        "isoperimetric": 1.432394
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              1414.213562373095,
+              0.0
+            ],
+            [
+              1414.213562373095,
+              707.1067811865474
+            ],
+            [
+              0.0,
+              707.1067811865474
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}
