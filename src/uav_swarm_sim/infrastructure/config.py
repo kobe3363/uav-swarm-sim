@@ -77,6 +77,37 @@ class SensorConfig:
 
 
 @dataclass(frozen=True)
+class CoverageConfig:
+    """S_FERRY Step 2: plan-time, obstacle-aware routing of the camera-off
+    inter-strip connectors (the odd TURN legs) over the FLYABLE region --
+    operating-area-minus-obstacles, NOT the survey polygon -- so the connector
+    detours *around* an obstacle that blocks its straight chord instead of flying
+    blind (today's connectors ignore obstacles; runtime S_OBS then catches the
+    real prism, but the analytical E_cover does not, so analytical != execution
+    when a chord is blocked). The routing is a single source shared by
+    ``coverage_path.boustrophedon`` (which stores the routed connectors on the
+    ``CoveragePlan``), ``Agent._build_coverage_legs`` and
+    ``run_regime_calculator``, so analytical and executed connector cost stay in
+    lock-step.
+
+    ``ferry_free_space`` defaults **OFF** so every existing run is byte-identical:
+    with it off (or when a chord is unobstructed) the connector is exactly today's
+    straight ``motion.plan(a, b, TURN)`` chord. Studies opt in.
+
+    ``operating_area`` bounds where a detour may route: ``convex_hull`` (of the
+    survey outer ring) dilated by ``operating_margin_m`` is the default and is the
+    free-flight premise made finite (the drone may leave the survey plot whenever
+    the camera is off and no obstacle is there). ``operating_margin_m`` (default
+    50 m == one coverage swath) gives a detour room to pass *outside* an obstacle
+    sitting on the hull edge; it is deliberately >> ``env.clearance_buffer_m``
+    (5 m) and tied to an existing length scale rather than a magic number.
+    """
+    ferry_free_space: bool = False
+    operating_area: str = "convex_hull"   # "convex_hull" | "bbox" | "survey"
+    operating_margin_m: float = 50.0
+
+
+@dataclass(frozen=True)
 class AeroConfig:
     formation_drag_reduction: float
     downwash_radius_m: float
@@ -233,6 +264,7 @@ class Config:
     fleet: FleetConfig
     platform: PlatformConfig
     sensor: SensorConfig
+    coverage: CoverageConfig
     aero: AeroConfig
     env: EnvConfig
     launch: LaunchConfig
@@ -356,6 +388,14 @@ def _build(raw: dict, config_hash: str) -> Config:
         swath_width_m=float(_require(s, "swath_width_m", "sensor")),
         overlap_frac=float(_require(s, "overlap_frac", "sensor")),
         sensor_power_w=float(s.get("sensor_power_w", 0.0)),
+    )
+
+    # ---- coverage (S_FERRY Step 2 connector routing) ----
+    cov = raw.get("coverage", {})
+    coverage = CoverageConfig(
+        ferry_free_space=bool(cov.get("ferry_free_space", False)),
+        operating_area=str(cov.get("operating_area", "convex_hull")),
+        operating_margin_m=float(cov.get("operating_margin_m", 50.0)),
     )
     a = _require(raw, "aero", "")
     aero = AeroConfig(
@@ -502,7 +542,7 @@ def _build(raw: dict, config_hash: str) -> Config:
     )
 
     return Config(
-        fleet=fleet, platform=platform, sensor=sensor, aero=aero, env=env,
+        fleet=fleet, platform=platform, sensor=sensor, coverage=coverage, aero=aero, env=env,
         launch=launch, battery_zones=battery_zones, swap=swap, failure=failure,
         safety=safety, rth=rth, sim=sim, mc=mc, mission=mission, dynamic_obstacles=dynamic_obstacles, viz=viz, tier_thresholds=tt,  # type: ignore[arg-type]
         layers=layers,
@@ -560,6 +600,14 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("sensor.overlap_frac must be in [0, 1)")
     if cfg.sensor.sensor_power_w < 0:
         raise ConfigError("sensor.sensor_power_w must be >= 0")
+
+    _op_areas = {"convex_hull", "bbox", "survey"}
+    if cfg.coverage.operating_area not in _op_areas:
+        raise ConfigError(
+            f"coverage.operating_area must be one of {sorted(_op_areas)}"
+        )
+    if cfg.coverage.operating_margin_m < 0:
+        raise ConfigError("coverage.operating_margin_m must be >= 0")
 
     if not (0.0 < cfg.aero.formation_drag_reduction < 1.0):
         raise ConfigError("aero.formation_drag_reduction must be in (0, 1)")
