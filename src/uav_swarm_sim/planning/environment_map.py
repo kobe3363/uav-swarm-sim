@@ -68,6 +68,17 @@ class EnvironmentMap:
         shapely.prepare(self.area)
 
     # --- queries ----------------------------------------------------------- #
+    @property
+    def buffered_obstacles(self):
+        """The clearance-buffered obstacle union (or ``None`` when obstacle-free).
+
+        Public read-only view of the same geometry ``free_space`` is cut from --
+        used by the S_FERRY Step 2 connector router to test whether a straight
+        chord is blocked and, if so, to route around the buffered footprints so
+        the detour keeps the regulatory ``buffer_m`` clearance (and therefore
+        cannot raise S_OBS, which triggers on the RAW union)."""
+        return self._obstacles_union
+
     def clearance(self, p: tuple[float, float]) -> float:
         pt = Point(p)
         d_bound = pt.distance(self.area.exterior)

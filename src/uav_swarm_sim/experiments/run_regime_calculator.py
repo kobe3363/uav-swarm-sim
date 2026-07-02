@@ -101,14 +101,23 @@ _BORDERLINE_MARGIN = 0.10
 # --------------------------------------------------------------------------- #
 # analytical E_cover core (rebuilds the agent's real coverage legs)            #
 # --------------------------------------------------------------------------- #
-def _rebuild_coverage_legs(plan_waypoints, motion):
+def _rebuild_coverage_legs(plan, motion):
     """Exactly ``Agent._build_coverage_legs`` for boustrophedon plans: even global
-    leg index = COVERAGE strip, odd = TURN connector."""
+    leg index = COVERAGE strip, odd = TURN connector. When the plan carries
+    S_FERRY Step 2 routed connectors, replay those for the odd legs (the same
+    single source the executor consumes) so analytical == execution; otherwise the
+    straight ``motion.plan(a, b, TURN)`` chord (byte-identical)."""
+    wps = plan.waypoints
+    routed = getattr(plan, "connectors", None) or []
     legs = []
-    for i in range(len(plan_waypoints) - 1):
-        a, b = plan_waypoints[i].pose, plan_waypoints[i + 1].pose
-        maneuver = ManeuverType.COVERAGE if i % 2 == 0 else ManeuverType.TURN
-        legs.append(motion.plan(a, b, maneuver))
+    for i in range(len(wps) - 1):
+        a, b = wps[i].pose, wps[i + 1].pose
+        if i % 2 == 0:
+            legs.append(motion.plan(a, b, ManeuverType.COVERAGE))
+        else:
+            k = (i - 1) // 2
+            legs.append(routed[k] if k < len(routed)
+                        else motion.plan(a, b, ManeuverType.TURN))
     return legs
 
 
@@ -121,17 +130,23 @@ def _leg_sensor_energy(leg, em, sensor_power_w: float) -> float:
     return em.sensor_energy(cov_dur, sensor_power_w)
 
 
-def coverage_energy(polygon, spec, em, motion, sensor_power_w: float) -> dict:
+def coverage_energy(polygon, spec, em, motion, sensor_power_w: float,
+                    env=None, coverage=None) -> dict:
     """Analytical energy to sweep ``polygon`` once, built from the SAME
     boustrophedon + leg construction + P·dt integration the engine runs.
+
+    ``env``/``coverage`` are optional: pass them (with ``coverage.ferry_free_space``
+    on) to route connectors around obstacles exactly as the executor does, so the
+    analytical connector cost matches execution on a blocked chord. Omitted =>
+    straight-chord connectors (byte-identical to the pre-Step-2 analytical path).
 
     Returns a breakdown dict: strip propulsion, connector propulsion, camera
     sensor, total coverage energy, and leg/geometry counts.
     """
     zone = Zone(drone_id=0, regions=[], polygon=polygon,
                 entry_pose=Pose(polygon.centroid.x, polygon.centroid.y, 0.0))
-    plan = boustrophedon(zone, spec, motion, em)
-    legs = _rebuild_coverage_legs(plan.waypoints, motion)
+    plan = boustrophedon(zone, spec, motion, em, env=env, coverage=coverage)
+    legs = _rebuild_coverage_legs(plan, motion)
 
     strip_j = connector_j = sensor_j = 0.0
     n_strips = n_connectors = 0

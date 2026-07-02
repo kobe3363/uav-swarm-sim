@@ -297,6 +297,12 @@ class CoveragePlan:
     est_energy_j: float
     leg_mode: str = "boustrophedon"   # "boustrophedon" (sweep) | "tour" (target-visit)
     layer: int = 0                    # coverage layer this plan is stamped to; 0 == single-layer-z0
+    # S_FERRY Step 2: plan-time routed camera-off connectors, one Path per odd
+    # (TURN) leg, in strip order. Empty => the executor/analytical rebuild falls
+    # back to the straight motion.plan(a, b, TURN) chord (byte-identical). When
+    # populated (routing enabled), it is the SINGLE source both the executor and
+    # the analytical E_cover consume, so their connector cost stays in lock-step.
+    connectors: list[Path] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
