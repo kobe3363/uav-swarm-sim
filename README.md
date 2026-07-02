@@ -253,8 +253,8 @@ python -m uav_swarm_sim.experiments.generate_shapes --out-dir data/areas/shapes
 #   (A2) is this (shape, fleet, battery) point battery-limited or fuel-surplus?
 python -m uav_swarm_sim.experiments.run_regime_calculator \
     --geojson data/areas/shapes/square.geojson --n-drones 5 --verify
-#   shape-regime table across all 8 shapes × n=1..6 (the BEFORE picture, no MC)
-python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_before.csv
+#   shape-regime table across all 8 shapes × n=1..6 (partition/regime, no MC)
+python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_regime.csv
 ```
 
 Smoke test: `pytest tests/test_smoke.py`. Full suite: `pytest -q`.
@@ -342,27 +342,27 @@ python -m uav_swarm_sim.experiments.run_regime_calculator \
 
 For reference, the shipped 1 km² `square` with the default 100 Wh battery is **fuel-surplus at `n = 5`** (pooled `0.53`, busiest drone `0.76`), with crossover `n* = 3` — so a meaningful sweep on that baseline must include the smaller, battery-limited fleet sizes (roughly `n ≤ 2`), or raise `E_cover` some other way. Establishing that number *is* the reason this tool runs first.
 
-### Shape-regime table — the BEFORE picture (`run_shape_regime_table.py`)
+### Shape-regime table — partition/regime picture (`run_shape_regime_table.py`)
 
 Once A2 and A3 are in place, one more analytical tool sweeps the regime metrics across the **whole shape family × fleet grid** at once, so the shape study can be designed on evidence rather than guesswork. It runs no Monte Carlo — it drives the A2/A3 functions over all 8 shapes and `n = 1..6` and prints four things.
 
 ```bash
-python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_before.csv
+python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_regime.csv
 ```
 
-> **BEFORE / AFTER framing (important).** This table is produced **without S_FERRY Step 2** (free-space connector routing outside the survey polygon). It is therefore the *contour-following "BEFORE"* picture: concave shapes still pay their full in-polygon connector cost. After Step 2 softens concave shapes toward their convex hull, the **same table is re-run as the "AFTER" picture**, and the pair is the clean H5 demonstration. Any concavity effect seen now is the upper bound Step 2 will erode.
+> **Framing correction (H5-as-connector-routing is moot).** This table was first described as a *contour-following "BEFORE"*. That framing is wrong and has been retired: under the free-flight mission premise (a drone may leave the survey plot whenever the camera is off and no obstacle is there), the camera-off connectors are **already straight free-space chords** — the geodesic between strip endpoints, already hull-level, already cutting across a concave notch. There is no in-polygon contour cost for S_FERRY Step 2 to erode, so re-running this grid with Step 2 on does **not** move the partition numbers. What Step 2 fixes is a *correctness* gap — an obstacle blocking a chord (runtime `S_OBS` detoured, analytical `E_cover` did not) — not the shape imbalance. The real shape result below is **decomposition-driven** and stands on its own.
 
 **What it reports.** (1) An `n*` table — for every shape and fleet size, both the pooled ratio and the per-drone **max-zone** ratio (the primary indicator, since batteries are not pooled), and the fleet size at which each shape crosses into battery-limited. (2) A **weighted-vs-unweighted** comparison at a representative *redistribution moment* (see the flag below): the busiest drone's work-per-remaining-battery, and how much the battery weighting lowers it and equalises it across the fleet. (3) The **H5 signal**: whether zone imbalance across shapes tracks **solidity** (convex-hull concavity) or the **isoperimetric** (elongation/perimeter) measure. (4) The **sweep-grid design** for the eventual MC study.
 
 > **Thesis-affecting choice (deliverable 2).** Weighted and unweighted decomposition are *identical at full battery* (both target equal area), so the weighting benefit only appears once batteries diverge. The tool therefore models one mid-mission redistribution instant with a battery-divergence profile — fleet fractions linearly spaced in `[--f-min 0.40, --f-max 1.00]`, each drone judged against its own remaining usable energy, averaged over `--perms` slot-assignments. This profile is a modelling choice; vary it and state it in the thesis.
 
-**What the BEFORE run shows (default baseline).** Three results stand out and should be read together:
+**What the run shows (default baseline).** Three results stand out and should be read together:
 
 - **The baseline straddles the transition, as intended.** Compact shapes leave the battery-limited regime (by max-zone) around `n = 3–4`, while the most concave shape stays battery-limited to `n ≈ 4` and the star to `n ≈ 5`. So `n ≈ 4` is the divergence sweet spot — some shapes battery-limited, others just surplus — which is exactly where weighted and unweighted decomposition should diverge most.
 - **The battery weighting works, and for every shape.** At the modelled redistribution moment the weighting consistently lowers the busiest drone's work-per-battery ratio and **shrinks the spread of work-per-battery across the fleet from roughly 4× down to ~2×**. This is a direct, pre-MC view of the thesis's core mechanism (allocate less area to the more-drained drone).
-- **A caveat that motivates Step 2.** In this BEFORE picture, zone imbalance correlates with the **isoperimetric/elongation** measure, *not* with solidity — the thin **convex** rectangles partition as badly as, or worse than, the concave shapes. So H5's convex-hull framing does **not yet** hold at the partition level: what hurts a contour-following sweep is *elongation of the pieces*, which both thin rectangles and concave arms produce. This is precisely the effect S_FERRY Step 2 is meant to relieve for the concave shapes (by letting drones reposition through free space), and it is why the AFTER re-run is the real test of H5. (Also note: solidity is `1.0` for 5 of the 8 shapes, so this family has little solidity variance — a future family with graded solidity would separate the two measures more cleanly.)
+- **Imbalance tracks elongation, not solidity — and that is the honest finding, not a caveat awaiting Step 2.** Zone imbalance correlates with the **isoperimetric/elongation** measure, *not* with solidity: the thin **convex** `rect_8_1` partitions as badly as, or worse than, the concave star/pinwheel. Because connectors are already free-space chords, there is no concavity-vs-hull routing lever for Step 2 to pull here — what hurts the sweep is *elongation of the partitioned pieces*, which both thin rectangles and concave arms produce. So H5's convex-hull-of-the-survey-shape framing does not govern partition imbalance; the shape effect that *does* hold is the decomposition one in the previous bullet (weighted decomposition cuts the concave imbalance more; across-shape `corr(peak weighting benefit, solidity) ≈ −0.505`). (Also: solidity is `1.0` for 5 of the 8 shapes, so this family has little solidity variance; a graded-solidity family would separate the measures more cleanly.)
 
-**Sweep-grid design (the eventual MC study, specced here — not yet run).** Fleet `n = 2..6` (small `n` all battery-limited → `n ≈ 4` shape-divergent → large `n` all surplus); all 8 shapes; all 4 decomposition algorithms (`weighted_voronoi` + its `tgc_basic` ablation twin + the `classic_voronoi`/`kmeans` position baselines); MULTIROTOR only; dynamic obstacles off; hazard `λ = 0`; the **shipped baseline is not retuned**. The **reference cell is `n = 4`** (the divergence peak). Per cell: SMDP efficiency, workload/energy balance, swap count, makespan, weighted vs the three baselines on paired seeds — run once now (BEFORE) and again after S_FERRY Step 2 (AFTER).
+**Sweep-grid design (the eventual MC study, specced here — not yet run).** Fleet `n = 2..6` (small `n` all battery-limited → `n ≈ 4` shape-divergent → large `n` all surplus); all 8 shapes; all 4 decomposition algorithms (`weighted_voronoi` + its `tgc_basic` ablation twin + the `classic_voronoi`/`kmeans` position baselines); MULTIROTOR only; dynamic obstacles off; hazard `λ = 0`; the **shipped baseline is not retuned**. The **reference cell is `n = 4`** (the divergence peak). Per cell: SMDP efficiency, workload/energy balance, swap count, makespan, weighted vs the three baselines on paired seeds. (No connector-routing BEFORE/AFTER: connectors are already free-space chords, so S_FERRY Step 2 leaves the partition numbers unchanged — it only fixes analytical=execution on obstacle-blocked chords. The shape effect to sweep is decomposition-driven.)
 
 ---
 
