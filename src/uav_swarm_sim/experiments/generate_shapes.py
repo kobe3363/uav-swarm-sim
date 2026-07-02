@@ -69,6 +69,24 @@ def _l_shape() -> Polygon:
     return Polygon([(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)])
 
 
+def _c_shape() -> Polygon:
+    """A 'C': a 2x2 square with a rectangular notch cut into the middle of the
+    right side (x in [1, 2], y in [0.6, 1.4]). Simple polygon (no interior ring),
+    concave: solidity = (4 - 0.8) / 4 = 0.8.
+
+    This is the S_FERRY Step 2 test vehicle: the notch is *not surveyed* yet lies
+    inside the bounding area (the convex hull), so a camera-off connector between
+    the top arm and the bottom arm crosses free space that is inside the operating
+    area but outside the survey polygon -- straight-chord when clear, detour when
+    an NFZ is dropped into the notch. (An annulus/donut with a true interior hole
+    is deferred: the coverage strips handle a hole, but multi-drone
+    decomposition/TGC over a holed survey polygon is unverified.)
+    """
+    return Polygon([
+        (0, 0), (2, 0), (2, 0.6), (1, 0.6), (1, 1.4), (2, 1.4), (2, 2), (0, 2),
+    ])
+
+
 def _disk(n_sides: int) -> Polygon:
     """Regular ``n_sides``-gon approximating a circle (convex; solidity ~= 1,
     isoperimetric ratio -> 1 as n grows)."""
@@ -113,6 +131,7 @@ def shape_builders(disk_sides: int) -> dict[str, Polygon]:
         "rect_4_1": _rectangle(4.0),
         "rect_8_1": _rectangle(8.0),
         "l_shape": _l_shape(),
+        "c_shape": _c_shape(),
         "disk": _disk(disk_sides),
         "star_5": _star(5, 0.4),
         "pinwheel": _pinwheel(4, 0.28),
