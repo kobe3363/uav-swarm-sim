@@ -105,9 +105,10 @@ def test_ac1_c_shape_shipped_is_one_km2_and_loads():
 
 
 def test_ac1_mission_covers_c_shape_not_the_notch(tmp_path):
-    # a small C-shape swept by a single drone (whole shape = one zone, so no
-    # decomposition slivers) on a generous battery => swap-free and fast; the
-    # surveyed polygon is covered and the notch (outside the polygon) is not.
+    # a small C-shape swept by a 4-drone fleet (weighted-Voronoi partition over a
+    # concave polygon -- exercises the decomposition sliver guard) on a generous
+    # battery => swap-free and fast; the surveyed polygon is covered and the notch
+    # (outside the polygon) is not.
     poly = _c_shape(500.0)
     gj = _write_geojson(tmp_path / "c_small.geojson", poly)
     cfg = load_config(
@@ -116,8 +117,8 @@ def test_ac1_mission_covers_c_shape_not_the_notch(tmp_path):
             "env.geojson_path": gj,
             "env.obstacle_density_per_km2": 0.0,
             "failure.hazard_rate_per_hour": 0.0,
-            "fleet.n_drones": 1,
-            "fleet.battery_capacity_wh": 2000.0,
+            "fleet.n_drones": 4,
+            "fleet.battery_capacity_wh": 400.0,
             "sim.max_timesteps": 200000,
             "telemetry.enabled": False,
         },
@@ -126,6 +127,7 @@ def test_ac1_mission_covers_c_shape_not_the_notch(tmp_path):
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
     assert not result.aborted
+    assert len(eng.partition.zones) == 4
     assert result.coverage_frac > 0.99
     # the notch centre is outside the survey polygon => never a coverage target
     notch_centre = box(250.0, 150.0, 500.0, 350.0).centroid
