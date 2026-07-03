@@ -146,11 +146,23 @@ class Agent:
                 a, b = waypoints[i].pose, waypoints[i + 1].pose
                 legs.append(self.motion.plan(a, b, ManeuverType.CRUISE))
             return legs
-        # area coverage: even legs are strips (COVERAGE), odd legs are U-turn connectors (TURN)
+        # area coverage: even legs are strips (COVERAGE), odd legs are U-turn
+        # connectors (TURN). If the plan carries S_FERRY Step 2 routed connectors
+        # (obstacle-aware, computed once at plan time), replay those for the odd
+        # legs so the executed connector matches the analytical E_cover exactly;
+        # otherwise fall back to the straight motion.plan(a, b, TURN) chord
+        # (byte-identical to the pre-Step-2 behaviour).
+        routed = getattr(self.plan, "connectors", None) or []
         for i in range(len(waypoints) - 1):
             a, b = waypoints[i].pose, waypoints[i + 1].pose
-            maneuver = ManeuverType.COVERAGE if i % 2 == 0 else ManeuverType.TURN
-            legs.append(self.motion.plan(a, b, maneuver))
+            if i % 2 == 0:
+                legs.append(self.motion.plan(a, b, ManeuverType.COVERAGE))
+            else:
+                k = (i - 1) // 2
+                if k < len(routed):
+                    legs.append(routed[k])
+                else:
+                    legs.append(self.motion.plan(a, b, ManeuverType.TURN))
         return legs
 
     def adopt_plan(self, plan: CoveragePlan, transit: Path) -> None:

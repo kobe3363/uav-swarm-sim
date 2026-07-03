@@ -120,6 +120,24 @@ sensor:
                               # to the pre-camera baseline; studies opt in with a
                               # symbolic value (e.g. 15.0) via config or override.
 
+# --------------------------------------------------------------------------- #
+# Coverage connector routing (S_FERRY Step 2).                                #
+# Camera-off inter-strip connectors (odd TURN legs) may route AROUND obstacles #
+# through the flyable region (operating-area-minus-obstacles, NOT the survey   #
+# polygon), instead of flying a blind straight chord. Default OFF => every run #
+# byte-identical: connector == today's straight motion.plan(a, b, TURN) chord. #
+# --------------------------------------------------------------------------- #
+coverage:
+  ferry_free_space: false     # OFF => byte-identical; studies opt in. When ON, a
+                              # connector whose straight chord is unobstructed still
+                              # takes that chord (byte-identical); only a BLOCKED
+                              # chord detours around the obstacle (never through).
+  operating_area: convex_hull # flyable-region bound for detours: convex_hull |
+                              # bbox | survey (survey == degenerate/today).
+  operating_margin_m: 50.0    # convex-hull dilation (== one coverage swath; >> the
+                              # 5 m clearance_buffer_m) so a detour can pass OUTSIDE
+                              # an obstacle sitting on the hull edge.
+
 aero:
   formation_drag_reduction: 0.1514   # Guo et al. 2025, homogeneous formation (15.14%)
   downwash_radius_m: 3.0      # multirotor wake half-width (~2-3 rotor diameters)

@@ -25,6 +25,7 @@ from ..infrastructure.enums import ManeuverType
 from ..physical_model.drone_specs import PlatformSpec
 from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import MotionModel
+from .visibility_router import route_connector
 
 
 def _long_axis_angle(poly: Polygon) -> float:
@@ -58,7 +59,8 @@ def _strip_intervals(rot_poly: Polygon, swath: float) -> list[list[tuple[float, 
 
 
 def boustrophedon(
-    zone: Zone, spec: PlatformSpec, motion: MotionModel, em: EnergyModel
+    zone: Zone, spec: PlatformSpec, motion: MotionModel, em: EnergyModel,
+    env=None, coverage=None,
 ) -> CoveragePlan:
     poly = zone.polygon
     if poly.is_empty or poly.area <= 0:
@@ -100,7 +102,13 @@ def boustrophedon(
 
     world = [unrot(p) for p in endpoints]
 
+    # S_FERRY Step 2: route camera-off connectors around obstacles when enabled.
+    # Default (env is None or flag off) => straight chord, byte-identical.
+    ferry_on = bool(coverage is not None and getattr(coverage, "ferry_free_space", False)
+                    and env is not None)
+
     waypoints: list[Waypoint] = []
+    connectors: list[Path] = []
     length = 0.0
     energy = 0.0
     # iterate strip by strip: even index = strip start, odd = strip end
@@ -117,8 +125,19 @@ def boustrophedon(
         if k + 2 < len(world):
             nxt = world[k + 2]
             nh = math.atan2(world[k + 3][1] - nxt[1], world[k + 3][0] - nxt[0]) if k + 3 < len(world) else heading
-            conn = motion.plan(Pose(e[0], e[1], heading), Pose(nxt[0], nxt[1], nh), ManeuverType.TURN)
+            a_pose = Pose(e[0], e[1], heading)
+            b_pose = Pose(nxt[0], nxt[1], nh)
+            if ferry_on:
+                conn = route_connector(
+                    a_pose, b_pose, motion, env,
+                    enabled=True,
+                    operating_area=coverage.operating_area,
+                    margin_m=coverage.operating_margin_m,
+                )
+                connectors.append(conn)
+            else:
+                conn = motion.plan(a_pose, b_pose, ManeuverType.TURN)
             length += conn.total_length_m
             energy += em.path_energy(conn)
 
-    return CoveragePlan(zone.drone_id, waypoints, length, energy)
+    return CoveragePlan(zone.drone_id, waypoints, length, energy, connectors=connectors)

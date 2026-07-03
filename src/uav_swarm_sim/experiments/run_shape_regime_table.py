@@ -1,4 +1,8 @@
-"""Shape-regime table: the "BEFORE" (contour-following) picture for the shape study.
+"""Shape-regime table: the free-flight partition/regime picture for the shape study.
+
+(Previously mislabeled the "contour-following BEFORE" table. That label was wrong:
+the connectors it costs are already straight free-space chords, not contour-
+following in-polygon paths -- see the framing note below.)
 
 This is a pure-analysis driver over the *existing* A2/A3 tools (no new architecture,
 no Monte Carlo, no long simulation). It builds the equal-area shape family and, for
@@ -20,13 +24,25 @@ shape-induced zone imbalance. It answers four questions before any MC sweep:
      across-shape correlation of each against the balanced-partition imbalance.
   4. Sweep-grid design -- the spec (not the run) for the eventual MC study.
 
-*** BEFORE / AFTER framing (record this). *** This table is produced WITHOUT
-S_FERRY Step 2 (free-space connector routing outside the survey polygon). It is
-therefore the "contour-following BEFORE" picture: concave shapes still pay their
-full in-polygon connector cost. After Step 2 softens concave shapes toward their
-convex hull, this exact table is re-run as the "AFTER" picture; the pair is the
-clean H5 demonstration. Any concavity effect seen here is the upper bound Step 2
-will erode.
+*** CORRECTED framing (H5-as-connector-routing is MOOT). *** This table was first
+labeled the "contour-following BEFORE" of an H5 connector-routing story. That story
+does not apply: under the free-flight mission premise (a drone may leave the survey
+plot whenever the camera is off and no obstacle is there), the camera-off
+connectors are ALREADY straight free-space chords -- the geodesic between strip
+endpoints, already hull-level, already cutting across a concave notch. There is no
+in-polygon contour cost for S_FERRY Step 2 to erode, so re-running this grid with
+Step 2 ON does not move the partition numbers. Accordingly this is not a "BEFORE"
+of anything; it is the free-flight partition/regime picture, full stop. What Step 2
+*does* fix is a correctness gap (an obstacle blocking a chord: runtime S_OBS
+detours, analytical E_cover did not), not the shape imbalance.
+
+Consistent with that, the partition imbalance below tracks the ISOPERIMETRIC ratio
+(elongation), NOT solidity: the thin CONVEX rect_8_1 partitions worse than the
+concave star_5/pinwheel, because both thin-convex and concave pieces pay the same
+elongation cost and free-flight connectors already neutralize any concavity-vs-hull
+routing difference. The genuine, decomposition-driven shape result stands and is
+reported here: battery-weighted decomposition cuts the busiest drone's load (and the
+zone imbalance) MORE for concave shapes than for compact ones (deliverable 2).
 
 *** THESIS-AFFECTING modeling choice (deliverable 2). *** The battery-divergence
 profile is a model of one mid-mission redistribution instant, not a measured state.
@@ -123,7 +139,7 @@ def build_tables(cfg, shapes_dir, n_min, n_max, f_min, f_max, perms,
 
             # balanced (equal-battery) partition -> deliverable 1 + 3
             bal = per_zone_energy(env, tgc, spec, em, motion, base, n,
-                                  sensor_power_w, altitude)
+                                  sensor_power_w, altitude, coverage=cfg.coverage)
             ez = [r["e_zone_j"] for r in bal]
             max_zone = max(ez)
             min_zone = min(ez)
@@ -240,10 +256,12 @@ def main(argv=None) -> int:
     b_usable = cap * frac
     ns = list(range(args.n_min, args.n_max + 1))
 
-    print("# Shape-regime table — the BEFORE (contour-following) picture\n")
-    print("> Produced WITHOUT S_FERRY Step 2. Concave shapes still pay their full "
-          "in-polygon connector cost; this is the upper bound Step 2 will erode. "
-          "Re-run after Step 2 for the AFTER picture — the pair is the H5 demo.\n")
+    print("# Shape-regime table — free-flight partition/regime picture\n")
+    print("> Camera-off connectors are already straight free-space chords (free-flight "
+          "premise), so this is NOT a contour-following 'BEFORE' and S_FERRY Step 2 does "
+          "not move these partition numbers — H5-as-connector-routing is moot. Imbalance "
+          "tracks the isoperimetric (elongation) ratio, not solidity; the real shape "
+          "result is decomposition-driven (weighted cuts concave imbalance more).\n")
     print(f"- Fleet budget floor: --usable-floor {args.usable_floor} → {frac_label} "
           f"→ B_usable {b_usable:,.0f} J per drone (THESIS-AFFECTING)")
     print(f"- Regime classified on the per-drone **max-zone** ratio (primary); "
@@ -326,13 +344,14 @@ def main(argv=None) -> int:
           f"{len(sol2)} shapes in this family, so it has little variance to correlate "
           "on — any solidity signal must come from the 3 concave shapes alone.")
     if abs(r_iso) > abs(r_sol) + 0.15:
-        print("At the partition level, and BEFORE S_FERRY, imbalance tracks the "
-              "ISOPERIMETRIC (elongation/perimeter) measure MORE than solidity: the "
-              "thin CONVEX rectangles partition as badly as — or worse than — the "
-              "concave shapes. So H5's convex-hull framing does NOT yet hold at the "
-              "partition level; concavity per se is not what drives imbalance here. "
-              "This is expected to change once S_FERRY Step 2 lets concave shapes "
-              "reposition through free space toward their hull (the AFTER picture).")
+        print("At the partition level imbalance tracks the ISOPERIMETRIC "
+              "(elongation/perimeter) measure MORE than solidity: the thin CONVEX "
+              "rectangles partition as badly as — or worse than — the concave shapes. "
+              "H5's convex-hull-of-the-survey-shape framing does NOT govern partition "
+              "imbalance; concavity per se is not the driver. And since connectors are "
+              "already free-space chords, S_FERRY Step 2 does not change this — the "
+              "genuine shape effect is decomposition-driven (weighted cuts concave "
+              "imbalance more), not connector-routing.")
     elif abs(r_sol) > abs(r_iso) + 0.15:
         print("Imbalance tracks SOLIDITY more than the isoperimetric measure, so "
               "H5's convex-hull framing already holds at the partition level.")
@@ -354,8 +373,10 @@ def main(argv=None) -> int:
           "borderline-surplus while pinwheel is battery-limited).")
     print("- Metrics per cell: SMDP efficiency, workload/energy balance, swap count, "
           "makespan; compared weighted vs the three baselines on paired seeds.")
-    print("- BEFORE/AFTER: run this grid now (contour-following) and again after "
-          "S_FERRY Step 2 (free-space routing) for the H5 before/after pair.")
+    print("- No BEFORE/AFTER over connector routing: connectors are already free-space "
+          "chords, so S_FERRY Step 2 leaves these partition numbers unchanged (it only "
+          "fixes analytical=execution on obstacle-blocked chords). The shape effect to "
+          "sweep is decomposition-driven (weighted vs baselines), not routing.")
 
     if args.csv:
         import csv

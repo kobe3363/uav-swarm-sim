@@ -256,7 +256,8 @@ class SimulationEngine:
                 zone = self.partition.zones.get(i)
                 if zone is not None:
                     plan = (grid.coverage(zone, self.spec) if grid is not None
-                            else boustrophedon(zone, self.spec, self.motion, self.em))
+                            else boustrophedon(zone, self.spec, self.motion, self.em,
+                                               env=self.env, coverage=cfg.coverage))
                     transit = self.motion.plan(self.deploy_poses[i], zone.entry_pose, ManeuverType.CRUISE)
                     agent.assign(plan, transit)
                     self.plans[i] = plan
@@ -269,6 +270,7 @@ class SimulationEngine:
                 self.decomposer if isinstance(self.decomposer, (WeightedTgcDecomposer,))
                 else WeightedTgcDecomposer(),
                 self.layer_graphs, self.motion, self.em, self.spec,
+                coverage=cfg.coverage,
             )
         )
         self.replan_times: list[float] = []
