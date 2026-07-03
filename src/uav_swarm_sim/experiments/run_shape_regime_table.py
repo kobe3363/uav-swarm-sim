@@ -139,7 +139,7 @@ def build_tables(cfg, shapes_dir, n_min, n_max, f_min, f_max, perms,
 
             # balanced (equal-battery) partition -> deliverable 1 + 3
             bal = per_zone_energy(env, tgc, spec, em, motion, base, n,
-                                  sensor_power_w, altitude)
+                                  sensor_power_w, altitude, coverage=cfg.coverage)
             ez = [r["e_zone_j"] for r in bal]
             max_zone = max(ez)
             min_zone = min(ez)

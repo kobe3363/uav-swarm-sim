@@ -101,7 +101,7 @@ _BORDERLINE_MARGIN = 0.10
 # --------------------------------------------------------------------------- #
 # analytical E_cover core (rebuilds the agent's real coverage legs)            #
 # --------------------------------------------------------------------------- #
-def _rebuild_coverage_legs(plan, motion):
+def _rebuild_coverage_legs(plan, motion) -> list:
     """Exactly ``Agent._build_coverage_legs`` for boustrophedon plans: even global
     leg index = COVERAGE strip, odd = TURN connector. When the plan carries
     S_FERRY Step 2 routed connectors, replay those for the odd legs (the same
@@ -214,7 +214,7 @@ def _build_planning_layer(cfg, geojson_path: str, n_drones: int):
 
 
 def per_zone_energy(env, tgc, spec, em, motion, base_pose, n_drones: int,
-                    sensor_power_w: float, altitude_m: float) -> list[dict]:
+                    sensor_power_w: float, altitude_m: float, coverage=None) -> list[dict]:
     """Assignment-aware per-drone E_cover. Batteries are NOT pooled and a drone
     can only be sent to cover its OWN zone, so the fleet-aggregate ratio
     E_cover/(n·B_usable) is only a *lower bound* on battery pressure: a balanced
@@ -235,7 +235,7 @@ def per_zone_energy(env, tgc, spec, em, motion, base_pose, n_drones: int,
     rows: list[dict] = []
     for did, zone in part.zones.items():
         core = coverage_energy(zone.polygon, spec, em, motion,
-                               sensor_power_w)["coverage_total_j"]
+                               sensor_power_w, env=env, coverage=coverage)["coverage_total_j"]
         transit_dist_m = math.hypot(zone.entry_pose.x - base_pose.x,
                                     zone.entry_pose.y - base_pose.y)
         tv = transit_and_vertical(em, spec, transit_dist_m, altitude_m)
@@ -416,7 +416,8 @@ def main(argv=None) -> int:
     # ASSIGNMENT-AWARE check: build the real partition for this fleet and test the
     # BUSIEST drone's own E_cover against one battery (batteries are not pooled).
     zone_rows = per_zone_energy(env, tgc, spec, em, motion, base_pose, n_drones,
-                                sensor_power_w, cfg.env.coverage_altitude_m)
+                                sensor_power_w, cfg.env.coverage_altitude_m,
+                                coverage=cfg.coverage)
     max_zone_j = max(r["e_zone_j"] for r in zone_rows) if zone_rows else float("nan")
     min_zone_j = min(r["e_zone_j"] for r in zone_rows) if zone_rows else float("nan")
     max_zone_ratio = max_zone_j / b_usable if b_usable > 0 else float("inf")

@@ -31,6 +31,7 @@ import math
 
 import networkx as nx
 from shapely.geometry import LineString, box
+from shapely.geometry.base import BaseGeometry
 
 from ..infrastructure.core_types import Path, Pose
 from ..infrastructure.enums import ManeuverType
@@ -41,7 +42,7 @@ from ..infrastructure.enums import ManeuverType
 _SKIN_EPS_M = 1e-3
 
 
-def flyable_region(survey_poly, buffered_obstacles, operating_area: str, margin_m: float):
+def flyable_region(survey_poly, buffered_obstacles, operating_area: str, margin_m: float) -> BaseGeometry:
     """The region a camera-off connector may fly in: the operating area minus the
     buffered obstacles. The operating area is deliberately LARGER than the survey
     polygon (``convex_hull`` dilated by ``margin_m`` by default) so the notch of a
@@ -59,7 +60,7 @@ def flyable_region(survey_poly, buffered_obstacles, operating_area: str, margin_
     return base
 
 
-def _obstacle_vertices(buffered_obstacles, operating_area_poly):
+def _obstacle_vertices(buffered_obstacles, operating_area_poly) -> list[tuple[float, float]]:
     """Exterior+interior ring vertices of the buffered obstacle union that lie
     within the operating area -- the candidate turn points for a detour."""
     if buffered_obstacles is None:
@@ -75,7 +76,7 @@ def _obstacle_vertices(buffered_obstacles, operating_area_poly):
     return pts
 
 
-def _shortest_polyline(a_xy, b_xy, buffered_obstacles, operating_area_poly):
+def _shortest_polyline(a_xy, b_xy, buffered_obstacles, operating_area_poly) -> list[tuple[float, float]] | None:
     """Reduced-visibility-graph shortest obstacle-avoiding polyline a->b, or None
     if the endpoints cannot be connected inside the flyable region."""
     nav_core = None
@@ -117,6 +118,24 @@ def _shortest_polyline(a_xy, b_xy, buffered_obstacles, operating_area_poly):
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         return None
     return [uniq[i] for i in idx]
+
+
+def _path_clear(path: Path, env, ds: float = 1.0) -> bool:
+    """Validate the ACTUAL realized motion, not just the visibility polyline.
+
+    ``_shortest_polyline`` certifies straight edges, but ``_chain_turn_legs`` builds
+    the connector from ``motion.plan(...)`` geometry, which for a non-holonomic
+    platform can arc between waypoints and bulge into an obstacle the straight edge
+    cleared. We therefore sample the built Path and reject it if any span crosses a
+    RAW obstacle -- the exact predicate the SafetyMonitor uses for S_OBS, so the
+    guard rejects precisely the paths that would trip it. A holonomic multirotor's
+    connector is the straight polyline (a full ``buffer_m`` off the raw prisms), so
+    it always passes: no behaviour change; this is a net for curvature > 0."""
+    pts = path.sample(ds)
+    for i in range(len(pts) - 1):
+        if env.segment_in_obstacle(pts[i], pts[i + 1]):
+            return False
+    return True
 
 
 def _chain_turn_legs(polyline, start: Pose, end: Pose, motion) -> Path:
@@ -178,4 +197,8 @@ def route_connector(
     polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
     if polyline is None or len(polyline) < 2:
         return chord  # boxed in -> fall back (never worse than today)
-    return _chain_turn_legs(polyline, a, b, motion)
+    routed = _chain_turn_legs(polyline, a, b, motion)
+    # validate the realized motion (arcs may bulge where the polyline was straight)
+    if not _path_clear(routed, env):
+        return chord  # infeasible realized path -> fall back (S_OBS remains the net)
+    return routed

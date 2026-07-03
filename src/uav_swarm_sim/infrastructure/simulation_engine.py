@@ -270,6 +270,7 @@ class SimulationEngine:
                 self.decomposer if isinstance(self.decomposer, (WeightedTgcDecomposer,))
                 else WeightedTgcDecomposer(),
                 self.layer_graphs, self.motion, self.em, self.spec,
+                coverage=cfg.coverage,
             )
         )
         self.replan_times: list[float] = []

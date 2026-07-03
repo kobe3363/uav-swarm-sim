@@ -23,6 +23,7 @@ from conftest import config_path
 from shapely.affinity import scale
 from shapely.geometry import LineString, Polygon, box
 
+from uav_swarm_sim.experiments.generate_shapes import _c_shape as _canonical_c_shape
 from uav_swarm_sim.experiments.run_regime_calculator import (
     _COVERAGE_STATES,
     build_spec,
@@ -46,11 +47,12 @@ from uav_swarm_sim.planning.visibility_router import route_connector
 # --------------------------------------------------------------------------- #
 # helpers                                                                      #
 # --------------------------------------------------------------------------- #
-_UNIT_C = Polygon([(0, 0), (2, 0), (2, 0.6), (1, 0.6), (1, 1.4), (2, 1.4), (2, 2), (0, 2)])
+# the canonical unit C-shape (2x2, solidity 0.8) shipped as data/areas/shapes/c_shape.geojson
+_UNIT_C = _canonical_c_shape()
 
 
 def _c_shape(width_m: float) -> Polygon:
-    """The C-shape scaled to a ``width_m`` bounding box (metric)."""
+    """The canonical C-shape scaled to a ``width_m`` bounding box (metric)."""
     return scale(_UNIT_C, xfact=width_m / 2.0, yfact=width_m / 2.0, origin=(0, 0))
 
 
