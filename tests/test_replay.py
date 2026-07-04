@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo
@@ -14,9 +13,9 @@ from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
 from uav_swarm_sim.infrastructure import visualization as viz
 
 
-def _smoke_cfg():
+def _smoke_cfg(config_path):
     return load_config(
-        config_path(),
+        config_path,
         overrides={
             "fleet.n_drones": 3,
             "fleet.battery_capacity_wh": 400.0,
@@ -30,8 +29,8 @@ def _smoke_cfg():
     )
 
 
-def _run(replication=0):
-    cfg = _smoke_cfg()
+def _run(config_path, replication=0):
+    cfg = _smoke_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), replication=replication,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -39,8 +38,8 @@ def _run(replication=0):
 
 
 @pytest.fixture(scope="module")
-def run0():
-    return _run(0)
+def run0(config_path):
+    return _run(config_path, 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -81,9 +80,9 @@ def test_traces_capture_multiple_states(run0):
 # --------------------------------------------------------------------------- #
 # determinism of the replay traces                                            #
 # --------------------------------------------------------------------------- #
-def test_replication_replay_is_deterministic():
-    _, _, r_a = _run(replication=60)
-    _, _, r_b = _run(replication=60)
+def test_replication_replay_is_deterministic(config_path):
+    _, _, r_a = _run(config_path, replication=60)
+    _, _, r_b = _run(config_path, replication=60)
     for aid in r_a.history._position:  # same agents
         ta = r_a.history.position_trace(aid)
         tb = r_b.history.position_trace(aid)

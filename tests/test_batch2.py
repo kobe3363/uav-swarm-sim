@@ -5,7 +5,6 @@ import math
 
 import numpy as np
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.core_types import (
@@ -33,8 +32,8 @@ from uav_swarm_sim.physical_model.vertical_segments import (
 )
 
 
-def _spec(platform="MULTIROTOR"):
-    cfg = load_config(config_path(), overrides={"platform_type": platform})
+def _spec(config_path, platform="MULTIROTOR"):
+    cfg = load_config(config_path, overrides={"platform_type": platform})
     return build_spec(cfg), cfg
 
 
@@ -82,8 +81,8 @@ def test_inplace_turn_progresses_by_time_not_length():
 # --------------------------------------------------------------------------- #
 # drone_specs                                                                 #
 # --------------------------------------------------------------------------- #
-def test_effective_swath_and_capacity():
-    spec, cfg = _spec()
+def test_effective_swath_and_capacity(config_path):
+    spec, cfg = _spec(config_path)
     assert spec.swath_width_m == pytest.approx(
         cfg.sensor.swath_width_m * (1 - cfg.sensor.overlap_frac)
     )
@@ -135,14 +134,14 @@ def test_dubins_rejects_nonpositive_radius():
 # --------------------------------------------------------------------------- #
 # motion_model                                                                #
 # --------------------------------------------------------------------------- #
-def test_make_motion_model_per_platform():
-    assert isinstance(make_motion_model(_spec("MULTIROTOR")[0]), HolonomicModel)
-    assert isinstance(make_motion_model(_spec("FIXED_WING")[0]), DubinsModel)
-    assert isinstance(make_motion_model(_spec("VTOL")[0]), DubinsModel)
+def test_make_motion_model_per_platform(config_path):
+    assert isinstance(make_motion_model(_spec(config_path, "MULTIROTOR")[0]), HolonomicModel)
+    assert isinstance(make_motion_model(_spec(config_path, "FIXED_WING")[0]), DubinsModel)
+    assert isinstance(make_motion_model(_spec(config_path, "VTOL")[0]), DubinsModel)
 
 
-def test_dubins_model_plan_and_cost():
-    spec, _ = _spec("FIXED_WING")
+def test_dubins_model_plan_and_cost(config_path):
+    spec, _ = _spec(config_path, "FIXED_WING")
     m = DubinsModel(spec)
     start, goal = Pose(0, 0, 0.0), Pose(100, 50, 1.0)
     path = m.plan(start, goal, ManeuverType.CRUISE)
@@ -150,8 +149,8 @@ def test_dubins_model_plan_and_cost():
     assert m.leg_cost(start, goal) == pytest.approx(path.total_length_m, abs=1e-6)
 
 
-def test_holonomic_plan_reaches_goal_and_euclidean_cost():
-    spec, _ = _spec("MULTIROTOR")
+def test_holonomic_plan_reaches_goal_and_euclidean_cost(config_path):
+    spec, _ = _spec(config_path, "MULTIROTOR")
     m = HolonomicModel(spec)
     start, goal = Pose(0, 0, 0.0), Pose(30, 40, 1.0)
     path = m.plan(start, goal, ManeuverType.CRUISE)
@@ -165,15 +164,15 @@ def test_holonomic_plan_reaches_goal_and_euclidean_cost():
 # --------------------------------------------------------------------------- #
 # energy_model -- the E = sum P*dt identity and the formation invariant        #
 # --------------------------------------------------------------------------- #
-def test_segment_energy_is_power_times_time():
-    spec, _ = _spec("MULTIROTOR")
+def test_segment_energy_is_power_times_time(config_path):
+    spec, _ = _spec(config_path, "MULTIROTOR")
     em = EnergyModel(spec)
     p = em.power(ManeuverType.CRUISE)
     assert em.segment_energy(ManeuverType.CRUISE, 10.0) == pytest.approx(p * 10.0)
 
 
-def test_path_energy_equals_manual_integral():
-    spec, _ = _spec("MULTIROTOR")
+def test_path_energy_equals_manual_integral(config_path):
+    spec, _ = _spec(config_path, "MULTIROTOR")
     em = EnergyModel(spec)
     s1 = straight_segment(Pose(0, 0, 0), 10.0, ManeuverType.CRUISE, 5.0)
     s2 = straight_segment(s1.end, 6.0, ManeuverType.COVERAGE, 3.0)
@@ -185,9 +184,9 @@ def test_path_energy_equals_manual_integral():
     assert em.path_energy(path) == pytest.approx(manual)
 
 
-def test_energy_is_time_integral_not_distance_average():
+def test_energy_is_time_integral_not_distance_average(config_path):
     # same distance, different speed -> different energy (proves time-integration)
-    spec, _ = _spec("MULTIROTOR")
+    spec, _ = _spec(config_path, "MULTIROTOR")
     em = EnergyModel(spec)
     slow = straight_segment(Pose(0, 0, 0), 10.0, ManeuverType.CRUISE, 2.0)  # 5 s
     fast = straight_segment(Pose(0, 0, 0), 10.0, ManeuverType.CRUISE, 10.0)  # 1 s
@@ -196,9 +195,9 @@ def test_energy_is_time_integral_not_distance_average():
     assert e_slow > e_fast
 
 
-def test_formation_factor_applies_to_cruise_fw_only():
-    fw = EnergyModel(_spec("FIXED_WING")[0])
-    mr = EnergyModel(_spec("MULTIROTOR")[0])
+def test_formation_factor_applies_to_cruise_fw_only(config_path):
+    fw = EnergyModel(_spec(config_path, "FIXED_WING")[0])
+    mr = EnergyModel(_spec(config_path, "MULTIROTOR")[0])
     f = 0.8486
     # FW CRUISE: discounted
     assert fw.power(ManeuverType.CRUISE, f) == pytest.approx(fw.power(ManeuverType.CRUISE) * f)
@@ -208,8 +207,8 @@ def test_formation_factor_applies_to_cruise_fw_only():
     assert mr.power(ManeuverType.CRUISE, f) == pytest.approx(mr.power(ManeuverType.CRUISE))
 
 
-def test_distance_energy_consistency():
-    spec, _ = _spec("FIXED_WING")
+def test_distance_energy_consistency(config_path):
+    spec, _ = _spec(config_path, "FIXED_WING")
     em = EnergyModel(spec)
     d, v = 100.0, spec.v_cruise
     assert em.distance_energy(d, ManeuverType.CRUISE, v) == pytest.approx(
@@ -220,8 +219,8 @@ def test_distance_energy_consistency():
 # --------------------------------------------------------------------------- #
 # aero_correction                                                             #
 # --------------------------------------------------------------------------- #
-def test_power_factor_rules():
-    cfg = load_config(config_path())
+def test_power_factor_rules(config_path):
+    cfg = load_config(config_path)
     red = cfg.aero.formation_drag_reduction
     fw = AeroCorrection(cfg.aero, PlatformType.FIXED_WING)
     mr = AeroCorrection(cfg.aero, PlatformType.MULTIROTOR)
@@ -231,8 +230,8 @@ def test_power_factor_rules():
     assert mr.power_factor(True, ManeuverType.CRUISE) == 1.0
 
 
-def test_wake_zones_geometry():
-    cfg = load_config(config_path())
+def test_wake_zones_geometry(config_path):
+    cfg = load_config(config_path)
     mr = AeroCorrection(cfg.aero, PlatformType.MULTIROTOR)
     zones = mr.wake_zones([Pose(0, 0, 0.0)])
     assert len(zones) == 1
@@ -246,16 +245,16 @@ def test_wake_zones_geometry():
 # --------------------------------------------------------------------------- #
 # vertical_segments                                                           #
 # --------------------------------------------------------------------------- #
-def test_multirotor_takeoff_vertical():
-    spec, _ = _spec("MULTIROTOR")
+def test_multirotor_takeoff_vertical(config_path):
+    spec, _ = _spec(config_path, "MULTIROTOR")
     em = EnergyModel(spec)
     prof = takeoff_profile(spec, em, altitude_m=100.0)
     assert prof.duration_s == pytest.approx(100.0 / spec.v_climb)
     assert prof.energy_j > 0
 
 
-def test_fixed_wing_takeoff_includes_ground_roll():
-    spec, _ = _spec("FIXED_WING")
+def test_fixed_wing_takeoff_includes_ground_roll(config_path):
+    spec, _ = _spec(config_path, "FIXED_WING")
     em = EnergyModel(spec)
     prof = takeoff_profile(spec, em, altitude_m=100.0)
     # energy strictly exceeds the climb-only integral by the ground-roll charge

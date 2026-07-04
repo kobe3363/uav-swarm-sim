@@ -19,7 +19,6 @@ from __future__ import annotations
 import math
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.experiments.run_fleet_sizing_analyzer import (
     _build_planning_layer,
@@ -30,27 +29,27 @@ from uav_swarm_sim.experiments.fleet_sizing import sweep
 from uav_swarm_sim.infrastructure.config import load_config
 
 
-def _smoke_config_path() -> str:
+def _smoke_config_path(config_path) -> str:
     # the small, fast scenario area (sibling of default.yaml under config/)
-    return str(config_path().parent / "scenarios" / "smoke.yaml")
+    return str(config_path.parent / "scenarios" / "smoke.yaml")
 
 
-def test_analyzer_main_runs_end_to_end(capsys):
+def test_analyzer_main_runs_end_to_end(config_path, capsys):
     """main() imports cleanly AND completes (exit 0): guards both the removed
     import and the dropped sweep() kwarg -- either would crash before returning."""
-    rc = main(["--config", _smoke_config_path(), "--n-min", "1", "--n-max", "4"])
+    rc = main(["--config", _smoke_config_path(config_path), "--n-min", "1", "--n-max", "4"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Fleet-Sizing Analysis" in out
     assert "turn factor" not in out  # the dead turn-factor plumbing is gone
 
 
-def test_analyzer_sweep_result_is_meaningful():
+def test_analyzer_sweep_result_is_meaningful(config_path):
     """Beyond 'no exception': the sweep must return a non-empty table with one
     row per swept fleet size and finite, non-negative sortie/duration values --
     otherwise a 'works, but empty' regression would pass a smoke check."""
     n_min, n_max = 1, 5
-    cfg = load_config(_smoke_config_path())
+    cfg = load_config(_smoke_config_path(config_path))
     env, spec, em, base_pose = _build_planning_layer(cfg)
     inputs = _inputs_from(env, base_pose, cfg.env.coverage_altitude_m)
     report = sweep(

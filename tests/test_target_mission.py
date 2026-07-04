@@ -5,7 +5,6 @@ import math
 
 import numpy as np
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo, MissionType
@@ -27,8 +26,8 @@ from uav_swarm_sim.planning.obstacle_generator import generate as gen_obstacles
 # fixtures                                                                     #
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def env():
-    cfg = load_config(config_path(), overrides={"env.geojson_path": "data/areas/smoke_area.geojson",
+def env(config_path):
+    cfg = load_config(config_path, overrides={"env.geojson_path": "data/areas/smoke_area.geojson",
                                                  "env.obstacle_density_per_km2": 4.0})
     area = load_area(cfg.env.geojson_path)
     rng = RngFactory(cfg.sim.master_seed).stream("obstacles", 0)
@@ -37,8 +36,8 @@ def env():
 
 
 @pytest.fixture(scope="module")
-def specs():
-    cfg = load_config(config_path())
+def specs(config_path):
+    cfg = load_config(config_path)
     spec = build_spec(cfg)
     return spec, make_motion_model(spec), EnergyModel(spec)
 
@@ -50,8 +49,8 @@ def _views(n, batteries=None):
 # --------------------------------------------------------------------------- #
 # generation                                                                  #
 # --------------------------------------------------------------------------- #
-def test_random_targets_count_and_in_free_space(env):
-    cfg = load_config(config_path(), overrides={"mission.type": "target_visit", "mission.n_targets": 20})
+def test_random_targets_count_and_in_free_space(config_path, env):
+    cfg = load_config(config_path, overrides={"mission.type": "target_visit", "mission.n_targets": 20})
     rng = RngFactory(1).stream("targets", 0)
     pts = tm.generate_targets(env, cfg.mission, rng)
     assert len(pts) == 20
@@ -59,16 +58,16 @@ def test_random_targets_count_and_in_free_space(env):
         assert env.contains(p)
 
 
-def test_random_targets_reproducible(env):
-    cfg = load_config(config_path(), overrides={"mission.type": "target_visit", "mission.n_targets": 15})
+def test_random_targets_reproducible(config_path, env):
+    cfg = load_config(config_path, overrides={"mission.type": "target_visit", "mission.n_targets": 15})
     a = tm.generate_targets(env, cfg.mission, RngFactory(7).stream("targets", 3))
     b = tm.generate_targets(env, cfg.mission, RngFactory(7).stream("targets", 3))
     assert a == b
 
 
-def test_explicit_targets_used_verbatim(env):
+def test_explicit_targets_used_verbatim(config_path, env):
     coords = [[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]]
-    cfg = load_config(config_path(), overrides={"mission.type": "target_visit",
+    cfg = load_config(config_path, overrides={"mission.type": "target_visit",
                                                 "mission.target_coordinates": coords})
     pts = tm.generate_targets(env, cfg.mission, RngFactory(0).stream("targets", 0))
     assert pts == [(10.0, 20.0), (30.0, 40.0), (50.0, 60.0)]
@@ -133,7 +132,7 @@ def test_plan_target_mission_partition_and_plans(env, specs):
 # --------------------------------------------------------------------------- #
 # end-to-end engine                                                           #
 # --------------------------------------------------------------------------- #
-def _target_cfg(**extra):
+def _target_cfg(config_path, **extra):
     ov = {
         "mission.type": "target_visit",
         "mission.n_targets": 24,
@@ -147,11 +146,11 @@ def _target_cfg(**extra):
         "sim.max_timesteps": 20000,
     }
     ov.update(extra)
-    return load_config(config_path(), overrides=ov)
+    return load_config(config_path, overrides=ov)
 
 
-def test_target_mission_completes_and_visits_all():
-    cfg = _target_cfg()
+def test_target_mission_completes_and_visits_all(config_path):
+    cfg = _target_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -165,8 +164,8 @@ def test_target_mission_completes_and_visits_all():
         assert a.state is AgentState.S0_IDLE
 
 
-def test_target_mission_smdp_valid():
-    cfg = _target_cfg()
+def test_target_mission_smdp_valid(config_path):
+    cfg = _target_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 1,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -176,8 +175,8 @@ def test_target_mission_smdp_valid():
     assert abs(pi_time.sum() - 1.0) < 1e-9       # same analysis stack, unchanged
 
 
-def test_target_mission_deterministic():
-    cfg = _target_cfg()
+def test_target_mission_deterministic(config_path):
+    cfg = _target_cfg(config_path)
     r1 = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                           algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
     r2 = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
@@ -186,9 +185,9 @@ def test_target_mission_deterministic():
     assert r1.metrics.duration_s == pytest.approx(r2.metrics.duration_s)
 
 
-def test_explicit_coordinates_mission_runs():
+def test_explicit_coordinates_mission_runs(config_path):
     coords = [[80, 80], [320, 80], [320, 220], [80, 220], [200, 150], [150, 100]]
-    cfg = _target_cfg(**{"mission.target_coordinates": coords})
+    cfg = _target_cfg(config_path, **{"mission.target_coordinates": coords})
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -199,13 +198,13 @@ def test_explicit_coordinates_mission_runs():
 # --------------------------------------------------------------------------- #
 # config switch                                                               #
 # --------------------------------------------------------------------------- #
-def test_default_mission_is_coverage():
-    cfg = load_config(config_path())
+def test_default_mission_is_coverage(config_path):
+    cfg = load_config(config_path)
     assert cfg.mission.type is MissionType.COVERAGE
 
 
-def test_coverage_mission_still_works():
-    cfg = load_config(config_path(), overrides={
+def test_coverage_mission_still_works(config_path):
+    cfg = load_config(config_path, overrides={
         "fleet.n_drones": 3, "fleet.battery_capacity_wh": 400.0,
         "failure.hazard_rate_per_hour": 0.0,
         "env.geojson_path": "data/areas/smoke_area.geojson",

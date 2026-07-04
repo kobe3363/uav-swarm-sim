@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo
@@ -16,7 +15,7 @@ from uav_swarm_sim.metrics.smdp_estimator import estimate
 from uav_swarm_sim.metrics.stationary_distribution import stationary
 
 
-def _smoke_cfg(**extra):
+def _smoke_cfg(config_path, **extra):
     ov = {
         "fleet.n_drones": 3,
         "fleet.battery_capacity_wh": 400.0,
@@ -30,12 +29,12 @@ def _smoke_cfg(**extra):
         "mc.n_min": 2,
     }
     ov.update(extra)
-    return load_config(config_path(), overrides=ov)
+    return load_config(config_path, overrides=ov)
 
 
 @pytest.fixture(scope="module")
-def mission():
-    cfg = _smoke_cfg()
+def mission(config_path):
+    cfg = _smoke_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -61,9 +60,9 @@ def test_launch_site_scores_ranked(mission):
     assert eng.launch_pose is not None
 
 
-def test_failure_run_does_not_crash():
+def test_failure_run_does_not_crash(config_path):
     # elevated lambda exercises kill + redistribution wiring
-    cfg = _smoke_cfg(**{"failure.hazard_rate_per_hour": 50.0, "sim.max_timesteps": 4000})
+    cfg = _smoke_cfg(config_path, **{"failure.hazard_rate_per_hour": 50.0, "sim.max_timesteps": 4000})
     eng = SimulationEngine(cfg, RngFactory(7), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()  # should not raise even if some agents fail
     assert result.metrics.total_energy_j >= 0
@@ -72,8 +71,8 @@ def test_failure_run_does_not_crash():
 # --------------------------------------------------------------------------- #
 # comparison harness                                                          #
 # --------------------------------------------------------------------------- #
-def test_compare_decomposition_runs():
-    cfg = _smoke_cfg()
+def test_compare_decomposition_runs(config_path):
+    cfg = _smoke_cfg(config_path)
     variants = compare_decomposition(cfg, RngFactory(cfg.sim.master_seed))
     labels = {v.label for v in variants}
     # the comparison must run exactly the declared peer set (now four: the three
@@ -84,9 +83,9 @@ def test_compare_decomposition_runs():
         assert v.mc.n_runs >= 2
 
 
-def test_weighted_equals_tgc_basic_with_full_batteries():
+def test_weighted_equals_tgc_basic_with_full_batteries(config_path):
     # with full initial batteries and no failures, weighted == tgc_basic (documented)
-    cfg = _smoke_cfg()
+    cfg = _smoke_cfg(config_path)
     variants = {v.label: v for v in compare_decomposition(cfg, RngFactory(cfg.sim.master_seed))}
     w = variants["weighted_voronoi"].mean("total_energy_j")
     t = variants["tgc_basic"].mean("total_energy_j")
@@ -114,11 +113,11 @@ def test_visualization_outputs(mission, tmp_path):
 # experiment CLIs                                                             #
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
-def test_single_mission_cli(tmp_path):
+def test_single_mission_cli(config_path, tmp_path):
     from uav_swarm_sim.experiments import run_single_mission
     # write a tiny complete config the CLI can load
     import yaml
-    raw = yaml.safe_load(Path(config_path()).read_text())
+    raw = yaml.safe_load(Path(config_path).read_text())
     raw["fleet"]["n_drones"] = 3
     raw["fleet"]["battery_capacity_wh"] = 400.0
     raw["failure"]["hazard_rate_per_hour"] = 0.0
@@ -140,10 +139,10 @@ def test_single_mission_cli(tmp_path):
     assert (tmp_path / "runs" / "run-test" / "run.json").exists()
 
 
-def test_launch_site_cli(tmp_path):
+def test_launch_site_cli(config_path, tmp_path):
     from uav_swarm_sim.experiments import run_launch_site_study
     import yaml
-    raw = yaml.safe_load(Path(config_path()).read_text())
+    raw = yaml.safe_load(Path(config_path).read_text())
     raw["fleet"]["n_drones"] = 3
     raw["env"]["geojson_path"] = "data/areas/smoke_area.geojson"
     cfgp = tmp_path / "cfg.yaml"

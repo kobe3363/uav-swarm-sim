@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import config_path
 from shapely.affinity import scale
 from shapely.geometry import Polygon
 
@@ -68,10 +67,10 @@ def test_polygon_parts_drops_lines_keeps_polygons():
 # full mission: C-shape at n=4 (the reported crash) now decomposes and covers  #
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("shape_fn,width", [(_c_shape, 600.0), (_l_shape, 600.0)])
-def test_concave_shape_n4_full_mission_no_crash(tmp_path, shape_fn, width):
+def test_concave_shape_n4_full_mission_no_crash(config_path, tmp_path, shape_fn, width):
     poly = scale(shape_fn(), xfact=width / 2.0, yfact=width / 2.0, origin=(0, 0))
     gj = _write_geojson(tmp_path / "concave.geojson", poly)
-    cfg = load_config(config_path(), overrides={
+    cfg = load_config(config_path, overrides={
         "env.geojson_path": gj,
         "env.obstacle_density_per_km2": 0.0,
         "failure.hazard_rate_per_hour": 0.0,

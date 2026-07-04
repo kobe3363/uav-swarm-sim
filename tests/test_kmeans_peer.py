@@ -18,7 +18,6 @@ These tests lock in the new contract:
 from __future__ import annotations
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.execution.algorithm_selector import make_decomposers
 from uav_swarm_sim.infrastructure.config import load_config
@@ -37,7 +36,7 @@ from uav_swarm_sim.planning.kmeans_heuristic import KMeansHeuristicDecomposer
 from uav_swarm_sim.planning.weighted_decomposition import WeightedTgcDecomposer
 
 
-def _tiny_cfg(algo_overrides=None):
+def _tiny_cfg(config_path, algo_overrides=None):
     base = {
         "fleet.n_drones": 3,
         "fleet.battery_capacity_wh": 400.0,
@@ -50,12 +49,12 @@ def _tiny_cfg(algo_overrides=None):
     }
     if algo_overrides:
         base.update(algo_overrides)
-    return load_config(config_path(), overrides=base)
+    return load_config(config_path, overrides=base)
 
 
 @pytest.fixture
-def cfg():
-    return _tiny_cfg()
+def cfg(config_path):
+    return _tiny_cfg(config_path)
 
 
 # --------------------------------------------------------------------------- #

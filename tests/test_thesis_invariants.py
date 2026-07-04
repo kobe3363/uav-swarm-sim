@@ -29,7 +29,6 @@ Groups
 from __future__ import annotations
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.core_types import (
@@ -61,21 +60,21 @@ from uav_swarm_sim.planning.weighted_decomposition import (
 _G = 9.80665
 
 
-def _spec(platform: str = "MULTIROTOR"):
-    cfg = load_config(config_path(), overrides={"platform_type": platform})
+def _spec(config_path, platform: str = "MULTIROTOR"):
+    cfg = load_config(config_path, overrides={"platform_type": platform})
     return build_spec(cfg), cfg
 
 
 # --------------------------------------------------------------------------- #
 # Group 1 -- 2.5D byte-identity: the vertical machinery is a no-op horizontally #
 # --------------------------------------------------------------------------- #
-def test_horizontal_leg_charges_no_vertical_potential():
+def test_horizontal_leg_charges_no_vertical_potential(config_path):
     """A constant-altitude (dz == 0) leg must carry exactly zero mass term, even
     though the platform has positive mass. This is what makes the 2.5D extension
     byte-identical to the validated 2D model on every horizontal segment: the
     energy of a cruise leg equals its pure propulsion integral P*dt and nothing
     else."""
-    spec, _ = _spec()
+    spec, _ = _spec(config_path)
     em = EnergyModel(spec)
     assert spec.mass_kg > 0.0, "mass must exist so the test is non-vacuous"
 
@@ -86,11 +85,11 @@ def test_horizontal_leg_charges_no_vertical_potential():
     assert em.path_energy(leg) == pytest.approx(propulsion_only)
 
 
-def test_nonpositive_altitude_change_is_empty_and_free():
+def test_nonpositive_altitude_change_is_empty_and_free(config_path):
     """The boundary that guarantees the no-op: a climb/descent of zero (or
     negative) height produces an empty path and zero energy, so the single-layer
     case never enters the vertical branch at all."""
-    spec, _ = _spec()
+    spec, _ = _spec(config_path)
     em = EnergyModel(spec)
     for dz in (0.0, -25.0):
         assert climb_path(spec, dz).segments == ()
@@ -102,12 +101,12 @@ def test_nonpositive_altitude_change_is_empty_and_free():
 # --------------------------------------------------------------------------- #
 # Group 2 -- 2.5D vertical energy: m*g*dz on climb, no regeneration on descent  #
 # --------------------------------------------------------------------------- #
-def test_climb_charges_exactly_mgh_potential():
+def test_climb_charges_exactly_mgh_potential(config_path):
     """A genuine inter-layer climb charges its table propulsion PLUS exactly the
     gravitational potential m*g*dz -- the single point at which mass couples into
     energy. Isolating the potential (total minus propulsion) must equal m*g*dz to
     floating-point tolerance."""
-    spec, _ = _spec()
+    spec, _ = _spec(config_path)
     em = EnergyModel(spec)
     dz = 60.0
     path = climb_path(spec, dz, Pose(0.0, 0.0, 0.0, 0.0))
@@ -116,12 +115,12 @@ def test_climb_charges_exactly_mgh_potential():
     assert potential == pytest.approx(spec.mass_kg * _G * dz)
 
 
-def test_descent_is_dissipative_no_regeneration():
+def test_descent_is_dissipative_no_regeneration(config_path):
     """Descent charges propulsion only: the negative altitude change contributes
     nothing (these platforms have no regenerative recovery). Consequently a climb
     of dz followed by a descent of dz does not return to the propulsion-only
     cost -- the unrecovered surplus is exactly the m*g*dz spent on the way up."""
-    spec, _ = _spec()
+    spec, _ = _spec(config_path)
     em = EnergyModel(spec)
     dz = 60.0
     at = Pose(0.0, 0.0, 0.0, 0.0)
@@ -139,11 +138,11 @@ def test_descent_is_dissipative_no_regeneration():
     assert roundtrip - propulsion_only == pytest.approx(spec.mass_kg * _G * dz)
 
 
-def test_climb_energy_strictly_increases_with_altitude():
+def test_climb_energy_strictly_increases_with_altitude(config_path):
     """Monotonicity of the vertical energy: climbing twice as high strictly costs
     more (the potential term scales with dz). Guards against a regression that
     drops or flattens the altitude dependence."""
-    spec, _ = _spec()
+    spec, _ = _spec(config_path)
     em = EnergyModel(spec)
     e_low = climb_profile(spec, em, 40.0).energy_j
     e_high = climb_profile(spec, em, 80.0).energy_j
@@ -153,11 +152,11 @@ def test_climb_energy_strictly_increases_with_altitude():
 # --------------------------------------------------------------------------- #
 # Group 3 -- dynamic RTH reserve is distance-dependent, not a fixed fraction    #
 # --------------------------------------------------------------------------- #
-def test_return_energy_strictly_increases_with_distance_to_home():
+def test_return_energy_strictly_increases_with_distance_to_home(config_path):
     """The return cost is computed from the drone's live position, so a drone far
     from base needs strictly more energy to get home than a near one. This is the
     quantity the dynamic reserve is built on (vs. a static percentage)."""
-    spec, cfg = _spec()
+    spec, cfg = _spec(config_path)
     em = EnergyModel(spec)
     motion = make_motion_model(spec)
     base = Pose(0.0, 0.0, 0.0, 0.0)
@@ -168,13 +167,13 @@ def test_return_energy_strictly_increases_with_distance_to_home():
     assert far > near > 0.0
 
 
-def test_rth_trigger_depends_on_distance_not_fixed_fraction():
+def test_rth_trigger_depends_on_distance_not_fixed_fraction(config_path):
     """At ONE fixed battery level (and identical next-step cost), the return
     decision flips with geometry: a far drone must return while a near drone may
     continue. A static-fraction reserve could never produce this distance-keyed
     flip -- it is the essence of the dynamic route-vs-return rule (guideline
     3.1)."""
-    spec, cfg = _spec()
+    spec, cfg = _spec(config_path)
     em = EnergyModel(spec)
     motion = make_motion_model(spec)
     base = Pose(0.0, 0.0, 0.0, 0.0)
@@ -194,12 +193,12 @@ def test_rth_trigger_depends_on_distance_not_fixed_fraction():
 # --------------------------------------------------------------------------- #
 # Group 4 -- battery swap consumes time but zero energy (the drone has landed)  #
 # --------------------------------------------------------------------------- #
-def test_battery_swap_consumes_time_but_zero_energy():
+def test_battery_swap_consumes_time_but_zero_energy(config_path):
     """While an agent is in S_SWAP it must burn zero energy and lose no charge --
     swap time is logistics overhead, not flight. The drone stays in S_SWAP until
     an external swap_done signal arrives, so stepping it on its own advances time
     without touching the battery."""
-    cfg = load_config(config_path())
+    cfg = load_config(config_path)
     spec = build_spec(cfg)
     motion = make_motion_model(spec)
     em = EnergyModel(spec)
