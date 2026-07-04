@@ -192,6 +192,7 @@ def test_enabled_is_deterministic():
     assert r1.metrics.total_energy_j == pytest.approx(r2.metrics.total_energy_j)
 
 
+@pytest.mark.slow
 def test_replay_renders_dynamic_obstacles(tmp_path):
     eng = SimulationEngine(_engine_cfg(True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI)
     eng.run()

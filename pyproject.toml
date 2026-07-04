@@ -11,5 +11,14 @@ dependencies = [
   "matplotlib>=3.8", "pulp>=2.7", "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  'slow: long-running test (S5 sweep / full-mission CLI / GIF render); deselect with -m "not slow"',
+]

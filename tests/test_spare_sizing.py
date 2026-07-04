@@ -198,6 +198,7 @@ def _tiny_cfg():
     )
 
 
+@pytest.mark.slow
 def test_run_sweep_tallies_outcomes_and_is_paired_reproducible():
     from uav_swarm_sim.infrastructure.rng import RngFactory
     from uav_swarm_sim.experiments.run_spare_sizing import run_sweep
@@ -220,6 +221,7 @@ def test_run_sweep_tallies_outcomes_and_is_paired_reproducible():
                (b.spares, b.n_success, b.n_failed, b.n_incomplete)
 
 
+@pytest.mark.slow
 def test_report_build_produces_knees_and_verdict_from_sweep():
     from uav_swarm_sim.infrastructure.rng import RngFactory
     from uav_swarm_sim.experiments.run_spare_sizing import run_sweep

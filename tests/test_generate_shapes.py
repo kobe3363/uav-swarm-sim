@@ -73,6 +73,7 @@ def test_normalize_rejects_degenerate():
         normalize_to_area(Polygon(), _TARGET)
 
 
+@pytest.mark.slow
 def test_written_shape_loads_and_flies(tmp_path):
     # square, normalised, written to disk, read back through the real parser.
     poly = normalize_to_area(shape_builders(128)["square"], _TARGET)
