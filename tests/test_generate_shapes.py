@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.experiments.generate_shapes import (
     build_all,
@@ -74,7 +73,7 @@ def test_normalize_rejects_degenerate():
 
 
 @pytest.mark.slow
-def test_written_shape_loads_and_flies(tmp_path):
+def test_written_shape_loads_and_flies(config_path, tmp_path):
     # square, normalised, written to disk, read back through the real parser.
     poly = normalize_to_area(shape_builders(128)["square"], _TARGET)
     desc = describe("square", poly, _SWATH)
@@ -87,7 +86,7 @@ def test_written_shape_loads_and_flies(tmp_path):
     # a real mission on the generated area completes and covers it (obstacles off,
     # ample fleet so the 1 km^2 square is swap-tolerant).
     cfg = load_config(
-        config_path(),
+        config_path,
         overrides={
             "env.geojson_path": str(path),
             "env.obstacle_density_per_km2": 0.0,

@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.experiments.run_shape_regime_table import (
     _divergent_fracs,
@@ -35,8 +34,8 @@ def test_pearson_and_mean():
     assert _mean([1.0, 3.0, float("nan")]) == pytest.approx(2.0)
 
 
-def test_table_core_claims():
-    cfg = load_config(config_path())
+def test_table_core_claims(config_path):
+    cfg = load_config(config_path)
     desc, cells, cap = build_tables(
         cfg, "data/areas/shapes", n_min=2, n_max=4, f_min=0.40, f_max=1.00,
         perms=3, usable_floor="terminal", sensor_power_w=0.0,

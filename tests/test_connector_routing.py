@@ -19,7 +19,6 @@ import json
 import math
 
 import pytest
-from conftest import config_path
 from shapely.affinity import scale
 from shapely.geometry import LineString, Polygon, box
 
@@ -104,7 +103,7 @@ def test_ac1_c_shape_shipped_is_one_km2_and_loads():
     assert poly.area / poly.convex_hull.area == pytest.approx(0.8, abs=1e-3)
 
 
-def test_ac1_mission_covers_c_shape_not_the_notch(tmp_path):
+def test_ac1_mission_covers_c_shape_not_the_notch(config_path, tmp_path):
     # a small C-shape swept by a 4-drone fleet (weighted-Voronoi partition over a
     # concave polygon -- exercises the decomposition sliver guard) on a generous
     # battery => swap-free and fast; the surveyed polygon is covered and the notch
@@ -112,7 +111,7 @@ def test_ac1_mission_covers_c_shape_not_the_notch(tmp_path):
     poly = _c_shape(500.0)
     gj = _write_geojson(tmp_path / "c_small.geojson", poly)
     cfg = load_config(
-        config_path(),
+        config_path,
         overrides={
             "env.geojson_path": gj,
             "env.obstacle_density_per_km2": 0.0,
@@ -137,8 +136,8 @@ def test_ac1_mission_covers_c_shape_not_the_notch(tmp_path):
 # --------------------------------------------------------------------------- #
 # AC-5 -- byte-identity: OFF, or ON with nothing blocking == today's chords    #
 # --------------------------------------------------------------------------- #
-def test_ac5_flag_off_is_byte_identical():
-    cfg = load_config(config_path())
+def test_ac5_flag_off_is_byte_identical(config_path):
+    cfg = load_config(config_path)
     spec, motion, em = _kit(cfg)
     poly = _c_shape(800.0)
     zone = Zone(0, [], poly, Pose(poly.centroid.x, poly.centroid.y, 0.0))
@@ -151,8 +150,8 @@ def test_ac5_flag_off_is_byte_identical():
     assert off.est_energy_j == pytest.approx(legacy.est_energy_j, abs=1e-9)
 
 
-def test_ac5_flag_on_no_obstacle_matches_chords():
-    cfg = load_config(config_path())
+def test_ac5_flag_on_no_obstacle_matches_chords(config_path):
+    cfg = load_config(config_path)
     spec, motion, em = _kit(cfg)
     poly = _c_shape(800.0)
     zone = Zone(0, [], poly, Pose(poly.centroid.x, poly.centroid.y, 0.0))
@@ -176,8 +175,8 @@ def test_ac5_flag_on_no_obstacle_matches_chords():
 # AC-2 / AC-3 -- notch chord is kept when clear; detoured (never through) when  #
 # an NFZ blocks it                                                              #
 # --------------------------------------------------------------------------- #
-def test_ac2_empty_notch_takes_straight_chord():
-    cfg = load_config(config_path())
+def test_ac2_empty_notch_takes_straight_chord(config_path):
+    cfg = load_config(config_path)
     spec, motion, em = _kit(cfg)
     poly = _c_shape(800.0)
     a, b, chord_seg = _first_notch_connector(poly, spec, motion, em)
@@ -191,8 +190,8 @@ def test_ac2_empty_notch_takes_straight_chord():
     assert routed.total_length_m == pytest.approx(chord.total_length_m, abs=1e-9)
 
 
-def test_ac3_obstacle_forces_detour_around_never_through():
-    cfg = load_config(config_path())
+def test_ac3_obstacle_forces_detour_around_never_through(config_path):
+    cfg = load_config(config_path)
     spec, motion, em = _kit(cfg)
     poly = _c_shape(800.0)
     a, b, chord_seg = _first_notch_connector(poly, spec, motion, em)
@@ -214,11 +213,11 @@ def test_ac3_obstacle_forces_detour_around_never_through():
 # --------------------------------------------------------------------------- #
 # AC-4 -- analytical == execution with an obstacle present (prints numbers)     #
 # --------------------------------------------------------------------------- #
-def test_ac4_analytical_equals_execution_with_obstacle(tmp_path, monkeypatch, capsys):
+def test_ac4_analytical_equals_execution_with_obstacle(config_path, tmp_path, monkeypatch, capsys):
     poly = _c_shape(400.0)
     gj = _write_geojson(tmp_path / "c_ac4.geojson", poly)
 
-    cfg0 = load_config(config_path())
+    cfg0 = load_config(config_path)
     spec, motion, em = _kit(cfg0)
     a, b, chord_seg = _first_notch_connector(poly, spec, motion, em)
     mid = chord_seg.interpolate(0.5, normalized=True)
@@ -228,7 +227,7 @@ def test_ac4_analytical_equals_execution_with_obstacle(tmp_path, monkeypatch, ca
     monkeypatch.setattr(_se, "generate_obstacles", lambda area, env, rng: [Obstacle(id=0, cls=0, polygon=nfz)])
 
     cfg = load_config(
-        config_path(),
+        config_path,
         overrides={
             "env.geojson_path": gj,
             "fleet.n_drones": 1,

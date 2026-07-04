@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo, Outcome, PlannerKind
@@ -31,8 +30,8 @@ from uav_swarm_sim.metrics.run_output import (
 
 
 @pytest.fixture
-def cfg():
-    return load_config(config_path(), overrides={
+def cfg(config_path):
+    return load_config(config_path, overrides={
         "fleet.n_drones": 5,
         "env.geojson_path": "data/areas/smoke_area.geojson",
     })

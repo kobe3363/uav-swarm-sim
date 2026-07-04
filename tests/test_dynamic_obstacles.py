@@ -5,7 +5,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import DecompositionAlgo, SensingMode
@@ -20,8 +19,8 @@ from uav_swarm_sim.execution.sensing import SensingCoordinator
 
 
 @pytest.fixture(scope="module")
-def env():
-    cfg = load_config(config_path(), overrides={"env.geojson_path": "data/areas/smoke_area.geojson",
+def env(config_path):
+    cfg = load_config(config_path, overrides={"env.geojson_path": "data/areas/smoke_area.geojson",
                                                  "env.obstacle_density_per_km2": 3.0})
     area = load_area(cfg.env.geojson_path)
     rng = RngFactory(cfg.sim.master_seed).stream("obstacles", 0)
@@ -86,7 +85,7 @@ class _Bus:
     def publish(self, e): self.events.append(e)
 
 
-def _cfg(**ov):
+def _cfg(config_path, **ov):
     base = {
         "dynamic_obstacles.enabled": True, "dynamic_obstacles.count": 1,
         "dynamic_obstacles.passive_sense_range_m": 30.0,
@@ -95,11 +94,11 @@ def _cfg(**ov):
         "dynamic_obstacles.dynamic_hold_s": 10.0,
     }
     base.update(ov)
-    return load_config(config_path(), overrides=base)
+    return load_config(config_path, overrides=base)
 
 
-def test_passive_until_detected_then_whole_swarm_active():
-    cfg = _cfg()
+def test_passive_until_detected_then_whole_swarm_active(config_path):
+    cfg = _cfg(config_path)
     co = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
     assert co.mode is SensingMode.PASSIVE and co.scan_power_w() == 0.0
     agents = [_StubAgent(0, 0, 0), _StubAgent(1, 1000, 1000)]   # agent 1 far away
@@ -110,8 +109,8 @@ def test_passive_until_detected_then_whole_swarm_active():
     assert co.scan_power_w() == pytest.approx(80.0)            # scanning now costs power
 
 
-def test_undetected_obstacle_is_ignored():
-    cfg = _cfg()
+def test_undetected_obstacle_is_ignored(config_path):
+    cfg = _cfg(config_path)
     co = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
     agents = [_StubAgent(0, 0, 0)]
     bus = _Bus()
@@ -121,8 +120,8 @@ def test_undetected_obstacle_is_ignored():
     assert not agents[0].threatened
 
 
-def test_reverts_to_passive_after_hold():
-    cfg = _cfg(**{"dynamic_obstacles.dynamic_hold_s": 5.0})
+def test_reverts_to_passive_after_hold(config_path):
+    cfg = _cfg(config_path, **{"dynamic_obstacles.dynamic_hold_s": 5.0})
     co = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
     agents = [_StubAgent(0, 0, 0)]
     bus = _Bus()
@@ -133,8 +132,8 @@ def test_reverts_to_passive_after_hold():
     assert co.mode is SensingMode.PASSIVE
 
 
-def test_near_miss_signals_threat():
-    cfg = _cfg()
+def test_near_miss_signals_threat(config_path):
+    cfg = _cfg(config_path)
     co = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
     a = _StubAgent(0, 0, 0)
     bus = _Bus()
@@ -147,8 +146,8 @@ def test_near_miss_signals_threat():
 # --------------------------------------------------------------------------- #
 # central on/off + end-to-end energy cost                                     #
 # --------------------------------------------------------------------------- #
-def _engine_cfg(enabled):
-    return load_config(config_path(), overrides={
+def _engine_cfg(config_path, enabled):
+    return load_config(config_path, overrides={
         "dynamic_obstacles.enabled": enabled, "dynamic_obstacles.count": 4,
         "dynamic_obstacles.speed_m_s": 10.0, "dynamic_obstacles.active_scan_power_w": 120.0,
         "dynamic_obstacles.passive_sense_range_m": 40.0, "dynamic_obstacles.active_sense_range_m": 200.0,
@@ -158,12 +157,12 @@ def _engine_cfg(enabled):
     })
 
 
-def test_default_feature_is_off():
-    assert load_config(config_path()).dynamic_obstacles.enabled is False
+def test_default_feature_is_off(config_path):
+    assert load_config(config_path).dynamic_obstacles.enabled is False
 
 
-def test_disabled_matches_baseline_and_no_field():
-    cfg = _engine_cfg(False)
+def test_disabled_matches_baseline_and_no_field(config_path):
+    cfg = _engine_cfg(config_path, False)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI)
     r = eng.run()
     assert eng._dynfield is None
@@ -172,10 +171,10 @@ def test_disabled_matches_baseline_and_no_field():
     assert not r.aborted
 
 
-def test_enabled_scans_costs_energy_and_records_frames():
-    off = SimulationEngine(_engine_cfg(False), RngFactory(42), 0,
+def test_enabled_scans_costs_energy_and_records_frames(config_path):
+    off = SimulationEngine(_engine_cfg(config_path, False), RngFactory(42), 0,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
-    eng_on = SimulationEngine(_engine_cfg(True), RngFactory(42), 0,
+    eng_on = SimulationEngine(_engine_cfg(config_path, True), RngFactory(42), 0,
                               algo=DecompositionAlgo.WEIGHTED_VORONOI)
     on = eng_on.run()
     assert eng_on._dynfield is not None
@@ -186,15 +185,15 @@ def test_enabled_scans_costs_energy_and_records_frames():
     assert not on.aborted
 
 
-def test_enabled_is_deterministic():
-    r1 = SimulationEngine(_engine_cfg(True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
-    r2 = SimulationEngine(_engine_cfg(True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
+def test_enabled_is_deterministic(config_path):
+    r1 = SimulationEngine(_engine_cfg(config_path, True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
+    r2 = SimulationEngine(_engine_cfg(config_path, True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
     assert r1.metrics.total_energy_j == pytest.approx(r2.metrics.total_energy_j)
 
 
 @pytest.mark.slow
-def test_replay_renders_dynamic_obstacles(tmp_path):
-    eng = SimulationEngine(_engine_cfg(True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI)
+def test_replay_renders_dynamic_obstacles(config_path, tmp_path):
+    eng = SimulationEngine(_engine_cfg(config_path, True), RngFactory(42), 0, algo=DecompositionAlgo.WEIGHTED_VORONOI)
     eng.run()
     gif = viz.animate_mission(eng.history, eng.env, tmp_path / "replay.gif", fps=8, max_frames=40)
     png = viz.plot_state_colored_paths(eng.history, eng.env, tmp_path / "paths.png")

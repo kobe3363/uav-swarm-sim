@@ -6,7 +6,6 @@ import math
 import networkx as nx
 import numpy as np
 import pytest
-from conftest import config_path
 from shapely.geometry import Polygon
 
 from uav_swarm_sim.infrastructure.config import load_config
@@ -35,8 +34,8 @@ from uav_swarm_sim.planning.environment_map import EnvironmentMap
 # fixtures                                                                     #
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def cfg():
-    return load_config(config_path())
+def cfg(config_path):
+    return load_config(config_path)
 
 
 @pytest.fixture(scope="module")

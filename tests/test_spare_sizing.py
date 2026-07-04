@@ -14,7 +14,6 @@ Two layers, mirroring the H3 scale-sweep tests:
 from __future__ import annotations
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.experiments.spare_sizing import (
     KNEE_RULE_POINT,
@@ -181,10 +180,10 @@ def test_formula_inconclusive_when_range_misses_the_knee():
 # --------------------------------------------------------------------------- #
 # end-to-end wiring: paired-seed sweep drives the engine (tiny + fast)        #
 # --------------------------------------------------------------------------- #
-def _tiny_cfg():
+def _tiny_cfg(config_path):
     from uav_swarm_sim.infrastructure.config import load_config
     return load_config(
-        config_path(),
+        config_path,
         overrides={
             "fleet.n_drones": 3,
             "fleet.battery_capacity_wh": 400.0,
@@ -199,11 +198,11 @@ def _tiny_cfg():
 
 
 @pytest.mark.slow
-def test_run_sweep_tallies_outcomes_and_is_paired_reproducible():
+def test_run_sweep_tallies_outcomes_and_is_paired_reproducible(config_path):
     from uav_swarm_sim.infrastructure.rng import RngFactory
     from uav_swarm_sim.experiments.run_spare_sizing import run_sweep
 
-    cfg = _tiny_cfg()
+    cfg = _tiny_cfg(config_path)
     reps = 2
     counts = [0, 50]
 
@@ -222,11 +221,11 @@ def test_run_sweep_tallies_outcomes_and_is_paired_reproducible():
 
 
 @pytest.mark.slow
-def test_report_build_produces_knees_and_verdict_from_sweep():
+def test_report_build_produces_knees_and_verdict_from_sweep(config_path):
     from uav_swarm_sim.infrastructure.rng import RngFactory
     from uav_swarm_sim.experiments.run_spare_sizing import run_sweep
 
-    cfg = _tiny_cfg()
+    cfg = _tiny_cfg(config_path)
     points = run_sweep(cfg, [0, 50], 2, RngFactory(cfg.sim.master_seed))
     prior = analytical_spare_prior(total_sorties_int=1, n_drones=3, margin=0)
     report = SpareSizingReport.build(points, prior)

@@ -9,7 +9,6 @@ import math
 
 import numpy as np
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo, PlannerKind
@@ -19,11 +18,11 @@ from uav_swarm_sim.metrics.smdp_estimator import estimate
 from uav_swarm_sim.metrics.stationary_distribution import stationary
 
 
-def _tiny_cfg():
+def _tiny_cfg(config_path):
     # small area + ample battery + few obstacles: completes on one charge, fast,
     # deterministic, no swaps/failures on the critical path.
     return load_config(
-        config_path(),
+        config_path,
         overrides={
             "fleet.n_drones": 3,
             "fleet.battery_capacity_wh": 400.0,
@@ -37,8 +36,8 @@ def _tiny_cfg():
     )
 
 
-def test_mission_completes_and_covers():
-    cfg = _tiny_cfg()
+def test_mission_completes_and_covers(config_path):
+    cfg = _tiny_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), replication=0,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -50,8 +49,8 @@ def test_mission_completes_and_covers():
         assert a.state is AgentState.S0_IDLE
 
 
-def test_stationary_distribution_valid():
-    cfg = _tiny_cfg()
+def test_stationary_distribution_valid(config_path):
+    cfg = _tiny_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), replication=1,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI)
     result = eng.run()
@@ -62,8 +61,8 @@ def test_stationary_distribution_valid():
     assert (pi_time >= -1e-12).all()
 
 
-def test_determinism_same_seed_same_result():
-    cfg = _tiny_cfg()
+def test_determinism_same_seed_same_result(config_path):
+    cfg = _tiny_cfg(config_path)
     r1 = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                           algo=DecompositionAlgo.WEIGHTED_VORONOI).run()
     r2 = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
@@ -73,8 +72,8 @@ def test_determinism_same_seed_same_result():
     assert r1.metrics.duration_s == pytest.approx(r2.metrics.duration_s)
 
 
-def test_grid_planner_mission_runs():
-    cfg = _tiny_cfg()
+def test_grid_planner_mission_runs(config_path):
+    cfg = _tiny_cfg(config_path)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                            algo=DecompositionAlgo.WEIGHTED_VORONOI, planner=PlannerKind.GRID)
     result = eng.run()

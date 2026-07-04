@@ -5,7 +5,6 @@ import math
 
 import numpy as np
 import pytest
-from conftest import config_path
 from shapely.geometry import Polygon
 
 from uav_swarm_sim.infrastructure.config import load_config
@@ -48,8 +47,8 @@ from uav_swarm_sim.physical_model.aero_correction import AeroCorrection
 
 
 @pytest.fixture(scope="module")
-def cfg():
-    return load_config(config_path())
+def cfg(config_path):
+    return load_config(config_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,8 +119,8 @@ def test_terminal_battery_forces_rth(cfg):
 # --------------------------------------------------------------------------- #
 # agent: full mission cycle                                                   #
 # --------------------------------------------------------------------------- #
-def _make_agent(cfg, platform="MULTIROTOR", capacity_j=None, initial_frac=1.0):
-    cfg = load_config(config_path(), overrides={"platform_type": platform})
+def _make_agent(config_path, cfg, platform="MULTIROTOR", capacity_j=None, initial_frac=1.0):
+    cfg = load_config(config_path, overrides={"platform_type": platform})
     spec = build_spec(cfg)
     if capacity_j is not None:
         object.__setattr__(spec, "battery_capacity_j", capacity_j)
@@ -148,8 +147,8 @@ def _simple_coverage_plan(motion):
     return CoveragePlan(0, wps, 0.0, 0.0)
 
 
-def test_agent_completes_mission_cycle(cfg):
-    agent, spec, motion, em = _make_agent(cfg)
+def test_agent_completes_mission_cycle(config_path, cfg):
+    agent, spec, motion, em = _make_agent(config_path, cfg)
     transit = motion.plan(agent.base, Pose(100, 0, 0.0), ManeuverType.CRUISE)
     agent.assign(_simple_coverage_plan(motion), transit)
     bus = EventBus()
@@ -166,8 +165,8 @@ def test_agent_completes_mission_cycle(cfg):
     assert agent.flown_m > 0
 
 
-def test_battery_drains_while_airborne(cfg):
-    agent, spec, motion, em = _make_agent(cfg)
+def test_battery_drains_while_airborne(config_path, cfg):
+    agent, spec, motion, em = _make_agent(config_path, cfg)
     transit = motion.plan(agent.base, Pose(100, 0, 0.0), ManeuverType.CRUISE)
     agent.assign(_simple_coverage_plan(motion), transit)
     bus = EventBus()
@@ -177,9 +176,9 @@ def test_battery_drains_while_airborne(cfg):
     assert agent.battery.level_j < start
 
 
-def test_low_battery_triggers_early_rth(cfg):
+def test_low_battery_triggers_early_rth(config_path, cfg):
     # tiny battery so RTH must fire before coverage completes
-    agent, spec, motion, em = _make_agent(cfg, capacity_j=8000.0, initial_frac=1.0)
+    agent, spec, motion, em = _make_agent(config_path, cfg, capacity_j=8000.0, initial_frac=1.0)
     transit = motion.plan(agent.base, Pose(300, 0, 0.0), ManeuverType.CRUISE)
     # far coverage so the route-vs-return comparison bites
     wps = [
@@ -218,8 +217,8 @@ def test_swap_station_services_and_emits_done(cfg):
     assert len(done) >= 2
 
 
-def test_failure_model_populates_with_high_lambda():
-    cfg = load_config(config_path(), overrides={"failure.hazard_rate_per_hour": 100.0})
+def test_failure_model_populates_with_high_lambda(config_path):
+    cfg = load_config(config_path, overrides={"failure.hazard_rate_per_hour": 100.0})
     fm = FailureModel(cfg.failure, RngFactory(1).stream("failures", 0))
     bus = EventBus()
 
@@ -233,8 +232,8 @@ def test_failure_model_populates_with_high_lambda():
     assert fired > 0
 
 
-def test_failure_model_silent_when_lambda_zero():
-    cfg = load_config(config_path(), overrides={"failure.hazard_rate_per_hour": 0.0})
+def test_failure_model_silent_when_lambda_zero(config_path):
+    cfg = load_config(config_path, overrides={"failure.hazard_rate_per_hour": 0.0})
     fm = FailureModel(cfg.failure, RngFactory(1).stream("failures", 0))
     bus = EventBus()
 
@@ -265,8 +264,8 @@ def test_redistribution_rejects_swap_event(cfg):
         redis.handle(Event(EventType.SWAP_DONE, 0.0, {}), None, None, {}, 0.0)
 
 
-def test_fleet_kill_removes_from_active(cfg):
-    agent, *_ = _make_agent(cfg)
+def test_fleet_kill_removes_from_active(config_path, cfg):
+    agent, *_ = _make_agent(config_path, cfg)
     fleet = Fleet([agent])
     assert len(fleet.active()) == 1
     fleet.kill(0, 1.0)
@@ -296,8 +295,8 @@ def test_make_decomposers_counts(cfg):
 # --------------------------------------------------------------------------- #
 # formation manager: benefit gating                                           #
 # --------------------------------------------------------------------------- #
-def test_formation_benefit_only_fw_transit(cfg):
-    cfg_fw = load_config(config_path(), overrides={"platform_type": "FIXED_WING"})
+def test_formation_benefit_only_fw_transit(config_path, cfg):
+    cfg_fw = load_config(config_path, overrides={"platform_type": "FIXED_WING"})
     aero = AeroCorrection(cfg_fw.aero, cfg_fw.platform.type)
     fm = FormationManager(aero, cfg_fw.aero, cfg_fw.platform.type)
 

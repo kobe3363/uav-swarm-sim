@@ -14,7 +14,6 @@ area so it stays fast.
 from __future__ import annotations
 
 import pytest
-from conftest import config_path
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.rng import RngFactory
@@ -60,9 +59,9 @@ def test_crossover_guards_degenerate_input():
 # --------------------------------------------------------------------------- #
 # compare_tiers wiring: both methods per fleet size, correctly labelled        #
 # --------------------------------------------------------------------------- #
-def _tiny_sweep_cfg():
+def _tiny_sweep_cfg(config_path):
     return load_config(
-        config_path(),
+        config_path,
         overrides={
             "fleet.n_drones": 2,
             "fleet.battery_capacity_wh": 400.0,
@@ -78,8 +77,8 @@ def _tiny_sweep_cfg():
     )
 
 
-def test_compare_tiers_runs_both_methods_per_fleet_size():
-    cfg = _tiny_sweep_cfg()
+def test_compare_tiers_runs_both_methods_per_fleet_size(config_path):
+    cfg = _tiny_sweep_cfg(config_path)
     res = compare_tiers(cfg, [2, 3], RngFactory(cfg.sim.master_seed))
     assert set(res.keys()) == {2, 3}
     for n, variants in res.items():
