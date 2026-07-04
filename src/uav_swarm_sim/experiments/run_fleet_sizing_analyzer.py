@@ -34,7 +34,7 @@ from ..planning.launch_site_optimizer import (
 )
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.tgc import build_tgc
-from .fleet_sizing import TURN_FACTOR_DEFAULT, FleetSizingInputs, sweep
+from .fleet_sizing import FleetSizingInputs, sweep
 
 
 # --------------------------------------------------------------------------- #
@@ -163,7 +163,6 @@ def main(argv=None) -> int:
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--n-max", type=int, default=20, help="largest fleet size to evaluate")
     ap.add_argument("--n-min", type=int, default=1)
-    ap.add_argument("--turn-factor", type=float, default=TURN_FACTOR_DEFAULT)
     ap.add_argument("--knee-frac", type=float, default=0.05,
                     help="diminishing-returns threshold as a fraction of the N=1 duration")
     ap.add_argument("--plot", default=None, help="optional path to save a Pareto PNG")
@@ -181,7 +180,6 @@ def main(argv=None) -> int:
             n_bays=cfg.swap.n_bays,
             n_min=args.n_min,
             n_max=args.n_max,
-            turn_factor=args.turn_factor,
             reserve_frac=cfg.rth.reserve_frac,
         )
     except InfeasibleMissionError as exc:
@@ -199,7 +197,7 @@ def main(argv=None) -> int:
     print(f"- Launch site (real, from optimizer): ({base_pose.x:,.1f}, {base_pose.y:,.1f})")
     print(f"- Navigable area: {inputs.area_m2:,.0f} m²  |  furthest navigable point: "
           f"{inputs.furthest_dist_m:,.0f} m  |  representative transit: {inputs.transit_dist_m:,.0f} m")
-    print(f"- Effective swath: {spec.swath_width_m:,.1f} m  |  turn factor: {args.turn_factor}")
+    print(f"- Effective swath: {spec.swath_width_m:,.1f} m")
     print(f"- Total coverage path: {report.total_coverage_length_m:,.0f} m "
           f"({report.total_coverage_j:,.0f} J)")
     print(f"- Per-sortie: overhead {b.overhead_j:,.0f} J (takeoff+transit+landing), "
