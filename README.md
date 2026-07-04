@@ -259,6 +259,20 @@ python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_regi
 
 Smoke test: `pytest tests/test_smoke.py`. Full suite: `pytest -q`.
 
+**Running tests faster.** `pip install -e .[dev]` adds `pytest-xdist`; then:
+
+```bash
+pytest -n auto --dist loadscope   # full suite in parallel (loadscope keeps a module's
+                                  # tests on one worker, so module-scoped fixtures such
+                                  # as the S5 shape-sweep harness are built only once)
+pytest -m "not slow"              # fast local dev loop: skips the slow-marked tests
+                                  # (S5 sweep, full-mission CLI, GIF renders)
+pytest -n auto -m "not slow"      # both combined
+```
+
+The `slow` marker is declared in `pyproject.toml`; the default `pytest -q` still runs
+everything serially, exactly as before.
+
 ### How many drones is optimal?
 
 There is **no single number** — the optimum depends on the survey area, the battery capacity, and the platform. Two tools answer it:

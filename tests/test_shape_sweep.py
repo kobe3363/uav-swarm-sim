@@ -33,6 +33,8 @@ from uav_swarm_sim.experiments.run_shape_sweep import (
     sweep,
 )
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(scope="module")
 def swept(tmp_path_factory):

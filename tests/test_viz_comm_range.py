@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib
+import pytest
 from conftest import config_path
 from matplotlib.patches import Circle
 
@@ -79,6 +80,7 @@ def test_dashed_vs_filled_styles():
 # --------------------------------------------------------------------------- #
 # end-to-end rendering: off vs on, both produce valid files                   #
 # --------------------------------------------------------------------------- #
+@pytest.mark.slow
 def test_static_plot_off_vs_on(tmp_path):
     eng = _engine()
     off = load_config(config_path()).viz
@@ -88,6 +90,7 @@ def test_static_plot_off_vs_on(tmp_path):
     assert Path(p_off).stat().st_size > 0 and Path(p_on).stat().st_size > 0
 
 
+@pytest.mark.slow
 def test_animation_off_vs_on(tmp_path):
     eng = _engine()
     on = load_config(config_path(), overrides={"viz.show_comm_range": True,

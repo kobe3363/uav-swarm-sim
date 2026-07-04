@@ -113,6 +113,7 @@ def test_visualization_outputs(mission, tmp_path):
 # --------------------------------------------------------------------------- #
 # experiment CLIs                                                             #
 # --------------------------------------------------------------------------- #
+@pytest.mark.slow
 def test_single_mission_cli(tmp_path):
     from uav_swarm_sim.experiments import run_single_mission
     # write a tiny complete config the CLI can load

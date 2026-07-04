@@ -100,6 +100,7 @@ def test_static_state_colored_paths_png(run0, tmp_path):
     assert Path(p).exists() and Path(p).stat().st_size > 0
 
 
+@pytest.mark.slow
 def test_replay_gif_is_produced(run0, tmp_path):
     cfg, eng, result = run0
     g = viz.animate_mission(result.history, eng.env, tmp_path / "replay.gif",
