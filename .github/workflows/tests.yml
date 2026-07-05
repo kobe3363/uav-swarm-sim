@@ -39,7 +39,10 @@ jobs:
 
     # 4. Paleidžiami testai (lygiagrečiai; --dist loadscope laiko vieno modulio
     # testus ant to paties workerio, kad module-scoped fixture'ai nebūtų statomi
-    # pakartotinai keliuose workeriuose)
+    # pakartotinai keliuose workeriuose).
+    # -n logical (ne auto): nuo ENG-09 psutil yra priklausomybė, o pytest-xdist
+    # "auto" su psutil renkasi FIZINIUS branduolius (runner'yje = 2). "logical"
+    # naudoja loginius (= 4) -> atkuria ankstesnį 4 worker'ių lygiagretumą.
     - name: Run pytest
       run: |
-        pytest -n auto --dist loadscope tests/
+        pytest -n logical --dist loadscope tests/
