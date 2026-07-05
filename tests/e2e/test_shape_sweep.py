@@ -37,14 +37,28 @@ from uav_swarm_sim.experiments.run_shape_sweep import (
 pytestmark = pytest.mark.slow
 
 
+_GRID = dict(shapes_dir="data/areas/shapes", shapes=["square", "c_shape"],
+             ns=[2, 4], mode="clean", n_runs=2)
+
+
 @pytest.fixture(scope="module")
 def swept(tmp_path_factory):
     base = load_config("config/default.yaml")
     ctx = RunContext(base_dir=str(tmp_path_factory.mktemp("s5")), name="e2e")
-    cells, contrasts, problems = sweep(
-        base, "data/areas/shapes", ["square", "c_shape"], [2, 4],
-        "clean", 2, ctx, quiet=True)
-    return cells, contrasts, problems
+    return sweep(base, _GRID["shapes_dir"], _GRID["shapes"], _GRID["ns"],
+                 _GRID["mode"], _GRID["n_runs"], ctx, quiet=True)  # jobs=1
+
+
+@pytest.fixture(scope="module")
+def swept_parallel(tmp_path_factory):
+    """Same grid as ``swept`` but run with jobs=4 (all four cells at once, so
+    completion order almost certainly differs from ordinal order -- the strongest
+    test of the reassembly). Reuses the already-paid serial sweep for comparison
+    rather than running a second serial pass (ENG-09 keeps this test cheap)."""
+    base = load_config("config/default.yaml")
+    ctx = RunContext(base_dir=str(tmp_path_factory.mktemp("s5p")), name="e2e_par")
+    return sweep(base, _GRID["shapes_dir"], _GRID["shapes"], _GRID["ns"],
+                 _GRID["mode"], _GRID["n_runs"], ctx, quiet=True, jobs=4)
 
 
 def test_no_problem_cells(swept):
@@ -127,22 +141,13 @@ def test_readout_structure(swept):
         assert isinstance(ro[k], float)
 
 
-def test_serial_parallel_bitwise_identical(tmp_path):
+def test_serial_parallel_bitwise_identical(swept, swept_parallel, tmp_path):
     """ENG-09 (B5) SACRED gate: the parallel sweep must produce shape_sweep.csv
     and contrasts.csv byte-for-byte identical to the serial sweep on the same
     master_seed and grid. This is the paired-seed determinism property -- any
     drift is a REJECT, not a rounding nuisance."""
-    base = load_config("config/default.yaml")
-    grid = dict(shapes_dir="data/areas/shapes", shapes=["square", "c_shape"],
-                ns=[2, 4], mode="clean", n_runs=2)
-    ctx = RunContext(base_dir=str(tmp_path), name="det")
-
-    cells_s, contrasts_s, prob_s = sweep(
-        base, grid["shapes_dir"], grid["shapes"], grid["ns"], grid["mode"],
-        grid["n_runs"], ctx, quiet=True, jobs=1)
-    cells_p, contrasts_p, prob_p = sweep(
-        base, grid["shapes_dir"], grid["shapes"], grid["ns"], grid["mode"],
-        grid["n_runs"], ctx, quiet=True, jobs=2)
+    cells_s, contrasts_s, prob_s = swept
+    cells_p, contrasts_p, prob_p = swept_parallel
 
     # structural guards. NOTE: raw dict == would spuriously fail on rows that
     # carry a NaN field (planned_imbalance_maxmin), because nan != nan; the CSV
