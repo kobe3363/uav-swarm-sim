@@ -9,3 +9,7 @@ Requires-Dist: numpy>=1.26
 Requires-Dist: matplotlib>=3.8
 Requires-Dist: pulp>=2.7
 Requires-Dist: pyyaml>=6.0
+Requires-Dist: psutil>=5.9
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-xdist>=3.5; extra == "dev"
