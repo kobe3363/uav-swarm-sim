@@ -1,4 +1,4 @@
-"""Batch 5 tests: metrics / SMDP analysis layer (isolated + hand-computable)."""
+"""metrics / SMDP analysis layer tests (isolated + hand-computable)."""
 from __future__ import annotations
 
 import math

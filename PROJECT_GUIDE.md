@@ -131,13 +131,12 @@ uav-swarm-sim/                         ← repository root; RUN COMMANDS FROM HE
 │           ├── run_launch_site_study.py
 │           └── run_replay.py               ← deterministic GIF/PNG replay of one replication
 └── tests/
-    ├── conftest.py                    ← test setup (finds the code)
-    ├── test_batch1.py … test_batch6.py
-    ├── test_smoke.py
-    ├── test_replay.py                     ← replay/animation tests
-    ├── test_target_mission.py             ← target-visit mission tests
-    ├── test_dynamic_obstacles.py          ← dynamic obstacle + swarm sensing tests
-    └── test_viz_comm_range.py             ← comm-range overlay (VizConfig) tests
+    ├── conftest.py                    ← test setup (finds the code; config_path fixture)
+    ├── unit/                          ← isolated per-package tests, mirrors src/
+    │   ├── execution/  experiments/  infrastructure/
+    │   └── metrics/    physical_model/  planning/
+    ├── integration/                   ← engine runs / cross-layer tests
+    └── e2e/                           ← full harness + CLI entry-point tests
 ```
 
 I am **not** suggesting any change to the files. The tree above is how they already are and must stay.
@@ -234,8 +233,8 @@ Plain-language description of every file. Domain terms (TGC, Dubins, SMDP) are u
 
 ### Tests (your safety net)
 
-- **test_batch1.py … test_batch6.py** — one test file per build layer (1: config/randomness; 2: physics/Dubins; 3: planning/decomposition; 4: execution/state machine; 5: metrics/SMDP; 6: engine/experiments). They pin the important properties (energy = power×time, Dubins endpoints, area ∝ battery, legal transitions, the embedded-vs-time-weighted correction, determinism).
-- **test_smoke.py** — the end-to-end check: a tiny 3-drone mission must complete, cover its area, end with all drones idle, and produce a valid stationary distribution. **If you change anything in a year, run this first.**
+- **tests/unit/** — isolated per-package tests mirroring `src/` (infrastructure: config/rng/core_types; physical_model: energy/Dubins/battery/motion; planning; execution: state machine/agent/fleet; metrics: SMDP; experiments: analytical harnesses). They pin the important properties (energy = power×time, Dubins endpoints, area ∝ battery, legal transitions, the embedded-vs-time-weighted correction, determinism).
+- **tests/integration/test_smoke.py** — the end-to-end check: a tiny 3-drone mission must complete, cover its area, end with all drones idle, and produce a valid stationary distribution. **If you change anything in a year, run this first.**
 
 **[GENERAL HONESTY NOTE]** I am confident about *what every file does*. My real uncertainty is concentrated in five places, all flagged above: `launch_site_optimizer` (criterion 3 often inert), `redistribution` (drops in-progress coverage), `mission_metrics` (coarse coverage fraction), `comparison`/`validation` (plumbing present, full scenarios not populated), and the headline fact that **the central contribution only shows its effect when batteries differ**. None of these are crashes; all are modelling choices to be aware of when you write results.
 
@@ -277,7 +276,7 @@ pip install -e .
 
 **Step 4 — confirm everything works** (this is the smoke test; takes a few seconds):
 ```bash
-pytest tests/test_smoke.py
+pytest tests/integration/test_smoke.py
 ```
 You want to see `passed`. To run the whole suite (a few minutes): `pytest`.
 
@@ -397,7 +396,7 @@ Reading these two together: Diagram A tells you *which folder is allowed to use 
 
 ### If you read nothing else in a year, remember these five things
 1. **Don't flatten the files** — the folder tree *is* the program (relative imports).
-2. **Run from the project root**, after `pip install -e .` inside a `.venv`; start with `pytest tests/test_smoke.py`.
+2. **Run from the project root**, after `pip install -e .` inside a `.venv`; start with `pytest tests/integration/test_smoke.py`.
 3. **The conductor is `simulation_engine.py`; the contribution is `weighted_decomposition.py`; the headline number is the time-weighted π in `stationary_distribution.py` → `efficiency_score.py`.**
 4. **The contribution only shows up when batteries differ** (a failure/redistribution scenario), not in a clean full-battery run.
 5. **`tgc_basic` is a class inside `weighted_decomposition.py`, not a file**, and the five flagged simplifications (launch criterion 3, redistribution dropping progress, coarse coverage fraction, comparison/validation scenarios) are modelling choices to mention in your write-up, not bugs.
