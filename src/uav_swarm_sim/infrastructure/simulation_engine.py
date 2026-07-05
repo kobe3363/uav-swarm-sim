@@ -153,7 +153,14 @@ class SimulationEngine:
         self.planning_time_s = self.layer_graphs.planning_time_s
 
         # launch site optimization (on layer 0 / primary graph)
-        launch_rng = self.rng.stream(STREAM_LAUNCH_SAMPLING, self.replication)
+        # Launch siting is a per-scenario decision, NOT a per-replication Monte-
+        # Carlo draw: the pad must be identical across replications so paired-seed
+        # variance reflects environment/failure draws only (matches the standalone
+        # analytical scripts, which all site with stream(STREAM_LAUNCH_SAMPLING, 0)).
+        # Pinning to replication 0 makes tgc_basic/weighted/classic byte-
+        # deterministic under lambda=0 clean; obstacles (STREAM_OBSTACLES) and
+        # failures (STREAM_FAILURES) still vary per replication as intended.
+        launch_rng = self.rng.stream(STREAM_LAUNCH_SAMPLING, 0)
         self.launch_pose, self.site_scores = optimize_launch(
             cfg.launch, self.tgc, self.env, self.motion, self.em, self.aero,
             self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
