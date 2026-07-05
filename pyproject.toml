@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
   "networkx>=3.2", "shapely>=2.0", "scipy>=1.11", "numpy>=1.26",
   "matplotlib>=3.8", "pulp>=2.7", "pyyaml>=6.0",
+  "psutil>=5.9",  # ENG-09: cross-platform physical-core count for --jobs auto
 ]
 
 [project.optional-dependencies]
