@@ -34,9 +34,12 @@ jobs:
         # Įdiegiame paketus iš jūsų requirements.txt
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         # Kadangi turite pyproject.toml ir src/, įdiegiame patį paketą editable režimu
-        pip install -e .
+        # (su [dev] extra, kuris atsineša pytest-xdist lygiagretumui)
+        pip install -e ".[dev]"
 
-    # 4. Paleidžiami testai
+    # 4. Paleidžiami testai (lygiagrečiai; --dist loadscope laiko vieno modulio
+    # testus ant to paties workerio, kad module-scoped fixture'ai nebūtų statomi
+    # pakartotinai keliuose workeriuose)
     - name: Run pytest
       run: |
-        pytest tests/
+        pytest -n auto --dist loadscope tests/
