@@ -1,4 +1,4 @@
-"""Batch 3 tests: planning layer (isolated + small integration)."""
+"""Planning-layer tests (isolated + small integration)."""
 from __future__ import annotations
 
 import math

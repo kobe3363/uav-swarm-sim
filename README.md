@@ -257,7 +257,7 @@ python -m uav_swarm_sim.experiments.run_regime_calculator \
 python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_regime.csv
 ```
 
-Smoke test: `pytest tests/test_smoke.py`. Full suite: `pytest -q`.
+Smoke test: `pytest tests/integration/test_smoke.py`. Full suite: `pytest -q`.
 
 **Running tests faster.** `pip install -e .[dev]` adds `pytest-xdist`; then:
 
