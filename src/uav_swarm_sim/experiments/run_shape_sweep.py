@@ -128,14 +128,28 @@ SHAPE_ORDER = ["square", "rect_2_1", "rect_4_1", "rect_8_1", "disk",
 REFERENCE_N = 4  # the divergence-peak reference row (A2 finding)
 
 # variant labels. The four decomposition peers run with the shipped optimized
-# launch; the fifth is the launch-axis baseline (tgc_basic, naive-centroid pad).
+# launch; the naive-launch twins below re-run three of them on the launch-axis
+# NAIVE-centroid pad (the launch-confound ablation).
 ALGO_VARIANTS: tuple[DecompositionAlgo, ...] = (
     DecompositionAlgo.WEIGHTED_VORONOI,
     DecompositionAlgo.TGC_BASIC,
     DecompositionAlgo.CLASSIC_VORONOI,
     DecompositionAlgo.KMEANS,
 )
-NAIVE_LAUNCH_LABEL = "tgc_naive_launch"
+# NAIVE-launch twins: each label re-runs its decomposition algo on the SAME
+# naive-centroid pad (one pad + one deploy ring per replication, shared across
+# every algo -> launch is neutralised while the algorithm axis varies). This
+# isolates whether the TGC~kmeans verdict survives without TGC's optimizer-sited
+# "home pad" (Problem B). weighted_naive is INTENTIONALLY absent: for an
+# identical full-battery fleet weighted_voronoi == tgc_basic byte-identically
+# (the documented scoped null), so a weighted twin would only duplicate
+# tgc_naive_launch.
+NAIVE_LAUNCH_VARIANTS: dict[str, DecompositionAlgo] = {
+    "tgc_naive_launch": DecompositionAlgo.TGC_BASIC,
+    "classic_naive_launch": DecompositionAlgo.CLASSIC_VORONOI,
+    "kmeans_naive_launch": DecompositionAlgo.KMEANS,
+}
+NAIVE_LAUNCH_LABEL = "tgc_naive_launch"  # back-compat alias (regime tag, tests)
 
 # metric extractors: label -> (higher_is_better, fn(SingleRunResult) -> float)
 _NAIVE_OFFSET_M = 5.0  # outward push of the centroid-projected pad (< standoff)
@@ -342,10 +356,12 @@ def paired_contrast(a: list[float], b: list[float]) -> dict:
 def run_cell(base: Config, shapes_dir: str, shape: str, n: int, mode: str,
              n_runs: int) -> dict[str, VariantResult | Exception]:
     """One (shape, n) cell: the 4 decomposition peers on the optimized launch
-    plus the naive-centroid-launch tgc_basic, ALL sharing one RngFactory so
-    every stream draw is paired per replication. A variant that raises (e.g.
-    infeasible naive pad) is recorded as its exception -- reported, not
-    silently skipped (AC-1)."""
+    plus the naive-centroid-launch twins (tgc/classic/kmeans), ALL sharing one
+    RngFactory so every stream draw is paired per replication. The naive twins
+    also share ONE cfg_naive -> one pad + one deploy ring per replication, so the
+    launch axis is neutral across algos. A variant that raises (e.g. infeasible
+    naive pad) is recorded as its exception -- reported, not silently skipped
+    (AC-1)."""
     shape_path = f"{shapes_dir}/{shape}.geojson"
     cfg = build_cell_cfg(base, shape_path, n, mode, n_runs)
     rng = RngFactory(cfg.sim.master_seed)  # ONE factory -> paired seeds
@@ -356,15 +372,24 @@ def run_cell(base: Config, shapes_dir: str, shape: str, n: int, mode: str,
                                           PlannerKind.DUBINS)
         except Exception as exc:  # noqa: BLE001 -- report, never skip silently
             out[algo.value] = exc
+    # NAIVE-launch twins: build the pad + cfg once (deterministic per shape), then
+    # re-run each algo on it. Sharing rng and cfg_naive keeps seeds paired and the
+    # pad identical across algos. Streams are pure functions of (seed, name, rep),
+    # so appending these leaves the four optimizer variants byte-identical.
     try:
         site = naive_centroid_site(load_area(shape_path))
         cfg_naive = build_cell_cfg(base, shape_path, n, mode, n_runs,
                                    launch_site=site)
-        out[NAIVE_LAUNCH_LABEL] = run_variant(
-            cfg_naive, rng, NAIVE_LAUNCH_LABEL,
-            DecompositionAlgo.TGC_BASIC, PlannerKind.DUBINS)
-    except Exception as exc:  # noqa: BLE001
-        out[NAIVE_LAUNCH_LABEL] = exc
+    except Exception as exc:  # noqa: BLE001 -- pad build failed: fail every twin
+        for label in NAIVE_LAUNCH_VARIANTS:
+            out[label] = exc
+    else:
+        for label, algo in NAIVE_LAUNCH_VARIANTS.items():
+            try:
+                out[label] = run_variant(cfg_naive, rng, label, algo,
+                                         PlannerKind.DUBINS)
+            except Exception as exc:  # noqa: BLE001
+                out[label] = exc
     # AC-2: assert the pairing across every variant that ran
     counts = {lbl: v.mc.n_runs for lbl, v in out.items()
               if isinstance(v, VariantResult)}
@@ -378,7 +403,12 @@ CONTRASTS = (
     ("tgc_basic", "classic_voronoi"),        # headline 1
     ("tgc_basic", "kmeans"),                 # headline 2
     ("weighted_voronoi", "tgc_basic"),       # scoped-null verification
-    ("tgc_basic", NAIVE_LAUNCH_LABEL),       # launch axis (optimized - naive)
+    ("tgc_basic", "tgc_naive_launch"),       # launch axis: tgc (optimized - naive)
+    ("classic_voronoi", "classic_naive_launch"),  # launch axis: classic
+    ("kmeans", "kmeans_naive_launch"),       # launch axis: kmeans
+    # KEY (Problem B): TGC vs kmeans with BOTH on the neutral naive pad -- does
+    # the headline-2 verdict survive without TGC's optimizer-sited home pad?
+    ("tgc_naive_launch", "kmeans_naive_launch"),
 )
 
 
@@ -406,9 +436,7 @@ def _process_cell(base: Config, shapes_dir: str, shape: str, n: int, mode: str,
             problems.append({"shape": shape, "n": n, "variant": lbl,
                              "error": f"{type(v).__name__}: {v}"})
             continue
-        algo = (DecompositionAlgo.TGC_BASIC
-                if lbl == NAIVE_LAUNCH_LABEL
-                else DecompositionAlgo(lbl))
+        algo = NAIVE_LAUNCH_VARIANTS.get(lbl) or DecompositionAlgo(lbl)
         row = {"shape": shape, "n": n, "variant": lbl,
                "n_runs": v.mc.n_runs, "regime": tag["regime"],
                "pooled_ratio": round(tag["pooled_ratio"], 4),
@@ -597,7 +625,9 @@ def write_summary(path: Path, mode: str, n_runs: int, shapes: list[str],
              f"per seed)")
     L.append(f"- fixed N per cell: **{n_runs}** (paired seeds; no early stop)")
     L.append(f"- grid: {len(shapes)} shapes x n in {ns} x "
-             f"{len(ALGO_VARIANTS)} peers + {NAIVE_LAUNCH_LABEL}")
+             f"{len(ALGO_VARIANTS)} optimizer peers + "
+             f"{len(NAIVE_LAUNCH_VARIANTS)} naive-launch twins "
+             f"({', '.join(NAIVE_LAUNCH_VARIANTS)})")
     L.append(f"- reference row: n = {REFERENCE_N}\n")
     if problems:
         L.append("## PROBLEM cells (reported, not skipped)\n")
@@ -648,6 +678,28 @@ def write_summary(path: Path, mode: str, n_runs: int, shapes: list[str],
         e = by_m.get("total_energy", {}).get("diff_mean", float("nan"))
         f = by_m.get("efficiency", {}).get("diff_mean", float("nan"))
         L.append(f"| {shape} | {n} | {regime} | {e:+.0f} | {f:+.3f} |")
+    L.append("")
+
+    # KEY (Problem B): TGC vs kmeans, BOTH on the neutral naive pad. If the
+    # headline-2 (optimizer-launch) TGC>=kmeans verdict is really TGC's, it must
+    # persist here; if it collapses to ~0, the headline gap was a launch-siting
+    # confound, not a decomposition effect.
+    L.append("## KEY: TGC - kmeans on NEUTRAL (naive) launch -- Problem B\n")
+    L.append("Both variants share the identical naive-centroid pad and deploy "
+             "ring per replication, so this contrast isolates the DECOMPOSITION "
+             "axis with the launch advantage removed. Read on efficiency (the "
+             "headline metric); a diff that stays >0 means the TGC verdict "
+             "survives the launch-confound ablation.\n")
+    L.append("| shape | n | regime | d efficiency (tgc - kmeans, neutral) |")
+    L.append("|---|---|---|---|")
+    keyc = {}
+    for c in contrast_rows:
+        if (c["contrast"] == "tgc_naive_launch - kmeans_naive_launch"
+                and c["metric"] == "efficiency"):
+            keyc[(c["shape"], c["n"], c["regime"])] = c["diff_mean"]
+    for (shape, n, regime), diff in keyc.items():
+        mark = "**" if n == REFERENCE_N else ""
+        L.append(f"| {shape} | {mark}{n}{mark} | {regime} | {diff:+.4f} |")
     L.append("")
 
     L.append("## Per-cell efficiency (mean +/- CI) by variant\n")
