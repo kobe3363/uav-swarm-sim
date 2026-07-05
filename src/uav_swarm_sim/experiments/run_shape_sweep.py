@@ -67,25 +67,12 @@ H1/H2 read-out), manifest.
 """
 from __future__ import annotations
 
-import os
-
-# ENG-09 (B5): pin BLAS/OpenMP to a single thread BEFORE numpy is imported so
-# (a) N worker processes do not oversubscribe cores with N*threads, and (b) the
-# floating-point reduction order is identical in the serial and parallel paths
-# -> bitwise-identical CSVs. setdefault leaves an explicit user override intact.
-# In spawn mode every worker re-imports this module first, so the pin also takes
-# effect in each child before its numpy loads.
-for _blas_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                  "NUMEXPR_NUM_THREADS"):
-    os.environ.setdefault(_blas_var, "1")
-
 import argparse
 import csv
 import dataclasses
 import math
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -382,79 +369,10 @@ CONTRASTS = (
 )
 
 
-def _process_cell(base: Config, shapes_dir: str, shape: str, n: int, mode: str,
-                  n_runs: int, clean_cfg: Config, desc_shape: dict,
-                  ) -> tuple[list[dict], list[dict], list[dict], str, float]:
-    """One (shape, n) cell -> (cell_rows, contrast_rows, problems, regime, secs).
-
-    ENG-09: this is the picklable per-cell worker. It runs the identical body
-    the serial loop used to run inline; the serial and parallel paths both call
-    it, so per-cell output is byte-identical by construction. Returns only plain
-    dict rows (never VariantResult) so the process boundary stays light. The
-    regime tag and wall time are returned for the parent's progress line."""
-    shape_path = f"{shapes_dir}/{shape}.geojson"
-    t0 = time.perf_counter()
-    tag = regime_tag(clean_cfg, shape_path, n)
-    variants = run_cell(base, shapes_dir, shape, n, mode, n_runs)
-    vecs = {lbl: metric_vectors(v) for lbl, v in variants.items()
-            if isinstance(v, VariantResult)}
-    cell_rows: list[dict] = []
-    contrast_rows: list[dict] = []
-    problems: list[dict] = []
-    for lbl, v in variants.items():
-        if isinstance(v, Exception):
-            problems.append({"shape": shape, "n": n, "variant": lbl,
-                             "error": f"{type(v).__name__}: {v}"})
-            continue
-        algo = (DecompositionAlgo.TGC_BASIC
-                if lbl == NAIVE_LAUNCH_LABEL
-                else DecompositionAlgo(lbl))
-        row = {"shape": shape, "n": n, "variant": lbl,
-               "n_runs": v.mc.n_runs, "regime": tag["regime"],
-               "pooled_ratio": round(tag["pooled_ratio"], 4),
-               "max_zone_ratio": round(tag["max_zone_ratio"], 4),
-               "solidity": round(desc_shape["solidity"], 4),
-               "isoperimetric": round(desc_shape["isoperimetric"], 4),
-               "planned_imbalance_maxmin": round(
-                   planned_imbalance(clean_cfg, shape_path, n, algo), 4),
-               "reference_cell": (n == REFERENCE_N)}
-        for m in METRICS:
-            mu, ci, k = mean_ci(vecs[lbl][m])
-            row[f"{m}_mean"] = round(mu, 6)
-            row[f"{m}_ci"] = round(ci, 6) if np.isfinite(ci) else ci
-            row[f"{m}_n"] = k
-        cell_rows.append(row)
-    for a, b in CONTRASTS:
-        if a not in vecs or b not in vecs:
-            continue
-        for m in METRICS:
-            c = paired_contrast(vecs[a][m], vecs[b][m])
-            contrast_rows.append({
-                "shape": shape, "n": n, "contrast": f"{a} - {b}",
-                "metric": m, "diff_mean": round(c["mean"], 6),
-                "diff_ci": (round(c["ci"], 6) if np.isfinite(c["ci"])
-                            else c["ci"]),
-                "n_pairs": c["n"], "dropped_pairs": c["dropped"],
-                "exact_zero": c["exact_zero"],
-                "regime": tag["regime"],
-                "solidity": round(desc_shape["solidity"], 4),
-                "isoperimetric": round(desc_shape["isoperimetric"], 4),
-                "reference_cell": (n == REFERENCE_N)})
-    return (cell_rows, contrast_rows, problems, tag["regime"],
-            time.perf_counter() - t0)
-
-
 def sweep(base: Config, shapes_dir: str, shapes: list[str], ns: list[int],
           mode: str, n_runs: int, ctx: RunContext, quiet: bool = False,
-          jobs: int = 1) -> tuple[list[dict], list[dict], list[dict]]:
-    """Runs the grid; returns (cell_rows, contrast_rows, problem_rows).
-
-    ENG-09: with ``jobs == 1`` cells run serially in this process (the
-    determinism baseline and revert path). With ``jobs > 1`` cells run in a
-    ProcessPoolExecutor; results are reassembled in the ORIGINAL cell ordinal
-    order (not completion order), so the concatenated rows -- and therefore the
-    CSVs -- are byte-identical to the serial run regardless of which worker
-    finishes first."""
+          ) -> tuple[list[dict], list[dict], list[dict]]:
+    """Runs the grid; returns (cell_rows, contrast_rows, problem_rows)."""
     clean_cfg = build_cell_cfg(base, f"{shapes_dir}/{shapes[0]}.geojson",
                                max(ns), "clean", 1)  # tags are obstacle-free
     desc = {}
@@ -462,44 +380,60 @@ def sweep(base: Config, shapes_dir: str, shapes: list[str], ns: list[int],
         poly = load_area(f"{shapes_dir}/{s}.geojson")
         desc[s] = describe(s, poly, spec_effective_swath(base))
 
-    # cells in canonical (shape, n) order -> stable ordinal for reassembly
-    cells = [(shape, n) for shape in shapes for n in ns]
-    total = len(cells)
-    results: list[tuple[list[dict], list[dict], list[dict]] | None] = (
-        [None] * total)
-    t_grid = time.perf_counter()
-
-    def _record(k: int, shape: str, n: int, res) -> None:
-        cr, contr, prob, regime, secs = res
-        results[k] = (cr, contr, prob)
-        if not quiet:
-            print(f"[{k + 1:>3d}/{total}] [{shape:>9s} n={n}] "
-                  f"{regime:<15s} {secs:6.1f}s", flush=True)
-
-    if jobs <= 1:
-        for k, (shape, n) in enumerate(cells):
-            _record(k, shape, n, _process_cell(
-                base, shapes_dir, shape, n, mode, n_runs, clean_cfg,
-                desc[shape]))
-    else:
-        with ProcessPoolExecutor(max_workers=jobs) as ex:
-            fut_to_k = {
-                ex.submit(_process_cell, base, shapes_dir, shape, n, mode,
-                          n_runs, clean_cfg, desc[shape]): (k, shape, n)
-                for k, (shape, n) in enumerate(cells)}
-            for fut in as_completed(fut_to_k):
-                k, shape, n = fut_to_k[fut]
-                _record(k, shape, n, fut.result())
-
     cell_rows: list[dict] = []
     contrast_rows: list[dict] = []
     problems: list[dict] = []
-    for res in results:  # reassemble in ordinal order -> byte-identical output
-        assert res is not None  # every cell must have produced a result
-        cr, contr, prob = res
-        cell_rows.extend(cr)
-        contrast_rows.extend(contr)
-        problems.extend(prob)
+    t_grid = time.perf_counter()
+    for shape in shapes:
+        shape_path = f"{shapes_dir}/{shape}.geojson"
+        for n in ns:
+            t0 = time.perf_counter()
+            tag = regime_tag(clean_cfg, shape_path, n)
+            variants = run_cell(base, shapes_dir, shape, n, mode, n_runs)
+            vecs = {lbl: metric_vectors(v) for lbl, v in variants.items()
+                    if isinstance(v, VariantResult)}
+            for lbl, v in variants.items():
+                if isinstance(v, Exception):
+                    problems.append({"shape": shape, "n": n, "variant": lbl,
+                                     "error": f"{type(v).__name__}: {v}"})
+                    continue
+                algo = (DecompositionAlgo.TGC_BASIC
+                        if lbl == NAIVE_LAUNCH_LABEL
+                        else DecompositionAlgo(lbl))
+                row = {"shape": shape, "n": n, "variant": lbl,
+                       "n_runs": v.mc.n_runs, "regime": tag["regime"],
+                       "pooled_ratio": round(tag["pooled_ratio"], 4),
+                       "max_zone_ratio": round(tag["max_zone_ratio"], 4),
+                       "solidity": round(desc[shape]["solidity"], 4),
+                       "isoperimetric": round(desc[shape]["isoperimetric"], 4),
+                       "planned_imbalance_maxmin": round(
+                           planned_imbalance(clean_cfg, shape_path, n, algo), 4),
+                       "reference_cell": (n == REFERENCE_N)}
+                for m in METRICS:
+                    mu, ci, k = mean_ci(vecs[lbl][m])
+                    row[f"{m}_mean"] = round(mu, 6)
+                    row[f"{m}_ci"] = round(ci, 6) if np.isfinite(ci) else ci
+                    row[f"{m}_n"] = k
+                cell_rows.append(row)
+            for a, b in CONTRASTS:
+                if a not in vecs or b not in vecs:
+                    continue
+                for m in METRICS:
+                    c = paired_contrast(vecs[a][m], vecs[b][m])
+                    contrast_rows.append({
+                        "shape": shape, "n": n, "contrast": f"{a} - {b}",
+                        "metric": m, "diff_mean": round(c["mean"], 6),
+                        "diff_ci": (round(c["ci"], 6) if np.isfinite(c["ci"])
+                                    else c["ci"]),
+                        "n_pairs": c["n"], "dropped_pairs": c["dropped"],
+                        "exact_zero": c["exact_zero"],
+                        "regime": tag["regime"],
+                        "solidity": round(desc[shape]["solidity"], 4),
+                        "isoperimetric": round(desc[shape]["isoperimetric"], 4),
+                        "reference_cell": (n == REFERENCE_N)})
+            if not quiet:
+                print(f"[{shape:>9s} n={n}] {tag['regime']:<15s} "
+                      f"{time.perf_counter() - t0:6.1f}s", flush=True)
     if not quiet:
         print(f"grid wall time: {time.perf_counter() - t_grid:.1f}s")
     return cell_rows, contrast_rows, problems
@@ -694,10 +628,6 @@ def main(argv=None) -> int:
                          "2,4 shipped)")
     ap.add_argument("--base", default="runs")
     ap.add_argument("--run-name", default=None)
-    ap.add_argument("--jobs", default="1",
-                    help="parallel worker processes over cells (default 1 = "
-                         "serial; 'auto' = os.cpu_count()). Output is "
-                         "byte-identical to serial at any --jobs (ENG-09).")
     args = ap.parse_args(argv)
 
     base = load_config(args.config)
@@ -706,14 +636,13 @@ def main(argv=None) -> int:
           else (list(range(2, 7)) if args.mode == "clean"
                 else list(SHIPPED_DEFAULT_NS)))
     n_runs = args.n_runs or BUDGETS[args.budget][args.mode]
-    jobs = (os.cpu_count() or 1) if args.jobs == "auto" else int(args.jobs)
 
     ctx = RunContext(base_dir=args.base,
                      name=args.run_name or f"shape_sweep_{args.mode}")
     print(f"S5 shape sweep: mode={args.mode} N={n_runs} shapes={len(shapes)} "
-          f"n={ns} jobs={jobs} -> {ctx.dir}", flush=True)
+          f"n={ns} -> {ctx.dir}", flush=True)
     cell_rows, contrast_rows, problems = sweep(
-        base, args.shapes_dir, shapes, ns, args.mode, n_runs, ctx, jobs=jobs)
+        base, args.shapes_dir, shapes, ns, args.mode, n_runs, ctx)
 
     readout = hypothesis_readout(contrast_rows)
     write_csv(ctx.dir / "shape_sweep.csv", cell_rows)

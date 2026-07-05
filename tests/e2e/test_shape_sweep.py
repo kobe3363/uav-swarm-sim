@@ -31,7 +31,6 @@ from uav_swarm_sim.experiments.run_shape_sweep import (
     hypothesis_readout,
     naive_centroid_site,
     sweep,
-    write_csv,
 )
 
 pytestmark = pytest.mark.slow
@@ -125,37 +124,3 @@ def test_readout_structure(swept):
     # correlations are finite or explicitly nan (few shapes) -- never a crash
     for k in ("h2_corr_solidity", "h2_corr_isoperimetric"):
         assert isinstance(ro[k], float)
-
-
-def test_serial_parallel_bitwise_identical(tmp_path):
-    """ENG-09 (B5) SACRED gate: the parallel sweep must produce shape_sweep.csv
-    and contrasts.csv byte-for-byte identical to the serial sweep on the same
-    master_seed and grid. This is the paired-seed determinism property -- any
-    drift is a REJECT, not a rounding nuisance."""
-    base = load_config("config/default.yaml")
-    grid = dict(shapes_dir="data/areas/shapes", shapes=["square", "c_shape"],
-                ns=[2, 4], mode="clean", n_runs=2)
-    ctx = RunContext(base_dir=str(tmp_path), name="det")
-
-    cells_s, contrasts_s, prob_s = sweep(
-        base, grid["shapes_dir"], grid["shapes"], grid["ns"], grid["mode"],
-        grid["n_runs"], ctx, quiet=True, jobs=1)
-    cells_p, contrasts_p, prob_p = sweep(
-        base, grid["shapes_dir"], grid["shapes"], grid["ns"], grid["mode"],
-        grid["n_runs"], ctx, quiet=True, jobs=2)
-
-    # structural guards. NOTE: raw dict == would spuriously fail on rows that
-    # carry a NaN field (planned_imbalance_maxmin), because nan != nan; the CSV
-    # gate below is nan-safe (nan serialises to the literal "nan" on both sides).
-    assert prob_s == prob_p == []
-    assert len(cells_s) == len(cells_p)
-    assert len(contrasts_s) == len(contrasts_p)
-
-    # the real gate: written CSV bytes are identical (i.e. `diff` is empty)
-    for name, rows_s, rows_p in (("shape_sweep.csv", cells_s, cells_p),
-                                 ("contrasts.csv", contrasts_s, contrasts_p)):
-        p_s = tmp_path / f"serial_{name}"
-        p_p = tmp_path / f"parallel_{name}"
-        write_csv(p_s, rows_s)
-        write_csv(p_p, rows_p)
-        assert p_s.read_bytes() == p_p.read_bytes(), f"{name} drifted"
