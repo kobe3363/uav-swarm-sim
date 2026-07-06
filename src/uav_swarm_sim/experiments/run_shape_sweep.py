@@ -83,6 +83,7 @@ import argparse
 import csv
 import dataclasses
 import math
+import multiprocessing
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -510,7 +511,14 @@ def sweep(base: Config, shapes_dir: str, shapes: list[str], ns: list[int],
                 base, shapes_dir, shape, n, mode, n_runs, clean_cfg,
                 desc[shape]))
     else:
-        with ProcessPoolExecutor(max_workers=jobs) as ex:
+        # spawn (not the Linux default fork): forking a multi-threaded parent
+        # (e.g. a pytest-xdist worker, or numpy's own threads) is unsafe --
+        # Python 3.12 warns and it can deadlock. spawn also re-imports this
+        # module in every worker, so the BLAS thread-pin at the top applies
+        # before the worker's numpy loads on Linux too (fork inherited the
+        # parent's already-initialised BLAS), strengthening byte-identity.
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
             fut_to_k = {
                 ex.submit(_process_cell, base, shapes_dir, shape, n, mode,
                           n_runs, clean_cfg, desc[shape]): (k, shape, n)
