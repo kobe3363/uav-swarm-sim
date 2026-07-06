@@ -26,7 +26,7 @@ from uav_swarm_sim.planning.geojson_parser import load_area
 from uav_swarm_sim.metrics.run_output import RunContext
 from uav_swarm_sim.experiments.run_shape_sweep import (
     METRICS,
-    NAIVE_LAUNCH_LABEL,
+    NAIVE_LAUNCH_VARIANTS,
     REFERENCE_N,
     hypothesis_readout,
     naive_centroid_site,
@@ -76,14 +76,18 @@ def test_paired_seed_equal_run_counts(swept):
         assert counts == {2}, f"{key}: unequal/other run counts {counts}"
 
 
-def test_five_variants_per_cell(swept):
+def test_seven_variants_per_cell(swept):
+    """4 optimizer peers + 3 naive-launch twins (tgc/classic/kmeans). No
+    weighted_naive: it is the scoped-null duplicate of tgc_naive_launch."""
     cells, _, _ = swept
     by_cell: dict[tuple[str, int], set[str]] = {}
     for r in cells:
         by_cell.setdefault((r["shape"], r["n"]), set()).add(r["variant"])
     for key, variants in by_cell.items():
-        assert NAIVE_LAUNCH_LABEL in variants
-        assert len(variants) == 5, f"{key}: {variants}"
+        for label in NAIVE_LAUNCH_VARIANTS:
+            assert label in variants, f"{key}: missing {label} ({variants})"
+        assert "weighted_naive_launch" not in variants, key  # scoped-null omission
+        assert len(variants) == 7, f"{key}: {variants}"
 
 
 def test_per_cell_metrics_have_mean_and_ci(swept):
@@ -122,6 +126,20 @@ def test_scoped_null_weighted_equals_tgc(swept):
     for c in null:
         assert c["exact_zero"] is True, (c["metric"], c["diff_mean"])
         assert c["diff_mean"] == 0.0
+
+
+def test_neutral_launch_contrasts_present(swept):
+    """The launch-confound ablation must emit: the KEY neutral tgc-vs-kmeans
+    contrast (Problem B) and a per-algo launch axis for every naive twin."""
+    _, contrasts, _ = swept
+    labels = {c["contrast"] for c in contrasts}
+    # KEY: TGC vs kmeans, both on the neutral naive pad
+    assert "tgc_naive_launch - kmeans_naive_launch" in labels
+    # per-algo launch axis (optimizer - neutral) for all three twins
+    for optimizer, naive in (("tgc_basic", "tgc_naive_launch"),
+                             ("classic_voronoi", "classic_naive_launch"),
+                             ("kmeans", "kmeans_naive_launch")):
+        assert f"{optimizer} - {naive}" in labels, (optimizer, naive)
 
 
 def test_naive_launch_site_outside_area():
