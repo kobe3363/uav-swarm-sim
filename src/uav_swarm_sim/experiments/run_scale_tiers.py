@@ -13,11 +13,15 @@ deterministic function of (master_seed, n) -- RngFactory.stream is stateless, so
 a worker that rebuilds RngFactory(master_seed) reproduces the exact paired-seed
 result. --jobs therefore parallelises over tiers byte-identically to serial.
 
+Each run lands in its own unique folder (``<--out>/scale_tiers_<timestamp>_<guid>/``)
+so repeat runs never overwrite each other; ``--out`` is the BASE dir (default
+``runs``), and ``--run-name`` pins a fixed name when a stable path is needed.
+
 Examples:
-  # explicit sizes
-  python -m uav_swarm_sim.experiments.run_scale_tiers --n 4 8 16 24 --out runs/tiers
-  # fine grid 2,4,...,100 in one flag
-  python -m uav_swarm_sim.experiments.run_scale_tiers --n-range 2 100 2 --out runs/tiers
+  # explicit sizes (-> runs/scale_tiers_<...>/)
+  python -m uav_swarm_sim.experiments.run_scale_tiers --n 4 8 16 24
+  # fine grid 2,4,...,100 in one flag, under a custom base dir
+  python -m uav_swarm_sim.experiments.run_scale_tiers --n-range 2 100 2 --out runs
   # the full fine grid on 4 workers, clean (no obstacles)
   python -m uav_swarm_sim.experiments.run_scale_tiers --budget full --mode clean --jobs 4
 """
@@ -44,6 +48,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from ..infrastructure.config import Config, load_config
 from ..infrastructure.rng import RngFactory
 from ..metrics.comparison import VariantResult, compare_tiers, tier_crossover
+from ..metrics.run_output import RunContext, unique_run_name
 
 # lower-is-better metrics swept for the break-even analysis
 _METRICS = (
@@ -260,16 +265,25 @@ def main(argv=None) -> int:
                     help="parallel worker processes over tiers (default 'auto' = "
                          "physical cores minus 1; '1' = serial). Output is "
                          "byte-identical to serial at any --jobs.")
-    ap.add_argument("--out", default="runs/tiers")
+    ap.add_argument("--out", default="runs",
+                    help="BASE output dir; each run lands in its own "
+                         "'scale_tiers_<timestamp>_<guid>' subfolder under it "
+                         "(so repeat runs never overwrite).")
+    ap.add_argument("--run-name", default=None,
+                    help="force a fixed run-dir name (default: unique per run). "
+                         "Pass a name to pin a stable path.")
     args = ap.parse_args(argv)
 
     ns = _n_grid(args)
     cfg = _apply_mode(load_config(args.config), args.mode)
     jobs = _auto_jobs() if args.jobs == "auto" else int(args.jobs)
-    os.makedirs(args.out, exist_ok=True)  # before sweep: incremental out_csv
-    csv_path = os.path.join(args.out, "scale_sweep.csv")
+    # RunContext.__init__ mkdir's the run dir immediately -> the crash-safe
+    # incremental out_csv (opened before the sweep) still works unchanged.
+    ctx = RunContext(base_dir=args.out,
+                     name=args.run_name or unique_run_name("scale_tiers"))
+    csv_path = str(ctx.dir / "scale_sweep.csv")
     print(f"scale tiers: mode={args.mode} budget={args.budget} "
-          f"n={ns} jobs={jobs} -> {args.out}", flush=True)
+          f"n={ns} jobs={jobs} -> {ctx.dir}", flush=True)
     # out_csv gives crash-safety: each finished tier is flushed to disk as it
     # completes, so an OOM / eviction mid-run keeps the tiers done so far.
     res, problems = sweep_tiers(cfg, ns, jobs, out_csv=csv_path)
@@ -301,9 +315,14 @@ def main(argv=None) -> int:
     # completion-ordered) + plot over the tiers that succeeded
     _write_csv(csv_path, ns, res)
     print(f"\nwrote {csv_path}")
-    plot_path = os.path.join(args.out, "scale_sweep.png")
+    plot_path = str(ctx.dir / "scale_sweep.png")
     if present and _plot(plot_path, present, res, crossovers):
         print(f"wrote {plot_path}")
+
+    ctx.finalize(summary={"experiment": "scale_tiers", "mode": args.mode,
+                          "budget": args.budget, "ns": ns, "jobs": jobs,
+                          "crossovers": {a: crossovers.get(a) for a, _ in _METRICS},
+                          "problems": problems})
 
     if problems:
         print(f"\nPROBLEM tiers: {len(problems)} (results incomplete)",

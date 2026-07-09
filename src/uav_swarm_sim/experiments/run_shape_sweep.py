@@ -97,7 +97,7 @@ from ..infrastructure.enums import DecompositionAlgo, Outcome, PlannerKind
 from ..infrastructure.rng import STREAM_KMEANS_INIT, RngFactory
 from ..metrics.comparison import VariantResult, run_variant
 from ..metrics.convergence import ci_half_width
-from ..metrics.run_output import RunContext
+from ..metrics.run_output import RunContext, unique_run_name
 from ..planning.classic_voronoi import ClassicVoronoiDecomposer
 from ..planning.geojson_parser import load_area
 from ..planning.kmeans_heuristic import KMeansHeuristicDecomposer
@@ -766,7 +766,11 @@ def main(argv=None) -> int:
                     help="comma list of fleet sizes (default: 2..6 clean, "
                          "2,4 shipped)")
     ap.add_argument("--base", default="runs")
-    ap.add_argument("--run-name", default=None)
+    ap.add_argument("--run-name", default=None,
+                    help="force a fixed run-dir name (default: unique per run, "
+                         "'shape_sweep_<mode>_<timestamp>_<guid>', so repeat "
+                         "runs never overwrite). Pass e.g. 'shape_sweep_clean' "
+                         "to pin the canonical path.")
     ap.add_argument("--jobs", default="auto",
                     help="parallel worker processes over cells (default 'auto' "
                          "= physical cores minus 1, floored at 1; pass '1' for "
@@ -783,7 +787,7 @@ def main(argv=None) -> int:
     jobs = _auto_jobs() if args.jobs == "auto" else int(args.jobs)
 
     ctx = RunContext(base_dir=args.base,
-                     name=args.run_name or f"shape_sweep_{args.mode}")
+                     name=args.run_name or unique_run_name("shape_sweep", args.mode))
     print(f"S5 shape sweep: mode={args.mode} N={n_runs} shapes={len(shapes)} "
           f"n={ns} jobs={jobs} -> {ctx.dir}", flush=True)
     cell_rows, contrast_rows, problems = sweep(
