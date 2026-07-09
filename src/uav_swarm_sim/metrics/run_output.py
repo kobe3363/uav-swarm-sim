@@ -125,6 +125,28 @@ def _stat(samples) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# run-directory naming                                                         #
+# --------------------------------------------------------------------------- #
+def unique_run_name(experiment: str, descriptor: str | None = None) -> str:
+    """Collision-proof, chronologically-sortable run-dir name that names the
+    experiment it came from:
+
+        '<experiment>[_<descriptor>]_<YYYY-MM-DD-HH-MM-SS>_<6hex>'
+
+    The timestamp keeps runs sorted by wall time; the 6-hex GUID tail makes two
+    runs started in the same second (or in parallel) land in distinct folders.
+    Passed as ``RunContext(name=...)`` so repeat runs of the same experiment
+    never overwrite each other. A single source of truth so every experiment
+    script tags its output identically."""
+    parts = [experiment]
+    if descriptor:
+        parts.append(descriptor)
+    parts.append(datetime.now().strftime("%Y-%m-%d-%H-%M-%S"))
+    parts.append(uuid4().hex[:6])
+    return "_".join(parts)
+
+
+# --------------------------------------------------------------------------- #
 # run / simulation containers                                                  #
 # --------------------------------------------------------------------------- #
 class SimulationOutput:

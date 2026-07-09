@@ -143,6 +143,26 @@ def test_sweep_tiers_serial_parallel_deterministic(config_path, tmp_path):
     assert serial == parallel, "serial vs parallel scale-sweep metrics drifted"
 
 
+def test_main_writes_unique_run_dirs_and_never_overwrites(config_path, tmp_path,
+                                                          monkeypatch):
+    """Repeat runs must land in DISTINCT, experiment-tagged folders (no silent
+    overwrite). Stubs the heavy sweep so the CLI/output plumbing is exercised
+    without running any mission."""
+    import uav_swarm_sim.experiments.run_scale_tiers as rst
+
+    monkeypatch.setattr(rst, "sweep_tiers", lambda *a, **k: ({}, []))
+    argv = ["--config", str(config_path), "--n", "2", "--out", str(tmp_path)]
+    assert rst.main(argv) == 0
+    assert rst.main(argv) == 0
+
+    run_dirs = sorted(p for p in tmp_path.iterdir() if p.is_dir())
+    assert len(run_dirs) == 2, f"expected two distinct run dirs, got {run_dirs}"
+    for d in run_dirs:
+        assert d.name.startswith("scale_tiers_")       # names the experiment
+        assert (d / "scale_sweep.csv").exists()         # artifact present
+        assert (d / "run.json").exists()                # RunContext manifest
+
+
 @pytest.mark.slow
 def test_sweep_tiers_reports_bad_tier_without_crashing(config_path, monkeypatch):
     """RESILIENCE: a tier whose mission raises must be recorded in ``problems``

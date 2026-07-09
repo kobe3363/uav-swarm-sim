@@ -17,7 +17,7 @@
 ## NOW — critical path
 | ID | Task | Tool/Mode | Depends | Definition of Done |
 |---|---|---|---|---|
-| NOW-02 | Run the FULL clean grid (`run_shape_sweep --mode clean --budget full`, ~10.6 h overnight) + later the shipped robustness subset (`--mode shipped --budget full`, ~21 h) | **User** (terminal); Chat for log triage if cells crash | S5 merged | `runs/shape_sweep_clean/shape_sweep.csv` + `contrasts.csv` + `summary.md` complete; 0 crashed cells (crashes diagnosed, never skipped) |
+| NOW-02 | Run the FULL clean grid (`run_shape_sweep --mode clean --budget full`, ~10.6 h overnight) + later the shipped robustness subset (`--mode shipped --budget full`, ~21 h). Runs now auto-land in a unique `runs/shape_sweep_clean_<ts>_<guid>/`; pass `--run-name shape_sweep_clean` to pin the canonical path. | **User** (terminal); Chat for log triage if cells crash | S5 merged | The run's `shape_sweep.csv` + `contrasts.csv` + `summary.md` complete; 0 crashed cells (crashes diagnosed, never skipped) |
 | NOW-03 | S5 results read-out & honest hypothesis analysis (TGC-vs-naive verdict, launch-axis magnitude, weighted-null confirmation, H1/H3 regime-conditional read, correlations vs solidity AND isoperimetric, go/no-go for STUDY-03) | **Chat** | NOW-02 | Written analysis merged (README/report); no force-confirmation |
 | NOW-04 | Thesis framing decision: battery-weighting scope. Draft two candidate framings: (1) integrated system (optimal launch + GVG→TGC + SMDP-analyzed dynamic RTH); (2) battery-weighting scoped to diverged-battery/future-work regime. Author decides with supervisor. | **Chat** + supervisor | informed by NOW-03 | Supervisor-agreed framing; README + thesis text updated |
 | FIX-01 | `run_fleet_sizing_analyzer.py` is broken on main: imports `TURN_FACTOR_DEFAULT`, removed by commit 8bed800. Small import fix + test. (Found by the STUDY-01 agent; STUDY-01 worked around it by inlining planning-layer helpers.) | **Code / Accept** | none | Import fixed; analyzer runs; suite green |
@@ -51,7 +51,7 @@
 | ENG-10 | B6: Hypothesis property tests (≥10 meaningful properties: geometry invariants, energy non-negativity, parity/state invariants; no flaky tests) | **Code / Accept** | none | Merged; in CI |
 | ENG-11 | B7: PyVRP baseline peer (zone-assignment as VRP; same paired-seed protocol and metrics schema as S5) | **Code / Plan** | none | Merged; honest comparison |
 | ENG-12 | Mark S_FERRY in PNG figures (color exists: #17becf) | **Code / Accept** | none | Merged; cosmetic only |
-| ENG-13 | Retrofit `run_scale_tiers` to structured RunContext/`--base` (same numbers as legacy path via regression fixture) | **Code / Accept** | none | Merged; uniform output |
+| ~~ENG-13~~ | **DONE.** Retrofit `run_scale_tiers` to structured RunContext (`--out` now a base dir; each run in a unique `scale_tiers_<ts>_<guid>/` with `run.json`). Shared `unique_run_name` helper; `run_shape_sweep` uses it too so repeat runs never overwrite. | **Code / Accept** | none | Merged; uniform, non-overwriting output |
 
 ## Rejected — do NOT schedule
 3D Dubins (coupled pitch/yaw); CGAL GVG rewrite; constant-altitude/full-prism altitude

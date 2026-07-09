@@ -26,6 +26,7 @@ from uav_swarm_sim.metrics.run_output import (
     build_plan,
     build_results_mc,
     build_results_single,
+    unique_run_name,
 )
 
 
@@ -62,6 +63,28 @@ def test_jsonable_handles_enums_tuples_paths_and_configs(cfg):
     assert j["cfg_fleet"]["n_drones"] == 5
     # round-trips through json
     assert json.loads(json.dumps(j))["algo"] == "weighted_voronoi"
+
+
+# --------------------------------------------------------------------------- #
+# unique_run_name: experiment-tagged, collision-proof run-dir names             #
+# --------------------------------------------------------------------------- #
+def test_unique_run_name_format_and_uniqueness():
+    import re
+
+    name = unique_run_name("scale_tiers")
+    # '<experiment>_<YYYY-MM-DD-HH-MM-SS>_<6hex>'
+    m = re.fullmatch(r"scale_tiers_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_([0-9a-f]{6})",
+                     name)
+    assert m is not None, name
+
+    # optional descriptor slots between experiment and timestamp
+    dn = unique_run_name("shape_sweep", "clean")
+    assert dn.startswith("shape_sweep_clean_")
+    assert re.fullmatch(r"shape_sweep_clean_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_[0-9a-f]{6}",
+                        dn) is not None, dn
+
+    # two calls (same second) never collide -> the GUID tail differs
+    assert unique_run_name("scale_tiers") != unique_run_name("scale_tiers")
 
 
 # --------------------------------------------------------------------------- #
