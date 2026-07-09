@@ -92,6 +92,7 @@ import numpy as np
 from shapely.geometry import Point
 from shapely.ops import nearest_points
 
+from ..infrastructure import profiling
 from ..infrastructure.config import Config, MCConfig, load_config
 from ..infrastructure.enums import DecompositionAlgo, Outcome, PlannerKind
 from ..infrastructure.rng import STREAM_KMEANS_INIT, RngFactory
@@ -202,7 +203,14 @@ def build_cell_cfg(base: Config, shape_path: str, n: int, mode: str,
     fleet = dataclasses.replace(base.fleet, n_drones=n)
     failure = dataclasses.replace(base.failure, hazard_rate_per_hour=0.0)
     mc = MCConfig(n_max=n_runs, n_min=n_runs, ci_tolerance=0.0)
-    cfg = dataclasses.replace(base, env=env, fleet=fleet, failure=failure, mc=mc)
+    # Telemetry is a per-run diagnostic (GPX + JSONL to a FIXED path), not a
+    # Monte-Carlo output: with it on, every one of the thousands of sweep missions
+    # rebuilds a TelemetryLog and re-exports to the same overwritten file (pure
+    # waste + concurrent-write contention under --jobs). It is a read-only probe,
+    # so forcing it OFF is byte-identical for every metric (mirrors hazard_rate=0).
+    telemetry = dataclasses.replace(base.telemetry, enabled=False)
+    cfg = dataclasses.replace(base, env=env, fleet=fleet, failure=failure, mc=mc,
+                              telemetry=telemetry)
     if launch_site is not None:
         launch = dataclasses.replace(cfg.launch, candidate_sites=(launch_site,))
         cfg = dataclasses.replace(cfg, launch=launch)
@@ -468,6 +476,7 @@ def _process_cell(base: Config, shapes_dir: str, shape: str, n: int, mode: str,
                 "solidity": round(desc_shape["solidity"], 4),
                 "isoperimetric": round(desc_shape["isoperimetric"], 4),
                 "reference_cell": (n == REFERENCE_N)})
+    profiling.flush_worker()  # persist this worker's phase timers (no-op if OFF)
     return (cell_rows, contrast_rows, problems, tag["regime"],
             time.perf_counter() - t0)
 
@@ -752,6 +761,46 @@ def _auto_jobs() -> int:
     return max(1, (n or 1) - 1)
 
 
+def _write_profiling(run_dir) -> None:
+    """Merge every worker's phase timers (and this process's own) and write
+    profiling.md + profiling.csv into the run dir. Only called when
+    UAV_SWARM_PROFILE is set, so it never touches a normal run."""
+    snap = profiling.collect(run_dir)
+    (run_dir / "profiling.md").write_text(
+        "# Phase profiling (aggregated wall time across the run)\n\n"
+        + profiling.format_report(snap) + "\n", encoding="utf-8")
+    with (run_dir / "profiling.csv").open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(profiling.to_csv_rows(snap))
+    print(f"phase profiling -> {run_dir}/profiling.md", flush=True)
+
+
+def _run_profile_subset(base: Config, shapes_dir: str, ctx: RunContext) -> None:
+    """cProfile one representative variant on a small SHIPPED slice (with
+    obstacles, so the geometry hot paths show) for a function-level view; writes
+    profile.prof + profile.txt and runs no grid."""
+    import cProfile
+    import io
+    import pstats
+
+    shape, n, n_runs = SHAPE_ORDER[0], REFERENCE_N, 3
+    cfg = build_cell_cfg(base, f"{shapes_dir}/{shape}.geojson", n, "shipped", n_runs)
+    rng = RngFactory(cfg.sim.master_seed)
+    pr = cProfile.Profile()
+    pr.enable()
+    run_variant(cfg, rng, "tgc_basic", DecompositionAlgo.TGC_BASIC, PlannerKind.DUBINS)
+    pr.disable()
+    pr.dump_stats(str(ctx.dir / "profile.prof"))
+    buf = io.StringIO()
+    buf.write(f"cProfile: shape={shape} n={n} variant=tgc_basic mode=shipped "
+              f"n_runs={n_runs}\n\n=== by cumulative time (top 40) ===\n")
+    st = pstats.Stats(pr, stream=buf)
+    st.sort_stats("cumulative").print_stats(40)
+    buf.write("\n=== by total/self time (top 40) ===\n")
+    st.sort_stats("tottime").print_stats(40)
+    (ctx.dir / "profile.txt").write_text(buf.getvalue(), encoding="utf-8")
+    print(f"cProfile -> {ctx.dir}/profile.txt (+ profile.prof)", flush=True)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default="config/default.yaml")
@@ -776,6 +825,13 @@ def main(argv=None) -> int:
                          "= physical cores minus 1, floored at 1; pass '1' for "
                          "serial, or an explicit N). Output is byte-identical to "
                          "serial at any --jobs (ENG-09).")
+    ap.add_argument("--profile", action="store_true",
+                    help="cProfile a small representative slice (1 shape x "
+                         "reference n x 1 variant, shipped, few reps) to "
+                         "<run>/profile.txt + profile.prof, then EXIT without "
+                         "running the grid (function-level hot spots). For the "
+                         "coarse per-PHASE wall-time breakdown across a real run "
+                         "instead, set env var UAV_SWARM_PROFILE=1.")
     args = ap.parse_args(argv)
 
     base = load_config(args.config)
@@ -788,6 +844,14 @@ def main(argv=None) -> int:
 
     ctx = RunContext(base_dir=args.base,
                      name=args.run_name or unique_run_name("shape_sweep", args.mode))
+    if args.profile:
+        _run_profile_subset(base, args.shapes_dir, ctx)
+        ctx.finalize(summary={"experiment": "shape_sweep", "mode": "profile"})
+        return 0
+    if profiling.enabled():
+        # workers inherit this env var (spawn re-reads it) and flush their phase
+        # timers here; the parent merges them after the grid.
+        os.environ[profiling._ENV_DIR] = str(ctx.dir)
     print(f"S5 shape sweep: mode={args.mode} N={n_runs} shapes={len(shapes)} "
           f"n={ns} jobs={jobs} -> {ctx.dir}", flush=True)
     cell_rows, contrast_rows, problems = sweep(
@@ -798,6 +862,8 @@ def main(argv=None) -> int:
     write_csv(ctx.dir / "contrasts.csv", contrast_rows)
     write_summary(ctx.dir / "summary.md", args.mode, n_runs, shapes, ns,
                   cell_rows, contrast_rows, problems, readout)
+    if profiling.enabled():
+        _write_profiling(ctx.dir)
     ctx.finalize(summary={"experiment": "shape_sweep", "mode": args.mode,
                           "n_runs": n_runs, "shapes": shapes, "ns": ns,
                           "problems": problems, "readout": readout})

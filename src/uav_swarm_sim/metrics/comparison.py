@@ -13,6 +13,7 @@ import numpy as np
 
 from ..infrastructure.config import Config
 from ..infrastructure.enums import AgentState, DecompositionAlgo, PlannerKind
+from ..infrastructure.profiling import phase
 from ..infrastructure.rng import RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
 from .monte_carlo import MCResult, SingleRunResult, run, single_run_from_history
@@ -44,8 +45,9 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
         sink.planning_time_s.append(m.planning_time_s)
         sink.replan_time_s.extend(m.replan_times_s)
         # single source of truth for the history -> SingleRunResult reduction
-        return single_run_from_history(result.history, metrics=m, outcome=result.outcome,
-                                       aborted=result.aborted)
+        with phase("smdp_reduce"):
+            return single_run_from_history(result.history, metrics=m, outcome=result.outcome,
+                                           aborted=result.aborted)
     return run_once
 
 
