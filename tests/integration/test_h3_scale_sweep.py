@@ -125,9 +125,12 @@ def test_sweep_tiers_serial_parallel_deterministic(config_path, tmp_path):
     from uav_swarm_sim.experiments.run_scale_tiers import sweep_tiers, _write_csv
     cfg = _tiny_sweep_cfg(config_path)
     ns = [2, 3]
+    res_s, prob_s = sweep_tiers(cfg, ns, jobs=1, quiet=True)
+    res_p, prob_p = sweep_tiers(cfg, ns, jobs=2, quiet=True)
+    assert prob_s == prob_p == []
     p_s, p_p = tmp_path / "serial.csv", tmp_path / "parallel.csv"
-    _write_csv(str(p_s), ns, sweep_tiers(cfg, ns, jobs=1, quiet=True))
-    _write_csv(str(p_p), ns, sweep_tiers(cfg, ns, jobs=2, quiet=True))
+    _write_csv(str(p_s), ns, res_s)
+    _write_csv(str(p_p), ns, res_p)
 
     def rows_sans_timing(path):
         with open(path, newline="", encoding="utf-8") as fh:
@@ -138,6 +141,27 @@ def test_sweep_tiers_serial_parallel_deterministic(config_path, tmp_path):
 
     serial, parallel = rows_sans_timing(p_s), rows_sans_timing(p_p)
     assert serial == parallel, "serial vs parallel scale-sweep metrics drifted"
+
+
+@pytest.mark.slow
+def test_sweep_tiers_reports_bad_tier_without_crashing(config_path, monkeypatch):
+    """RESILIENCE: a tier whose mission raises must be recorded in ``problems``
+    and skipped -- the other tiers still complete (a 22h run must not die on one
+    bad fleet size). Mirrors run_shape_sweep's per-cell 'report, never skip'."""
+    import uav_swarm_sim.experiments.run_scale_tiers as rst
+    real = rst._process_tier
+
+    def flaky(cfg, n):
+        if n == 3:
+            raise RuntimeError("boom at n=3")
+        return real(cfg, n)
+
+    monkeypatch.setattr(rst, "_process_tier", flaky)
+    cfg = _tiny_sweep_cfg(config_path)
+    res, problems = rst.sweep_tiers(cfg, [2, 3, 4], jobs=1, quiet=True)
+    assert set(res.keys()) == {2, 4}                 # good tiers survived
+    assert [p["n"] for p in problems] == [3]
+    assert "boom at n=3" in problems[0]["error"]
 
 
 if __name__ == "__main__":
