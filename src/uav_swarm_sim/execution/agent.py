@@ -24,8 +24,6 @@ from __future__ import annotations
 import math
 from typing import Protocol
 
-from scipy.fftpack import dst
-
 from ..infrastructure.core_types import (
     CoveragePlan,
     DroneStateView,

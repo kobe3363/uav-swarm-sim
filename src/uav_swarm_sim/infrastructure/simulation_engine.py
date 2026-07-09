@@ -16,9 +16,11 @@ those per-layer is Batch 4.
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 
 from shapely.geometry import Polygon
 
+from .profiling import phase, record
 from ..infrastructure.config import Config
 from ..infrastructure.core_types import (
     DroneStateView,
@@ -135,20 +137,23 @@ class SimulationEngine:
         self.em = EnergyModel(self.spec)
         self.aero = AeroCorrection(cfg.aero, self.spec.platform)
 
-        area = load_area(cfg.env.geojson_path)
+        with phase("build.load_area"):
+            area = load_area(cfg.env.geojson_path)
         obs_rng = self.rng.stream(STREAM_OBSTACLES, self.replication)
-        obstacles = generate_obstacles(area, cfg.env, obs_rng)
         # 2.5D: slice the extruded prisms into one 2D map per coverage layer.
         # A single layer at the coverage altitude (with unbounded prisms) is the
         # whole world and reproduces the 2D map exactly. Build per-layer GVG+TGC
         # once; layer 0 stays the primary 2D graph for launch siting, RTH and
         # redistribution (those become per-layer in Batch 4).
-        self.layers = LayerStack(
-            area, obstacles, cfg.layers.altitudes_m, cfg.env.clearance_buffer_m
-        )
-        self.layer_graphs = build_layer_graphs(
-            self.layers, gvg_sample_step_m=20.0, gvg_spur_min_m=30.0
-        )
+        with phase("build.env_obstacles"):
+            obstacles = generate_obstacles(area, cfg.env, obs_rng)
+            self.layers = LayerStack(
+                area, obstacles, cfg.layers.altitudes_m, cfg.env.clearance_buffer_m
+            )
+        with phase("build.gvg_tgc"):
+            self.layer_graphs = build_layer_graphs(
+                self.layers, gvg_sample_step_m=20.0, gvg_spur_min_m=30.0
+            )
         self.env, self.tgc = self.layer_graphs.by_layer[0]
         self.planning_time_s = self.layer_graphs.planning_time_s
 
@@ -161,10 +166,11 @@ class SimulationEngine:
         # deterministic under lambda=0 clean; obstacles (STREAM_OBSTACLES) and
         # failures (STREAM_FAILURES) still vary per replication as intended.
         launch_rng = self.rng.stream(STREAM_LAUNCH_SAMPLING, 0)
-        self.launch_pose, self.site_scores = optimize_launch(
-            cfg.launch, self.tgc, self.env, self.motion, self.em, self.aero,
-            self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
-        )
+        with phase("build.launch_opt"):
+            self.launch_pose, self.site_scores = optimize_launch(
+                cfg.launch, self.tgc, self.env, self.motion, self.em, self.aero,
+                self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
+            )
 
         # 2.5D (Task 2.4): distribute the N drones on a ring around the launch
         # pose instead of stacking them at one (x, y). This is the single source
@@ -190,10 +196,11 @@ class SimulationEngine:
         if self._mission_type is MissionType.TARGET_VISIT:
             tgt_rng = self.rng.stream(STREAM_TARGETS, self.replication)
             self.targets = generate_targets(self.env, cfg.mission, tgt_rng)
-            self.partition, self.plans, self.assignment = plan_target_mission(
-                self.targets, init_views, self.launch_pose, self.motion,
-                self.spec, self.em, weight_by_battery=self._weight_targets,
-            )
+            with phase("build.decompose"):
+                self.partition, self.plans, self.assignment = plan_target_mission(
+                    self.targets, init_views, self.launch_pose, self.motion,
+                    self.spec, self.em, weight_by_battery=self._weight_targets,
+                )
         else:
             self.decomposer = self._make_decomposer(self.motion)
             # Level 1: assign drones to layers (single-layer => all on layer 0).
@@ -202,9 +209,10 @@ class SimulationEngine:
                 init_views, self.layers, cfg.layers.assignment_policy
             )
             self.layer_of = {d.id: idx for idx, ds in layer_assignment.items() for d in ds}
-            self.partition = decompose_layers(
-                self.layer_graphs, layer_assignment, self.decomposer
-            )
+            with phase("build.decompose"):
+                self.partition = decompose_layers(
+                    self.layer_graphs, layer_assignment, self.decomposer
+                )
             self.plans = {}
 
         # support objects
@@ -244,31 +252,32 @@ class SimulationEngine:
 
         grid = GridPlanner(self.env, cell_m=50.0) if self.planner is PlannerKind.GRID else None
 
-        # agents + plans
+        # agents + plans (per-zone boustrophedon coverage plan + entry transit)
         agents: list[Agent] = []
-        for i in range(cfg.fleet.n_drones):
-            battery = Battery(self.spec.battery_capacity_j, cfg.battery_zones, 1.0)
-            i_layer = self.layer_of.get(i, 0)
-            agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
-                          self.formation, self.deploy_poses[i], recorder=recorder,
-                          layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer),
-                          sensor_power_w=cfg.sensor.sensor_power_w)
-            if self._mission_type is MissionType.TARGET_VISIT:
-                plan = self.plans.get(i)
-                if plan is not None and plan.waypoints:
-                    transit = self.motion.plan(self.deploy_poses[i], plan.waypoints[0].pose,
-                                               ManeuverType.CRUISE)
-                    agent.assign(plan, transit)
-            else:
-                zone = self.partition.zones.get(i)
-                if zone is not None:
-                    plan = (grid.coverage(zone, self.spec) if grid is not None
-                            else boustrophedon(zone, self.spec, self.motion, self.em,
-                                               env=self.env, coverage=cfg.coverage))
-                    transit = self.motion.plan(self.deploy_poses[i], zone.entry_pose, ManeuverType.CRUISE)
-                    agent.assign(plan, transit)
-                    self.plans[i] = plan
-            agents.append(agent)
+        with phase("build.coverage_plan"):
+            for i in range(cfg.fleet.n_drones):
+                battery = Battery(self.spec.battery_capacity_j, cfg.battery_zones, 1.0)
+                i_layer = self.layer_of.get(i, 0)
+                agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
+                              self.formation, self.deploy_poses[i], recorder=recorder,
+                              layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer),
+                              sensor_power_w=cfg.sensor.sensor_power_w)
+                if self._mission_type is MissionType.TARGET_VISIT:
+                    plan = self.plans.get(i)
+                    if plan is not None and plan.waypoints:
+                        transit = self.motion.plan(self.deploy_poses[i], plan.waypoints[0].pose,
+                                                   ManeuverType.CRUISE)
+                        agent.assign(plan, transit)
+                else:
+                    zone = self.partition.zones.get(i)
+                    if zone is not None:
+                        plan = (grid.coverage(zone, self.spec) if grid is not None
+                                else boustrophedon(zone, self.spec, self.motion, self.em,
+                                                   env=self.env, coverage=cfg.coverage))
+                        transit = self.motion.plan(self.deploy_poses[i], zone.entry_pose, ManeuverType.CRUISE)
+                        agent.assign(plan, transit)
+                        self.plans[i] = plan
+                agents.append(agent)
 
         self.fleet = Fleet(agents)
         self.formation.register_departure(agents)
@@ -302,6 +311,7 @@ class SimulationEngine:
         self._outcome = Outcome.MISSION_INCOMPLETE
         t = 0.0
         self._last_fix_t = -1e9   # Phase 3: periodic GPX position-fix clock
+        _loop_t0 = perf_counter()  # profiling.record no-ops when disabled (byte-identical)
         for step in range(cfg.sim.max_timesteps):
             t = step * dt
             self.failure.step(self.fleet.airborne(), dt, t, self.bus)
@@ -343,6 +353,7 @@ class SimulationEngine:
                 self._outcome = outcome
                 complete = outcome is Outcome.MISSION_SUCCESS
                 break
+        record("dt_loop", perf_counter() - _loop_t0)
 
         t_end = t
         self.history.finalize(t_end)
@@ -358,13 +369,15 @@ class SimulationEngine:
                 reserve_remaining=self.swap_station.reserve_remaining,
                 **self.telemetry.derive_counts(),
             )
-            self._export_telemetry()
-        metrics = mission_metrics.compute(
-            self.history, self.fleet, self.partition, t_end,
-            planning_time_s=self.planning_time_s,
-            replan_times_s=tuple(self.replan_times),
-            coverage_frac=coverage_frac,
-        )
+            with phase("telemetry_export"):
+                self._export_telemetry()
+        with phase("metrics_compute"):
+            metrics = mission_metrics.compute(
+                self.history, self.fleet, self.partition, t_end,
+                planning_time_s=self.planning_time_s,
+                replan_times_s=tuple(self.replan_times),
+                coverage_frac=coverage_frac,
+            )
         aborted = (not complete) or (len(self.fleet.active()) == 0 and coverage_frac < 0.999)
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
                              cfg.config_hash, self._outcome)

@@ -45,6 +45,7 @@ import multiprocessing
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from ..infrastructure import profiling
 from ..infrastructure.config import Config, load_config
 from ..infrastructure.rng import RngFactory
 from ..metrics.comparison import VariantResult, compare_tiers, tier_crossover
@@ -84,7 +85,13 @@ def _n_grid(args) -> list[int]:
 def _apply_mode(cfg: Config, mode: str) -> Config:
     """--mode clean zeroes the static obstacle density (isolates the pure
     scale effect); --mode shipped keeps the config density (the prior default).
-    Mirrors run_shape_sweep's clean/shipped modes."""
+    Mirrors run_shape_sweep's clean/shipped modes.
+
+    Telemetry is forced OFF here too: it is a read-only per-run diagnostic
+    (GPX + JSONL to a fixed, overwritten path), so disabling it is byte-identical
+    for every metric while removing pure per-mission waste across the sweep."""
+    cfg = dataclasses.replace(
+        cfg, telemetry=dataclasses.replace(cfg.telemetry, enabled=False))
     if mode == "clean":
         env = dataclasses.replace(cfg.env, obstacle_density_per_km2=0.0)
         return dataclasses.replace(cfg, env=env)
@@ -120,6 +127,7 @@ def _process_tier(cfg: Config, n: int) -> list[VariantResult]:
     tier = compare_tiers(cfg, [n], RngFactory(cfg.sim.master_seed))[n]
     for v in tier:
         v.mc.runs = []
+    profiling.flush_worker()  # persist this worker's phase timers (no-op if OFF)
     return tier
 
 
@@ -248,6 +256,45 @@ def _plot(path: str, ns: list[int], res: dict, crossovers: dict) -> bool:
     return True
 
 
+def _write_profiling(run_dir) -> None:
+    """Merge every worker's phase timers (and this process's own) into
+    profiling.md + profiling.csv. Only called when UAV_SWARM_PROFILE is set."""
+    snap = profiling.collect(run_dir)
+    (run_dir / "profiling.md").write_text(
+        "# Phase profiling (aggregated wall time across the run)\n\n"
+        + profiling.format_report(snap) + "\n", encoding="utf-8")
+    with (run_dir / "profiling.csv").open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(profiling.to_csv_rows(snap))
+    print(f"phase profiling -> {run_dir}/profiling.md", flush=True)
+
+
+def _run_profile_subset(cfg: Config, ctx: RunContext) -> None:
+    """cProfile one representative tier (n=16, both variants, reps capped to 3)
+    for a function-level hot-spot view; writes profile.prof + profile.txt and
+    runs no grid. n=16 is large enough to surface the O(n^2) per-step costs."""
+    import cProfile
+    import io
+    import pstats
+
+    n = 16
+    cfgp = dataclasses.replace(
+        cfg, mc=dataclasses.replace(cfg.mc, n_min=3, n_max=3, ci_tolerance=1.0))
+    pr = cProfile.Profile()
+    pr.enable()
+    _process_tier(cfgp, n)
+    pr.disable()
+    pr.dump_stats(str(ctx.dir / "profile.prof"))
+    buf = io.StringIO()
+    buf.write(f"cProfile: tier n={n} (weighted + kmeans) n_runs=3\n\n"
+              f"=== by cumulative time (top 40) ===\n")
+    st = pstats.Stats(pr, stream=buf)
+    st.sort_stats("cumulative").print_stats(40)
+    buf.write("\n=== by total/self time (top 40) ===\n")
+    st.sort_stats("tottime").print_stats(40)
+    (ctx.dir / "profile.txt").write_text(buf.getvalue(), encoding="utf-8")
+    print(f"cProfile -> {ctx.dir}/profile.txt (+ profile.prof)", flush=True)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/default.yaml")
@@ -272,6 +319,12 @@ def main(argv=None) -> int:
     ap.add_argument("--run-name", default=None,
                     help="force a fixed run-dir name (default: unique per run). "
                          "Pass a name to pin a stable path.")
+    ap.add_argument("--profile", action="store_true",
+                    help="cProfile one representative tier (n=16, both variants, "
+                         "few reps) to <run>/profile.txt + profile.prof, then "
+                         "EXIT without running the grid (function-level hot "
+                         "spots). For the coarse per-PHASE wall-time breakdown "
+                         "across a real run instead, set env UAV_SWARM_PROFILE=1.")
     args = ap.parse_args(argv)
 
     ns = _n_grid(args)
@@ -281,6 +334,12 @@ def main(argv=None) -> int:
     # incremental out_csv (opened before the sweep) still works unchanged.
     ctx = RunContext(base_dir=args.out,
                      name=args.run_name or unique_run_name("scale_tiers"))
+    if args.profile:
+        _run_profile_subset(cfg, ctx)
+        ctx.finalize(summary={"experiment": "scale_tiers", "mode": "profile"})
+        return 0
+    if profiling.enabled():
+        os.environ[profiling._ENV_DIR] = str(ctx.dir)  # workers flush phase timers here
     csv_path = str(ctx.dir / "scale_sweep.csv")
     print(f"scale tiers: mode={args.mode} budget={args.budget} "
           f"n={ns} jobs={jobs} -> {ctx.dir}", flush=True)
@@ -318,6 +377,8 @@ def main(argv=None) -> int:
     plot_path = str(ctx.dir / "scale_sweep.png")
     if present and _plot(plot_path, present, res, crossovers):
         print(f"wrote {plot_path}")
+    if profiling.enabled():
+        _write_profiling(ctx.dir)
 
     ctx.finalize(summary={"experiment": "scale_tiers", "mode": args.mode,
                           "budget": args.budget, "ns": ns, "jobs": jobs,

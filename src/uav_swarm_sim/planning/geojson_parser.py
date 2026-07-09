@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from functools import lru_cache
 from pathlib import Path as FsPath
 
 from shapely.geometry import MultiPolygon, Polygon, shape
@@ -50,7 +51,17 @@ def _first_polygon(geom) -> Polygon:
     raise ValueError(f"unsupported geometry type for area boundary: {geom.geom_type}")
 
 
+@lru_cache(maxsize=None)
 def load_area(geojson_path: str | FsPath) -> Polygon:
+    """Parse a survey-area GeoJSON into a Shapely ``Polygon`` (metric frame).
+
+    Memoized: this is a deterministic pure function of the path, and the sweeps
+    load the same handful of shape files hundreds of times (once per analytical
+    pass and once per SimulationEngine build). Shapely geometries are immutable
+    and every caller uses the result read-only, so sharing the cached polygon is
+    byte-identical to re-parsing. (The area set is tiny -- the 9 shapes plus a
+    couple of test areas -- so an unbounded cache is safe.)
+    """
     data = json.loads(FsPath(geojson_path).read_text())
 
     gtype = data.get("type")
