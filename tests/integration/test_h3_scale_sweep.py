@@ -88,5 +88,81 @@ def test_compare_tiers_runs_both_methods_per_fleet_size(config_path):
         assert all(v.mc.n_runs == 2 for v in variants)
 
 
+# --------------------------------------------------------------------------- #
+# CLI knobs: --budget grid, --n/--n-range override, --mode obstacle density    #
+# --------------------------------------------------------------------------- #
+def test_n_grid_budget_and_overrides():
+    import argparse
+    from uav_swarm_sim.experiments.run_scale_tiers import _n_grid
+
+    def ns(n=None, n_range=None, budget="quick"):
+        return _n_grid(argparse.Namespace(n=n, n_range=n_range, budget=budget))
+
+    assert ns(budget="quick") == [4, 8, 16, 24]
+    assert ns(budget="full") == list(range(2, 101, 2))
+    assert ns(n=[6, 2, 6], budget="full") == [2, 6]        # --n overrides, sorted+dedup
+    assert ns(n_range=[2, 8, 2], budget="full") == [2, 4, 6, 8]  # --n-range overrides
+
+
+def test_apply_mode_obstacle_density(config_path):
+    from uav_swarm_sim.experiments.run_scale_tiers import _apply_mode
+    cfg = load_config(config_path)
+    assert _apply_mode(cfg, "clean").env.obstacle_density_per_km2 == 0.0
+    shipped = _apply_mode(cfg, "shipped")
+    assert shipped.env.obstacle_density_per_km2 == cfg.env.obstacle_density_per_km2
+
+
+@pytest.mark.slow
+def test_sweep_tiers_serial_parallel_deterministic(config_path, tmp_path):
+    """Paired-seed determinism gate: RngFactory.stream is stateless, so each
+    fleet-size tier is a pure function of (master_seed, n) and the per-tier
+    parallel workers must reproduce the serial result exactly.
+
+    Every DETERMINISTIC field is compared. planning_time_s is deliberately
+    excluded: it is a wall-clock timing that varies by nature (it differs even
+    between two serial runs) and is not a simulation result."""
+    import csv as _csv
+    from uav_swarm_sim.experiments.run_scale_tiers import sweep_tiers, _write_csv
+    cfg = _tiny_sweep_cfg(config_path)
+    ns = [2, 3]
+    res_s, prob_s = sweep_tiers(cfg, ns, jobs=1, quiet=True)
+    res_p, prob_p = sweep_tiers(cfg, ns, jobs=2, quiet=True)
+    assert prob_s == prob_p == []
+    p_s, p_p = tmp_path / "serial.csv", tmp_path / "parallel.csv"
+    _write_csv(str(p_s), ns, res_s)
+    _write_csv(str(p_p), ns, res_p)
+
+    def rows_sans_timing(path):
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = list(_csv.DictReader(fh))
+        for r in rows:
+            r.pop("planning_time_s", None)  # wall-clock timing, non-deterministic
+        return rows
+
+    serial, parallel = rows_sans_timing(p_s), rows_sans_timing(p_p)
+    assert serial == parallel, "serial vs parallel scale-sweep metrics drifted"
+
+
+@pytest.mark.slow
+def test_sweep_tiers_reports_bad_tier_without_crashing(config_path, monkeypatch):
+    """RESILIENCE: a tier whose mission raises must be recorded in ``problems``
+    and skipped -- the other tiers still complete (a 22h run must not die on one
+    bad fleet size). Mirrors run_shape_sweep's per-cell 'report, never skip'."""
+    import uav_swarm_sim.experiments.run_scale_tiers as rst
+    real = rst._process_tier
+
+    def flaky(cfg, n):
+        if n == 3:
+            raise RuntimeError("boom at n=3")
+        return real(cfg, n)
+
+    monkeypatch.setattr(rst, "_process_tier", flaky)
+    cfg = _tiny_sweep_cfg(config_path)
+    res, problems = rst.sweep_tiers(cfg, [2, 3, 4], jobs=1, quiet=True)
+    assert set(res.keys()) == {2, 4}                 # good tiers survived
+    assert [p["n"] for p in problems] == [3]
+    assert "boom at n=3" in problems[0]["error"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
