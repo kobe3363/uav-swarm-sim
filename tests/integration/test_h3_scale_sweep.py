@@ -77,6 +77,23 @@ def _tiny_sweep_cfg(config_path):
     )
 
 
+def test_on_rep_progress_hook_fires_and_is_side_effect_free(config_path):
+    """The progress hook (FU5) is called once per replication and does NOT alter
+    the result -- so passing it is byte-identical to not passing it."""
+    from uav_swarm_sim.infrastructure.enums import DecompositionAlgo, PlannerKind
+    from uav_swarm_sim.metrics.comparison import run_variant
+    cfg = _tiny_sweep_cfg(config_path)  # n_min = n_max = 2
+    calls = []
+    vr = run_variant(cfg, RngFactory(cfg.sim.master_seed), "x weighted",
+                     DecompositionAlgo.WEIGHTED_VORONOI, PlannerKind.DUBINS,
+                     on_rep=lambda k, n_max: calls.append((k, n_max)))
+    assert calls == [(1, 2), (2, 2)]                  # one call per replication
+    vr0 = run_variant(cfg, RngFactory(cfg.sim.master_seed), "x weighted",
+                      DecompositionAlgo.WEIGHTED_VORONOI, PlannerKind.DUBINS)
+    assert vr.mc.efficiency_mean == vr0.mc.efficiency_mean
+    assert vr.total_energy_j == vr0.total_energy_j
+
+
 def test_compare_tiers_runs_both_methods_per_fleet_size(config_path):
     cfg = _tiny_sweep_cfg(config_path)
     res = compare_tiers(cfg, [2, 3], RngFactory(cfg.sim.master_seed))
@@ -171,10 +188,10 @@ def test_sweep_tiers_reports_bad_tier_without_crashing(config_path, monkeypatch)
     import uav_swarm_sim.experiments.run_scale_tiers as rst
     real = rst._process_tier
 
-    def flaky(cfg, n):
+    def flaky(cfg, n, progress=False):
         if n == 3:
             raise RuntimeError("boom at n=3")
-        return real(cfg, n)
+        return real(cfg, n, progress=progress)
 
     monkeypatch.setattr(rst, "_process_tier", flaky)
     cfg = _tiny_sweep_cfg(config_path)

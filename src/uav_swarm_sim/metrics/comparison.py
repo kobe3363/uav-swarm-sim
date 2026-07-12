@@ -51,9 +51,9 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
     return run_once
 
 
-def _variant(cfg, rng, label, algo, planner) -> VariantResult:
+def _variant(cfg, rng, label, algo, planner, on_rep=None) -> VariantResult:
     vr = VariantResult(label=label, mc=None)  # type: ignore[arg-type]
-    vr.mc = run(_runner(cfg, rng, algo, planner, vr), cfg.mc)
+    vr.mc = run(_runner(cfg, rng, algo, planner, vr), cfg.mc, on_rep=on_rep)
     return vr
 
 
