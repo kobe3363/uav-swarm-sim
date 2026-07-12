@@ -150,16 +150,37 @@ class EnvironmentMap:
         trajectory validator can log the clip and the runtime S_OBS recovery can
         pick a downstream rejoin point. The location is the sample index times
         ``step_m`` -- exact enough for diagnostics, not a precise contact point.
+
+        Vectorised (Shapely 2.x batch predicates over the whole sample array in a
+        single C call, against the prepared ``free_space``/``area``/obstacle
+        geometries) rather than a Python per-pose loop. This is the RTH-lookahead
+        hot path (~63% of mission runtime) -- ``rth_calculator.return_energy``
+        calls ``path_clear`` every step, per drone. BYTE-IDENTICAL: the same GEOS
+        predicates (``covers`` per pose, ``segment_clear`` = area-``covers`` AND
+        NOT obstacle-``intersects`` per chord), and ``argmax`` returns the FIRST
+        violating index -- exactly the sequential loop's first ``return``.
         """
         poses = path.sample(step_m)
         if not poses:
             return None
-        if not self.free_space.covers(Point(poses[0].as_xy())):
+        coords = np.array([p.as_xy() for p in poses], dtype=float)
+        # every sample pose must stay in free space (buffered obstacles + area)
+        inside = shapely.covers(self.free_space, shapely.points(coords))
+        if not inside[0]:
             return 0.0
-        for i in range(1, len(poses)):
-            a, b = poses[i - 1], poses[i]
-            if not self.free_space.covers(Point(b.as_xy())) or not self.segment_clear(a, b):
-                return i * step_m
+        if len(poses) == 1:
+            return None
+        # every chord must stay in the area AND clear the buffered obstacles --
+        # i.e. segment_clear(poses[i-1], poses[i]) evaluated on each consecutive
+        # pair (area.covers(line) AND, if any obstacles, not union.intersects).
+        lines = shapely.linestrings(np.stack([coords[:-1], coords[1:]], axis=1))
+        seg_clear = shapely.covers(self.area, lines)
+        if self._obstacles_union is not None:
+            seg_clear &= ~shapely.intersects(self._obstacles_union, lines)
+        # first i in 1..N-1 with pose-outside OR chord-blocked (loop equivalent)
+        bad = ~inside[1:] | ~seg_clear
+        if bool(bad.any()):
+            return float((int(np.argmax(bad)) + 1) * step_m)
         return None
 
     def path_clear(self, path: Path, step_m: float = 2.0) -> bool:
