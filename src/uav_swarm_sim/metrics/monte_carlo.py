@@ -46,7 +46,11 @@ class MCResult:
     runs: list[SingleRunResult] = field(default_factory=list)
 
 
-def run(run_once: Callable[[int], SingleRunResult], mc_cfg: MCConfig) -> MCResult:
+def run(run_once: Callable[[int], SingleRunResult], mc_cfg: MCConfig,
+        on_rep: Callable[[int, int], None] | None = None) -> MCResult:
+    """``on_rep(k, n_max)``, if given, is called after each completed replication
+    -- a progress hook only. It reads no state and is default-None, so every
+    existing caller is byte-identical (no RNG or result change)."""
     s2_samples: list[float] = []
     eff_samples: list[float] = []
     pi_accum: dict[AgentState, list[float]] = defaultdict(list)
@@ -66,6 +70,8 @@ def run(run_once: Callable[[int], SingleRunResult], mc_cfg: MCConfig) -> MCResul
 
         hw = ci_half_width(s2_samples)
         trace.append((k, float(np.mean(s2_samples)), hw))
+        if on_rep is not None:
+            on_rep(k, mc_cfg.n_max)
         if converged(s2_samples, mc_cfg.ci_tolerance, mc_cfg.n_min):
             did_converge = True
             break

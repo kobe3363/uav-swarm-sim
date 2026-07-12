@@ -43,13 +43,18 @@ import csv
 import dataclasses
 import multiprocessing
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from ..infrastructure import profiling
 from ..infrastructure.config import Config, load_config
+from ..infrastructure.enums import DecompositionAlgo, PlannerKind
 from ..infrastructure.rng import RngFactory
-from ..metrics.comparison import VariantResult, compare_tiers, tier_crossover
+from ..metrics.comparison import (
+    VariantResult, _with_override, run_variant, tier_crossover)
 from ..metrics.run_output import RunContext, unique_run_name
+
+_PROGRESS_EVERY_S = 60.0  # throttle interval for in-tier per-replication lines
 
 # lower-is-better metrics swept for the break-even analysis
 _METRICS = (
@@ -117,18 +122,46 @@ def _auto_jobs() -> int:
 # --------------------------------------------------------------------------- #
 # the per-tier worker + the (serial | parallel) sweep                         #
 # --------------------------------------------------------------------------- #
-def _process_tier(cfg: Config, n: int) -> list[VariantResult]:
+def _make_progress_cb(n: int, label: str):
+    """A throttled per-replication progress printer for one variant. Prints a
+    self-contained line every ``_PROGRESS_EVERY_S`` (and on the first rep), with
+    flush -- spawn workers inherit the parent's stdout, so these lines show up in
+    the same log without any multiprocessing plumbing (interleaving across
+    workers is fine; each line is self-contained)."""
+    state = {"last": 0.0, "t0": time.perf_counter()}
+
+    def cb(k: int, n_max: int) -> None:
+        now = time.perf_counter()
+        if k == 1 or now - state["last"] >= _PROGRESS_EVERY_S:
+            state["last"] = now
+            print(f"[n={n:>3} {label:>8}: rep {k:>4}/{n_max} | "
+                  f"{now - state['t0']:6.0f}s]", flush=True)
+
+    return cb
+
+
+def _process_tier(cfg: Config, n: int, progress: bool = False,
+                  ) -> list[VariantResult]:
     """One fleet-size tier -> [weighted, kmeans] on paired seeds. Rebuilds
     RngFactory(master_seed) internally, so the tier is a pure deterministic
     function of (master_seed, n) -- byte-identical whether run serially or in a
-    worker process. The heavy per-run history (MCResult.runs) is dropped here:
-    nothing downstream (CSV, plot, print, crossover) reads it, and clearing it
-    keeps the cross-process payload light and picklable."""
-    tier = compare_tiers(cfg, [n], RngFactory(cfg.sim.master_seed))[n]
-    for v in tier:
+    worker process. (Body mirrors comparison.compare_tiers exactly: same rng
+    shared across both variants, same labels/algos/planner, same order -- but
+    calls run_variant directly so a per-replication progress hook can be
+    injected.) The heavy per-run history (MCResult.runs) is dropped: nothing
+    downstream reads it, and clearing it keeps the payload light and picklable."""
+    rng = RngFactory(cfg.sim.master_seed)  # ONE factory -> paired seeds
+    cfg_n = _with_override(cfg, n)
+    variants = []
+    for label, algo in (("weighted", DecompositionAlgo.WEIGHTED_VORONOI),
+                        ("kmeans", DecompositionAlgo.KMEANS)):
+        cb = _make_progress_cb(n, label) if progress else None
+        variants.append(run_variant(cfg_n, rng, f"n={n} {label}", algo,
+                                    PlannerKind.DUBINS, on_rep=cb))
+    for v in variants:
         v.mc.runs = []
     profiling.flush_worker()  # persist this worker's phase timers (no-op if OFF)
-    return tier
+    return variants
 
 
 _CSV_HEADER = ["n", "algo", "n_runs", "converged", "total_energy_j", "duration_s",
@@ -145,7 +178,7 @@ def _variant_row(n: int, v: VariantResult) -> list:
 
 
 def sweep_tiers(cfg: Config, ns: list[int], jobs: int = 1, quiet: bool = False,
-                out_csv: str | None = None,
+                out_csv: str | None = None, progress: bool = False,
                 ) -> tuple[dict[int, list[VariantResult]], list[dict]]:
     """Run every fleet-size tier; return ``(res, problems)`` where res is
     ``{n: [weighted, kmeans]}`` for the tiers that SUCCEEDED and problems lists
@@ -186,19 +219,30 @@ def sweep_tiers(cfg: Config, ns: list[int], jobs: int = 1, quiet: bool = False,
             print(f"[tier n={n}] FAILED: {type(exc).__name__}: {exc}",
                   file=sys.stderr, flush=True)
 
+    total = len(ns)
+    t_grid = time.perf_counter()
     try:
         if jobs <= 1:
-            for n in ns:
+            for i, n in enumerate(ns, start=1):
+                if not quiet:
+                    print(f"[tier {i:>3}/{total} n={n:>3}] START "
+                          f"(elapsed {(time.perf_counter()-t_grid)/3600:.2f}h)",
+                          flush=True)
+                t0 = time.perf_counter()
                 try:
-                    _record(n, _process_tier(cfg, n))
+                    _record(n, _process_tier(cfg, n, progress=progress))
                     if not quiet:
-                        print(f"[tier n={n}] done", flush=True)
+                        print(f"[tier {i:>3}/{total} n={n:>3}] done in "
+                              f"{time.perf_counter()-t0:.0f}s", flush=True)
                 except Exception as exc:  # noqa: BLE001 -- report, never skip
                     _fail(n, exc)
         else:
+            if not quiet:
+                print(f"[submitted {total} tiers over {jobs} workers]", flush=True)
             ctx = multiprocessing.get_context("spawn")
             with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
-                fut_to_n = {ex.submit(_process_tier, cfg, n): n for n in ns}
+                fut_to_n = {ex.submit(_process_tier, cfg, n, progress): n
+                            for n in ns}
                 done = 0
                 for fut in as_completed(fut_to_n):
                     n = fut_to_n[fut]
@@ -206,7 +250,9 @@ def sweep_tiers(cfg: Config, ns: list[int], jobs: int = 1, quiet: bool = False,
                     try:
                         _record(n, fut.result())
                         if not quiet:
-                            print(f"[tier {done:>3}/{len(ns)} n={n:>3}] done",
+                            print(f"[tier {done:>3}/{total} n={n:>3}] done "
+                                  f"(elapsed "
+                                  f"{(time.perf_counter()-t_grid)/3600:.2f}h)",
                                   flush=True)
                     except Exception as exc:  # noqa: BLE001 -- report, never skip
                         _fail(n, exc)
@@ -345,7 +391,7 @@ def main(argv=None) -> int:
           f"n={ns} jobs={jobs} -> {ctx.dir}", flush=True)
     # out_csv gives crash-safety: each finished tier is flushed to disk as it
     # completes, so an OOM / eviction mid-run keeps the tiers done so far.
-    res, problems = sweep_tiers(cfg, ns, jobs, out_csv=csv_path)
+    res, problems = sweep_tiers(cfg, ns, jobs, out_csv=csv_path, progress=True)
     present = [n for n in ns if n in res]  # skip tiers that failed
 
     # per-fleet-size table (both methods)

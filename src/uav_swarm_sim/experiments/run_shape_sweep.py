@@ -506,12 +506,16 @@ def sweep(base: Config, shapes_dir: str, shapes: list[str], ns: list[int],
         [None] * total)
     t_grid = time.perf_counter()
 
+    done = [0]
+
     def _record(k: int, shape: str, n: int, res) -> None:
         cr, contr, prob, regime, secs = res
         results[k] = (cr, contr, prob)
+        done[0] += 1
         if not quiet:
-            print(f"[{k + 1:>3d}/{total}] [{shape:>9s} n={n}] "
-                  f"{regime:<15s} {secs:6.1f}s", flush=True)
+            print(f"[{done[0]:>3d}/{total} cell {shape:>9s} n={n}] "
+                  f"{regime:<15s} {secs:6.1f}s "
+                  f"(elapsed {(time.perf_counter()-t_grid)/3600:.2f}h)", flush=True)
 
     if jobs <= 1:
         for k, (shape, n) in enumerate(cells):
