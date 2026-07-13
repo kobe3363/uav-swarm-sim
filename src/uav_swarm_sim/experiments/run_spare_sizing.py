@@ -37,8 +37,12 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import math
+import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from ..infrastructure.config import Config, load_config
 from ..infrastructure.enums import Outcome
@@ -178,6 +182,139 @@ def run_sweep(cfg: Config, spare_counts, reps: int, rng: RngFactory,
         if progress is not None:
             progress(pt)
     return points
+
+
+# --------------------------------------------------------------------------- #
+# crash-safe incremental partial log + resume                                  #
+# --------------------------------------------------------------------------- #
+# STUDY-01's final sweep (--reps 500) runs for many hours serially; writing
+# results only at the end loses everything on a crash. Each completed
+# SparePoint is therefore appended to <run_dir>/results_partial.jsonl the
+# moment run_sweep's progress callback delivers it, and --resume replays a
+# previous run's partial log, skipping the spare counts it already finished.
+PARTIAL_SCHEMA = "uav-swarm-sim/spare-sizing-partial/v1"
+PARTIAL_FILENAME = "results_partial.jsonl"
+
+
+def _partial_identity(cfg: Config, reps: int) -> dict:
+    """The run-identity fields a --resume candidate must match EXACTLY.
+
+    ``master_seed`` + ``config_hash`` pin the paired-seed design and every
+    config input; ``reps_per_point`` pins the replication indices 1..reps. If
+    any of these differ, the previous run's points belong to a DIFFERENT
+    experiment and merging them would silently corrupt the report."""
+    return {
+        "master_seed": cfg.sim.master_seed,
+        "config_hash": cfg.config_hash,
+        "reps_per_point": reps,
+    }
+
+
+def append_partial_point(path, pt: SparePoint, identity: dict) -> None:
+    """Append one completed SparePoint as a single JSON line, flushed and
+    fsync'd so a crash right after loses at most the point in flight."""
+    rec = {
+        "schema": PARTIAL_SCHEMA,
+        **identity,
+        **_point_dict(pt),
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def load_partial_points(path) -> tuple[dict, dict[int, SparePoint]]:
+    """Parse a results_partial.jsonl into ``(identity, {spares: SparePoint})``.
+
+    A crash mid-append can leave a truncated FINAL line -- it is skipped with a
+    warning (every earlier line was flushed whole). A malformed line anywhere
+    else means the file is not a partial log we understand: refuse it."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    identity: dict | None = None
+    points: dict[int, SparePoint] = {}
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                print(f"[resume] ignoring truncated final line in {path}",
+                      file=sys.stderr)
+                continue
+            raise SystemExit(f"--resume: corrupt line {i + 1} in {path}")
+        ident = {k: rec.get(k) for k in ("master_seed", "config_hash", "reps_per_point")}
+        if identity is None:
+            identity = ident
+        elif ident != identity:
+            raise SystemExit(f"--resume: inconsistent run identity at line {i + 1} "
+                             f"in {path} (mixed runs in one file?)")
+        pt = SparePoint(spares=int(rec["spares"]), n_reps=int(rec["n_reps"]),
+                        n_success=int(rec["n_success"]), n_failed=int(rec["n_failed"]),
+                        n_incomplete=int(rec["n_incomplete"]))
+        points[pt.spares] = pt
+    if identity is None:
+        raise SystemExit(f"--resume: no completed points in {path}")
+    return identity, points
+
+
+def _validated_resume(resume_path, expected: dict, counts) -> dict[int, SparePoint]:
+    """Load a previous partial log and REFUSE it unless its identity matches
+    the current run exactly. Completed counts outside the current sweep grid
+    are ignored (merging them would make the resumed results.json differ from
+    an uninterrupted run of the same CLI arguments)."""
+    if not Path(resume_path).is_file():
+        raise SystemExit(f"--resume: no such file: {resume_path}")
+    identity, points = load_partial_points(resume_path)
+    if identity != expected:
+        diffs = "; ".join(
+            f"{k}: partial={identity.get(k)!r} vs current={expected[k]!r}"
+            for k in expected if identity.get(k) != expected[k]
+        )
+        raise SystemExit(f"--resume rejected: run identity mismatch ({diffs}). "
+                         f"A partial log can only resume the run that wrote it.")
+    extra = sorted(set(points) - set(counts))
+    if extra:
+        print(f"[resume] ignoring completed spare counts outside the current "
+              f"sweep grid: {extra}", file=sys.stderr)
+    return {s: points[s] for s in counts if s in points}
+
+
+def sweep_with_partials(cfg: Config, spare_counts, reps: int, rng: RngFactory,
+                        partial_path, resume_path=None, algo=None, planner=None,
+                        progress=None) -> list[SparePoint]:
+    """Crash-safe wrapper around the UNTOUCHED ``run_sweep``: every completed
+    SparePoint is appended to ``partial_path`` via the existing progress seam,
+    and ``resume_path`` (a previous run's partial log) skips finished counts.
+
+    Resume safety: ``RngFactory.stream(name, k)`` is a PURE function of
+    ``(master_seed, name, k)`` (see infrastructure/rng.py -- a fresh Generator
+    is derived per call, no factory state is advanced), and each replication of
+    each spare count draws only from streams keyed by its own replication
+    index. Skipping already-completed counts therefore CANNOT shift any draw of
+    the remaining counts: the resumed points are byte-identical to an
+    uninterrupted sweep's.
+    """
+    identity = _partial_identity(cfg, reps)
+    done: dict[int, SparePoint] = {}
+    if resume_path is not None:
+        done = _validated_resume(resume_path, identity, spare_counts)
+        # replay the resumed points into THIS run's partial log, so the new log
+        # is itself a complete resume point if this run is also interrupted
+        for s in sorted(done):
+            append_partial_point(partial_path, done[s], identity)
+
+    def _progress(pt: SparePoint) -> None:
+        append_partial_point(partial_path, pt, identity)
+        if progress is not None:
+            progress(pt)
+
+    todo = [s for s in spare_counts if s not in done]
+    new_pts = run_sweep(cfg, todo, reps, rng, algo=algo, planner=planner,
+                        progress=_progress)
+    return sorted(list(done.values()) + new_pts, key=lambda p: p.spares)
 
 
 # --------------------------------------------------------------------------- #
@@ -365,6 +502,11 @@ def main(argv=None) -> int:
     ap.add_argument("--span", type=int, default=8,
                     help="default half-width of the sweep bracket around the prior")
     ap.add_argument("--out", default="runs", help="runs/ base directory")
+    ap.add_argument("--resume", default=None, metavar="PARTIAL_JSONL",
+                    help="path to a previous run's results_partial.jsonl; its "
+                         "completed spare counts are verified against this run's "
+                         "identity (master_seed/config/reps), skipped in the "
+                         "sweep, and merged into the final report")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -391,12 +533,8 @@ def main(argv=None) -> int:
               f"[{lo:.1%}, {hi:.1%}]  (fail {pt.n_failed}, inc {pt.n_incomplete})",
               file=sys.stderr)
 
-    print(f"Sweeping spare counts {counts[0]}..{counts[-1]} "
-          f"({len(counts)} points × {args.reps} paired reps)…", file=sys.stderr)
-    points = run_sweep(cfg, counts, args.reps, rng, progress=_progress)
-    report = SpareSizingReport.build(points, prior)
-
-    # ---- structured runs/ output ------------------------------------------- #
+    # ---- structured runs/ output (created BEFORE the sweep so the crash-safe
+    # partial log has a home from the first completed point) ------------------ #
     run = RunContext(base_dir=args.out)
     sim = run.simulation("spare-sizing")
     sim.write_plan({
@@ -416,6 +554,16 @@ def main(argv=None) -> int:
             "total_coverage_j": coverage_j,
         },
     })
+    partial_path = sim.path(PARTIAL_FILENAME)
+
+    print(f"Sweeping spare counts {counts[0]}..{counts[-1]} "
+          f"({len(counts)} points × {args.reps} paired reps)…", file=sys.stderr)
+    if args.resume:
+        print(f"[resume] continuing from {args.resume}", file=sys.stderr)
+    points = sweep_with_partials(cfg, counts, args.reps, rng, partial_path,
+                                 resume_path=args.resume, progress=_progress)
+    report = SpareSizingReport.build(points, prior)
+
     sim.write_results(_results_dict(report, args.reps, sim.identity()))
     plot_path = sim.path("spare_sizing_knee.png")
     plotted = _plot(str(plot_path), report)
