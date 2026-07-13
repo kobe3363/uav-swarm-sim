@@ -231,3 +231,197 @@ def test_report_build_produces_knees_and_verdict_from_sweep(config_path):
     report = SpareSizingReport.build(points, prior)
     assert {k.target for k in report.knees} == set(TARGETS)
     assert report.verdict is not None  # a read-out is always produced
+
+
+# --------------------------------------------------------------------------- #
+# crash-safe partial log + --resume (ENG: incremental writing)                 #
+# --------------------------------------------------------------------------- #
+def _write_partial_line(path, identity, spares, n_reps, n_success):
+    """Handcraft one results_partial.jsonl record (the pure-parsing tests)."""
+    import json
+    rec = {
+        "schema": "uav-swarm-sim/spare-sizing-partial/v1",
+        **identity,
+        "spares": spares, "n_reps": n_reps, "n_success": n_success,
+        "n_failed": n_reps - n_success, "n_incomplete": 0,
+        "success_frac": n_success / n_reps, "wilson95_lo": 0.0, "wilson95_hi": 1.0,
+        "written_at": "2026-07-13T00:00:00+00:00",
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def test_resume_rejected_on_identity_mismatch(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import _validated_resume
+
+    p = tmp_path / "results_partial.jsonl"
+    _write_partial_line(p, {"master_seed": 111, "config_hash": "abc",
+                            "reps_per_point": 2}, spares=0, n_reps=2, n_success=2)
+    # a different master_seed breaks the paired-seed design -> refuse loudly
+    expected = {"master_seed": 999, "config_hash": "abc", "reps_per_point": 2}
+    with pytest.raises(SystemExit, match="identity mismatch.*master_seed"):
+        _validated_resume(p, expected, [0, 1, 2])
+    # same seed but a different config (hash) is just as invalid
+    expected = {"master_seed": 111, "config_hash": "OTHER", "reps_per_point": 2}
+    with pytest.raises(SystemExit, match="identity mismatch.*config_hash"):
+        _validated_resume(p, expected, [0, 1, 2])
+    # and so is a different replication count
+    expected = {"master_seed": 111, "config_hash": "abc", "reps_per_point": 5}
+    with pytest.raises(SystemExit, match="identity mismatch.*reps_per_point"):
+        _validated_resume(p, expected, [0, 1, 2])
+
+
+def test_resume_missing_file_and_empty_log_are_rejected(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import _validated_resume
+
+    ident = {"master_seed": 1, "config_hash": "x", "reps_per_point": 2}
+    with pytest.raises(SystemExit, match="no such file"):
+        _validated_resume(tmp_path / "nope.jsonl", ident, [0])
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(SystemExit, match="no completed points"):
+        _validated_resume(empty, ident, [0])
+
+
+def test_load_partial_tolerates_truncated_final_line(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import load_partial_points
+
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 2}
+    p = tmp_path / "results_partial.jsonl"
+    _write_partial_line(p, ident, spares=0, n_reps=2, n_success=1)
+    _write_partial_line(p, ident, spares=1, n_reps=2, n_success=2)
+    # a crash mid-append leaves a half-written final line: earlier points survive
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('{"schema": "uav-swarm-sim/spare-sizing-partial/v1", "spares": 2')
+    identity, points = load_partial_points(p)
+    assert identity == ident
+    assert sorted(points) == [0, 1]
+    assert points[1].n_success == 2
+
+
+def test_load_partial_rejects_unknown_schema_and_malformed_record(tmp_path):
+    import json
+    from uav_swarm_sim.experiments.run_spare_sizing import load_partial_points
+
+    # a record from some FUTURE/foreign schema (identity fields happen to exist)
+    # must be refused up front, not silently accepted as resume state
+    wrong = tmp_path / "wrong_schema.jsonl"
+    wrong.write_text(json.dumps({
+        "schema": "uav-swarm-sim/spare-sizing-partial/v99",
+        "master_seed": 7, "config_hash": "h", "reps_per_point": 2,
+        "spares": 0, "n_reps": 2, "n_success": 2, "n_failed": 0, "n_incomplete": 0,
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="unsupported schema"):
+        load_partial_points(wrong)
+
+    # structurally-valid JSON missing a required count field: a clear SystemExit,
+    # not a raw KeyError
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 2}
+    broken = tmp_path / "missing_key.jsonl"
+    broken.write_text(json.dumps({
+        "schema": "uav-swarm-sim/spare-sizing-partial/v1", **ident,
+        "spares": 0, "n_reps": 2, "n_failed": 0, "n_incomplete": 0,  # no n_success
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="malformed record"):
+        load_partial_points(broken)
+
+
+def test_resume_ignores_counts_outside_current_grid(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import _validated_resume
+
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 2}
+    p = tmp_path / "results_partial.jsonl"
+    _write_partial_line(p, ident, spares=0, n_reps=2, n_success=1)
+    _write_partial_line(p, ident, spares=99, n_reps=2, n_success=2)  # not in grid
+    done = _validated_resume(p, ident, [0, 1, 2])
+    assert sorted(done) == [0]  # 99 dropped, or the resumed results.json would
+    # differ from an uninterrupted run of the same CLI arguments
+
+
+@pytest.mark.slow
+def test_partial_jsonl_appended_and_flushed_after_each_point(tmp_path, config_path):
+    import json
+    from uav_swarm_sim.infrastructure.rng import RngFactory
+    from uav_swarm_sim.experiments.run_spare_sizing import (
+        _partial_identity, sweep_with_partials)
+
+    cfg = _tiny_cfg(config_path)
+    reps, counts = 2, [0, 25, 50]
+    partial = tmp_path / "results_partial.jsonl"
+
+    seen: list[int] = []
+
+    def _spy(pt):
+        # the point's line must already be on disk when progress fires
+        lines = partial.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == len(seen) + 1
+        rec = json.loads(lines[-1])
+        assert rec["spares"] == pt.spares
+        assert rec["n_success"] == pt.n_success
+        assert "written_at" in rec
+        seen.append(pt.spares)
+
+    pts = sweep_with_partials(cfg, counts, reps, RngFactory(cfg.sim.master_seed),
+                              partial, progress=_spy)
+    assert seen == counts  # one incremental append per swept point, in order
+    # every line carries the run identity the resume safeguard checks
+    ident = _partial_identity(cfg, reps)
+    for line in partial.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        assert {k: rec[k] for k in ident} == ident
+    assert [p.spares for p in pts] == counts
+
+
+@pytest.mark.slow
+def test_interrupted_plus_resumed_results_match_uninterrupted(tmp_path, config_path):
+    import json
+    from uav_swarm_sim.infrastructure.rng import RngFactory
+    from uav_swarm_sim.experiments.run_spare_sizing import (
+        _results_dict, sweep_with_partials)
+
+    cfg = _tiny_cfg(config_path)
+    reps, counts = 2, [0, 25, 50]
+    seed = cfg.sim.master_seed
+
+    # the uninterrupted reference run
+    full = sweep_with_partials(cfg, counts, reps, RngFactory(seed),
+                               tmp_path / "full.jsonl")
+    # a run 'crashed' after two of the three points...
+    sweep_with_partials(cfg, counts[:2], reps, RngFactory(seed),
+                        tmp_path / "crashed.jsonl")
+    # ...and resumed: only the remaining count is actually simulated
+    resumed = sweep_with_partials(cfg, counts, reps, RngFactory(seed),
+                                  tmp_path / "resumed.jsonl",
+                                  resume_path=tmp_path / "crashed.jsonl")
+
+    # results.json content (identity held constant; it carries the only
+    # timestamp/uuid fields) is byte-identical full vs interrupted+resumed
+    ident = {"pinned": "identity"}
+    prior = analytical_spare_prior(total_sorties_int=1, n_drones=3, margin=0)
+    d_full = _results_dict(SpareSizingReport.build(full, prior), reps, ident)
+    d_res = _results_dict(SpareSizingReport.build(resumed, prior), reps, ident)
+    assert json.dumps(d_full, sort_keys=True) == json.dumps(d_res, sort_keys=True)
+
+    # the resumed run's own partial log is self-contained (replayed + new point)
+    logged = [json.loads(line)["spares"] for line in
+              (tmp_path / "resumed.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sorted(logged) == counts
+
+
+@pytest.mark.slow
+def test_without_resume_sweep_behavior_is_unchanged(tmp_path, config_path):
+    from uav_swarm_sim.infrastructure.rng import RngFactory
+    from uav_swarm_sim.experiments.run_spare_sizing import (
+        run_sweep, sweep_with_partials)
+
+    cfg = _tiny_cfg(config_path)
+    reps, counts = 2, [0, 50]
+
+    baseline = run_sweep(cfg, counts, reps, RngFactory(cfg.sim.master_seed))
+    wrapped = sweep_with_partials(cfg, counts, reps, RngFactory(cfg.sim.master_seed),
+                                  tmp_path / "results_partial.jsonl")
+    # default-off: no --resume => the wrapper only ADDS the jsonl side file;
+    # the swept points (and hence results.json) are exactly run_sweep's
+    assert [(p.spares, p.n_success, p.n_failed, p.n_incomplete) for p in wrapped] == \
+           [(p.spares, p.n_success, p.n_failed, p.n_incomplete) for p in baseline]
+    assert (tmp_path / "results_partial.jsonl").exists()
