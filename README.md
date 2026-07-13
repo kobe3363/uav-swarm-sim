@@ -235,6 +235,12 @@ python -m uav_swarm_sim.experiments.run_scale_tiers --n-range 2 100 4 --out runs
 # Optimal fleet size for THIS area/battery (analytical Pareto knee, no simulation)
 python -m uav_swarm_sim.experiments.run_fleet_sizing_analyzer --config config/default.yaml --n-max 20 --plot runs/fleet.png
 
+# Spare-pack sizing: success-probability knee over a spare-count grid (paired-seed MC)
+python -m uav_swarm_sim.experiments.run_spare_sizing --config config/default.yaml --reps 500 --out runs/spares
+#   ...or measure the swap-pack demand D once under an UNBOUNDED pool and
+#   reconstruct the whole success-vs-B curve post hoc (O(reps), no B-grid)
+python -m uav_swarm_sim.experiments.run_spare_sizing --demand-mode --reps 500 --out runs/spares
+
 # Dubins vs discretized grid (FIXED_WING / VTOL only)
 python -m uav_swarm_sim.experiments.run_kinematics_comparison --config config/default.yaml --out runs/kinematics
 
@@ -258,6 +264,24 @@ python -m uav_swarm_sim.experiments.run_shape_regime_table --csv runs/shape_regi
 ```
 
 Smoke test: `pytest tests/integration/test_smoke.py`. Full suite: `pytest -q`.
+
+**Spare sizing, demand mode (`run_spare_sizing --demand-mode`).** The shared swap pool
+(`fleet.total_reserve_batteries`) is a pure **count constraint**: `swap_station.py`
+decrements the reserve in exactly one place (the bay-admit loop) and no other code reads
+the remaining count — the engine only polls the monotonic `pool_exhausted` flag in its
+terminal check. Consequently a replication that demands `D_k` packs under an unbounded
+pool behaves **byte-identically** at any pool size `B ≥ D_k`, and can never succeed at
+`B < D_k`; i.e. `success(k, B) ⇔ D_k ≤ B` (with `D_k = ∞` when the unbounded run itself
+fails). Demand mode exploits this: **one** batch of `--reps` unbounded replications
+records each `D_k` (total + per-drone), then reconstructs the empirical demand CDF with a
+Wilson 95 % band and both target knees (0.99/0.95, same Wilson-lower rule as the grid) —
+`O(reps)` engine runs instead of the grid's `O(|grid| × reps)`. Use it when the knee
+bracket is unknown or the grid would be wide; the classic grid stays available as the
+ground-truth validator (the equivalence itself is locked by a per-`(k, B)` regression
+test). Replication indices and the shared `RngFactory` match the grid sweep exactly, so
+demand runs stay seed-paired with any grid run. Each replication is appended to
+`results_partial.jsonl` (fsync'd, demand schema) as it completes; `--resume` continues an
+interrupted demand batch replication-by-replication.
 
 **Running tests faster.** `pip install -e .[dev]` adds `pytest-xdist`; then:
 

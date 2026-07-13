@@ -25,6 +25,33 @@ The analytical prior reuses the B6.2 fleet-sizing planning layer + core to get
 ``total_sorties_int`` (the integer battery-cycle demand) from the SAME real base
 pose the heavy simulation would use, so prior and measurement share one geometry.
 
+Demand mode (``--demand-mode``)
+-------------------------------
+Instead of sweeping a B-grid (O(|grid| x reps) engine runs), run ONE batch of
+``reps`` replications with an UNBOUNDED pool (``total_reserve_batteries=None``)
+and record each replication's swap-pack demand ``D_k``. The equivalence that
+makes this sound: the pool is a pure COUNT constraint -- ``swap_station.py``
+decrements the reserve in exactly one place (the admit loop) and NO other code
+reads the remaining count (the engine reads only the monotonic
+``pool_exhausted`` flag, in the terminal check). Hence a bounded run with
+``B >= D_k`` never trips exhaustion and is byte-identical to the unbounded run,
+while ``B < D_k`` diverges only through ``pool_exhausted`` and can never
+succeed:
+
+    success(k, B)  <=>  D_k <= B      (D_k := infinity when the unbounded
+                                       run itself does not succeed)
+
+The whole success-vs-B curve -- empirical demand CDF, Wilson band, and both
+target knees (0.99 / 0.95, same Wilson-lower rule as the grid) -- is then
+reconstructed post hoc from one batch: O(reps) instead of O(|grid| x reps).
+Use it when the grid would be wide or the knee bracket is unknown; the grid
+mode remains the ground-truth validator (the equivalence is locked by a
+per-(k, B) regression test). Replication indices and the shared ``RngFactory``
+are the same as the grid sweep's, so results stay exactly paired with any past
+or future grid run. Each replication is appended to ``results_partial.jsonl``
+(demand schema) the moment it completes; ``--resume`` skips finished
+replications of an interrupted demand run.
+
 Examples:
   # default range from the analytical prior, 200 paired reps per spare count
   python -m uav_swarm_sim.experiments.run_spare_sizing --out runs/spares
@@ -32,6 +59,8 @@ Examples:
   python -m uav_swarm_sim.experiments.run_spare_sizing --spares 0 2 4 6 8 --reps 50
   # a fixed grid
   python -m uav_swarm_sim.experiments.run_spare_sizing --spare-range 0 20 2
+  # demand mode: one unbounded batch, knees reconstructed from the D CDF
+  python -m uav_swarm_sim.experiments.run_spare_sizing --demand-mode --reps 500
 """
 from __future__ import annotations
 
@@ -45,27 +74,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..infrastructure.config import Config, load_config
-from ..infrastructure.enums import Outcome
+from ..infrastructure.enums import AgentState, Outcome
 from ..infrastructure.rng import STREAM_LAUNCH_SAMPLING, STREAM_OBSTACLES, RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
 from ..metrics.run_output import RunContext
 from .fleet_sizing import FleetSizingInputs, sweep as fleet_sweep
 from .spare_sizing import (
     TARGETS,
+    DemandRecord,
     SparePoint,
     SpareSizingReport,
     analytical_spare_prior,
     default_spare_range,
+    demand_cdf,
+    demand_knees,
+    max_finite_demand,
     min_reps_for_target,
+    validate_formula,
 )
 
 
 # --------------------------------------------------------------------------- #
 # config override for the sweep variable                                       #
 # --------------------------------------------------------------------------- #
-def _with_reserve(cfg: Config, spares: int) -> Config:
+def _with_reserve(cfg: Config, spares: int | None) -> Config:
     """A config copy with the shared swap-pool size set to ``spares`` -- the ONLY
-    thing that varies across the sweep (mirrors comparison._with_override)."""
+    thing that varies across the sweep (mirrors comparison._with_override).
+    ``None`` = unbounded pool (demand mode forces it regardless of the config)."""
     fleet = dataclasses.replace(cfg.fleet, total_reserve_batteries=spares)
     return dataclasses.replace(cfg, fleet=fleet)
 
@@ -210,19 +245,23 @@ def _partial_identity(cfg: Config, reps: int) -> dict:
     }
 
 
-def append_partial_point(path, pt: SparePoint, identity: dict) -> None:
-    """Append one completed SparePoint as a single JSON line, flushed and
-    fsync'd so a crash right after loses at most the point in flight."""
-    rec = {
-        "schema": PARTIAL_SCHEMA,
-        **identity,
-        **_point_dict(pt),
-        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
+def _append_jsonl_line(path, rec: dict) -> None:
+    """Append one record as a single JSON line, flushed and fsync'd so a crash
+    right after loses at most the record in flight."""
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
         f.flush()
         os.fsync(f.fileno())
+
+
+def append_partial_point(path, pt: SparePoint, identity: dict) -> None:
+    """Append one completed SparePoint (grid mode) as a crash-safe JSON line."""
+    _append_jsonl_line(path, {
+        "schema": PARTIAL_SCHEMA,
+        **identity,
+        **_point_dict(pt),
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
 
 
 def load_partial_points(path) -> tuple[dict, dict[int, SparePoint]]:
@@ -325,6 +364,188 @@ def sweep_with_partials(cfg: Config, spare_counts, reps: int, rng: RngFactory,
 
 
 # --------------------------------------------------------------------------- #
+# demand mode (B = infinity): one unbounded batch instead of the B-grid        #
+# --------------------------------------------------------------------------- #
+# See the module docstring for the count-constraint equivalence
+# success(k, B) <=> D_k <= B that makes one unbounded batch reconstruct the
+# whole success-vs-B curve. The partial log gets its OWN schema string so a
+# demand log can never be --resume'd into a grid sweep (or vice versa): the
+# foreign loader refuses it with "unsupported schema".
+DEMAND_PARTIAL_SCHEMA = "uav-swarm-sim/spare-sizing-demand-partial/v1"
+
+
+def _per_drone_swaps(history) -> dict[int, int]:
+    """Per-drone S_SWAP sojourn counts -- the same source MissionMetrics.n_swaps
+    sums over (metrics/mission_metrics.py), so the per-drone array is consistent
+    with the fleet demand by construction."""
+    counts: dict[int, int] = {}
+    for s in history.sojourns():
+        if s.state is AgentState.S_SWAP:
+            counts[s.agent_id] = counts.get(s.agent_id, 0) + 1
+    return counts
+
+
+def run_demand(cfg: Config, reps: int, rng: RngFactory, algo=None, planner=None,
+               progress=None, replications=None) -> list[DemandRecord]:
+    """One unbounded batch: run replications with ``total_reserve_batteries``
+    forced to ``None`` and record each one's swap-pack demand.
+
+    ``D_k`` is ``metrics.n_swaps`` (the S_SWAP sojourn count -- with an
+    unbounded pool every request is admitted, one reserve pack each) when the
+    replication ends in MISSION_SUCCESS, else ``None`` (= infinite demand: no
+    finite pool could have saved it). Pairing: the SAME ``rng`` and replication
+    indices ``1..reps`` as the grid sweep, so replication k here is
+    byte-identical to any grid run's replication k with ``B >= D_k``.
+    ``replications`` restricts the batch to specific indices (the --resume
+    path); each index seeds only its own streams, so a subset runs exactly as
+    it would inside the full batch.
+    """
+    from ..infrastructure.enums import PlannerKind
+    if planner is None:
+        planner = PlannerKind.DUBINS
+
+    cfg_inf = _with_reserve(cfg, None)
+    todo = list(replications) if replications is not None else list(range(1, reps + 1))
+    records: list[DemandRecord] = []
+    for k in todo:
+        res = SimulationEngine(cfg_inf, rng, replication=k, algo=algo,
+                               planner=planner).run()
+        success = res.outcome is Outcome.MISSION_SUCCESS
+        rec = DemandRecord(
+            replication=k,
+            outcome=res.outcome.value,
+            demand=int(res.metrics.n_swaps) if success else None,
+            per_drone_swaps=_per_drone_swaps(res.history),
+        )
+        records.append(rec)
+        if progress is not None:
+            progress(rec)
+    return records
+
+
+def _demand_record_dict(rec: DemandRecord) -> dict:
+    return {
+        "replication": rec.replication,
+        "outcome": rec.outcome,
+        "demand": rec.demand,
+        "per_drone_swaps": {str(k): v for k, v in sorted(rec.per_drone_swaps.items())},
+    }
+
+
+def append_demand_record(path, rec: DemandRecord, identity: dict) -> None:
+    """Append one completed replication (demand mode) as a crash-safe JSON line."""
+    _append_jsonl_line(path, {
+        "schema": DEMAND_PARTIAL_SCHEMA,
+        "kind": "demand",
+        **identity,
+        **_demand_record_dict(rec),
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+
+
+def load_demand_records(path) -> tuple[dict, dict[int, DemandRecord]]:
+    """Parse a demand-mode results_partial.jsonl into
+    ``(identity, {replication: DemandRecord})`` -- the demand twin of
+    ``load_partial_points``, with the same tolerance rules: a truncated FINAL
+    line (crash mid-append) is skipped with a warning, anything else malformed
+    or foreign-schema'd is refused."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    identity: dict | None = None
+    records: dict[int, DemandRecord] = {}
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                print(f"[resume] ignoring truncated final line in {path}",
+                      file=sys.stderr)
+                continue
+            raise SystemExit(f"--resume: corrupt line {i + 1} in {path}") from None
+        if rec.get("schema") != DEMAND_PARTIAL_SCHEMA:
+            raise SystemExit(f"--resume: unsupported schema {rec.get('schema')!r} "
+                             f"at line {i + 1} in {path} "
+                             f"(expected {DEMAND_PARTIAL_SCHEMA!r})")
+        ident = {k: rec.get(k) for k in ("master_seed", "config_hash", "reps_per_point")}
+        if identity is None:
+            identity = ident
+        elif ident != identity:
+            raise SystemExit(f"--resume: inconsistent run identity at line {i + 1} "
+                             f"in {path} (mixed runs in one file?)")
+        try:
+            demand = rec["demand"]
+            dr = DemandRecord(
+                replication=int(rec["replication"]),
+                outcome=str(rec["outcome"]),
+                demand=None if demand is None else int(demand),
+                per_drone_swaps={int(a): int(v) for a, v
+                                 in dict(rec["per_drone_swaps"]).items()},
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SystemExit(f"--resume: malformed record at line {i + 1} "
+                             f"in {path}: {exc}") from exc
+        records[dr.replication] = dr
+    if identity is None:
+        raise SystemExit(f"--resume: no completed replications in {path}")
+    return identity, records
+
+
+def _validated_demand_resume(resume_path, expected: dict, reps: int) -> dict[int, DemandRecord]:
+    """Load a previous demand run's partial log; REFUSE it unless its identity
+    matches this run exactly (mirrors ``_validated_resume``). Replications
+    outside ``1..reps`` are ignored with a warning."""
+    if not Path(resume_path).is_file():
+        raise SystemExit(f"--resume: no such file: {resume_path}")
+    identity, records = load_demand_records(resume_path)
+    if identity != expected:
+        diffs = "; ".join(
+            f"{k}: partial={identity.get(k)!r} vs current={expected[k]!r}"
+            for k in expected if identity.get(k) != expected[k]
+        )
+        raise SystemExit(f"--resume rejected: run identity mismatch ({diffs}). "
+                         f"A partial log can only resume the run that wrote it.")
+    extra = sorted(k for k in records if not (1 <= k <= reps))
+    if extra:
+        print(f"[resume] ignoring completed replications outside 1..{reps}: "
+              f"{extra}", file=sys.stderr)
+    return {k: records[k] for k in range(1, reps + 1) if k in records}
+
+
+def demand_with_partials(cfg: Config, reps: int, rng: RngFactory, partial_path,
+                         resume_path=None, algo=None, planner=None,
+                         progress=None) -> list[DemandRecord]:
+    """Crash-safe wrapper around ``run_demand`` (the demand twin of
+    ``sweep_with_partials``): every completed replication is appended to
+    ``partial_path``, and ``resume_path`` skips the replications a previous
+    (interrupted) demand run already finished.
+
+    Resume safety is the SAME RngFactory-purity argument as the grid's
+    (``sweep_with_partials`` docstring): each replication draws only from
+    streams keyed by its own index, so skipping completed indices cannot shift
+    any draw of the remaining ones.
+    """
+    identity = _partial_identity(cfg, reps)
+    done: dict[int, DemandRecord] = {}
+    if resume_path is not None:
+        done = _validated_demand_resume(resume_path, identity, reps)
+        # replay the resumed replications into THIS run's partial log, so the
+        # new log is itself a complete resume point if interrupted again
+        for k in sorted(done):
+            append_demand_record(partial_path, done[k], identity)
+
+    def _progress(rec: DemandRecord) -> None:
+        append_demand_record(partial_path, rec, identity)
+        if progress is not None:
+            progress(rec)
+
+    todo = [k for k in range(1, reps + 1) if k not in done]
+    new_recs = run_demand(cfg, reps, rng, algo=algo, planner=planner,
+                          progress=_progress, replications=todo)
+    return sorted(list(done.values()) + new_recs, key=lambda r: r.replication)
+
+
+# --------------------------------------------------------------------------- #
 # structured output                                                            #
 # --------------------------------------------------------------------------- #
 def _point_dict(pt: SparePoint) -> dict:
@@ -391,6 +612,69 @@ def _results_dict(report: SpareSizingReport, reps: int, identity: dict) -> dict:
     }
 
 
+def _demand_results_dict(records, prior, reps: int, identity: dict,
+                         knees, verdict) -> dict:
+    """Demand-mode results.json (schema v2). Mirrors the grid ``_results_dict``
+    shape where the concepts coincide (targets/knees/prior/reps_sufficiency/
+    formula_validation) and adds the demand CDF + per-replication records."""
+    n_succ = sum(1 for r in records if r.demand is not None)
+    p = prior
+    v = verdict
+    return {
+        "schema": "uav-swarm-sim/spare-sizing/v2",
+        "kind": "results",
+        "mode": "spare_sizing_demand",
+        "identity": identity,
+        "status": "ok",
+        "demand_design": {
+            "pool": "unbounded (fleet.total_reserve_batteries=None)",
+            "reps": reps,
+            "note": "same RngFactory + replication indices 1..reps as the grid "
+                    "sweep => exact pairing with any grid run; count-constraint "
+                    "equivalence success(k,B) <=> D_k <= B reconstructs the "
+                    "success-vs-B curve from one unbounded batch",
+        },
+        "targets": list(TARGETS),
+        "knees": {
+            f"{k.target:.2f}": {"knee_point": k.knee_point, "knee_wilson": k.knee_wilson}
+            for k in knees
+        },
+        "analytical_prior": {
+            "formula": "spares ~= E_cover/B_usable - n + margin",
+            "total_sorties_int": p.total_sorties_int,
+            "n_drones": p.n_drones,
+            "margin_packs": p.margin,
+            "base_spares": p.base_spares,
+            "prior_spares": p.prior_spares,
+        },
+        "reps_sufficiency": {
+            f"{t:.2f}": {
+                "reps_used": reps,
+                "min_reps_to_certify_wilson": min_reps_for_target(t),
+                "can_certify": reps >= min_reps_for_target(t),
+            }
+            for t in TARGETS
+        },
+        "formula_validation": None if v is None else {
+            "target": v.target,
+            "prior_spares": v.prior_spares,
+            "empirical_knee_point": v.empirical_knee,
+            "certified_knee_wilson": v.certified_knee,
+            "delta_packs": v.delta,
+            "measured_margin_packs": v.measured_margin,
+            "verdict": v.verdict,
+        },
+        "demand_summary": {
+            "n_reps": len(records),
+            "n_success": n_succ,
+            "n_nonsuccess": len(records) - n_succ,
+            "max_finite_demand": max_finite_demand(records),
+        },
+        "cdf": demand_cdf(records),
+        "records": [_demand_record_dict(r) for r in records],
+    }
+
+
 def _plot(path: str, report: SpareSizingReport) -> bool:
     try:
         import matplotlib
@@ -428,6 +712,58 @@ def _plot(path: str, report: SpareSizingReport) -> bool:
     ax.set_ylabel("mission success probability")
     ax.set_ylim(0.0, 1.02)
     ax.set_title("Spare sizing — success-probability knee")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return True
+
+
+def _plot_demand(path: str, records, knees, prior) -> bool:
+    """Empirical demand CDF (step at integer B) with its Wilson 95 % band,
+    the two target lines, the certified knees and the analytical prior."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # matplotlib optional
+        print(f"[plot skipped: {exc}]", file=sys.stderr)
+        return False
+
+    rows = demand_cdf(records)
+    if not rows:
+        print("[plot skipped: no successful replications -> empty demand CDF]",
+              file=sys.stderr)
+        return False
+    xs = [r["spares"] for r in rows]
+    ys = [r["success_frac"] for r in rows]
+    los = [r["wilson95_lo"] for r in rows]
+    his = [r["wilson95_hi"] for r in rows]
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    ax.step(xs, ys, where="post", marker="o", color="#1f77b4",
+            label="P(D ≤ B) empirical CDF")
+    ax.fill_between(xs, los, his, step="post", color="#1f77b4", alpha=0.18,
+                    label="95 % Wilson band")
+
+    colors = {0.99: "#d62728", 0.95: "#2ca02c"}
+    for k in knees:
+        c = colors.get(k.target, "#7f7f7f")
+        ax.axhline(k.target, color=c, linestyle=":", linewidth=1, alpha=0.7)
+        if k.knee_wilson is not None:
+            ax.axvline(k.knee_wilson, color=c, linestyle="--", linewidth=1.2)
+            ax.annotate(f"{k.target:.0%} knee\nB={k.knee_wilson}",
+                        (k.knee_wilson, k.target), color=c, fontsize=8,
+                        ha="left", va="bottom")
+
+    ax.axvline(prior.prior_spares, color="#9467bd", linestyle="-.", linewidth=1.2,
+               label=f"analytical prior (spares={prior.prior_spares})")
+
+    ax.set_xlabel("spare battery packs B (shared pool size)")
+    ax.set_ylabel("P(demand ≤ B) = mission success probability")
+    ax.set_ylim(0.0, 1.02)
+    ax.set_title("Spare sizing — swap-pack demand CDF (unbounded pool)")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8, loc="lower right")
     fig.tight_layout()
@@ -480,6 +816,52 @@ def _render(report: SpareSizingReport, reps: int) -> str:
     return "\n".join(lines)
 
 
+def _render_demand(records, knees, verdict, prior, reps: int) -> str:
+    n = len(records)
+    n_succ = sum(1 for r in records if r.demand is not None)
+    # stdout stays ASCII-safe: piped Windows consoles fall back to cp1252,
+    # which cannot encode the infinity / <= glyphs.
+    lines = [
+        "# Spare-Sizing Demand Study (unbounded pool, paired-seed Monte-Carlo)\n",
+        f"- Replications (B = inf): {n}  -- success {n_succ}, "
+        f"non-success {n - n_succ} (counted as D = inf at every B)",
+        f"- Analytical prior: total_sorties_int={prior.total_sorties_int}, "
+        f"n={prior.n_drones}, base={prior.base_spares}, "
+        f"margin={prior.margin} -> **prior_spares={prior.prior_spares}**\n",
+        "| B (spares) | P(D <= B) | 95% Wilson CI |",
+        "|-----------:|----------:|:--------------|",
+    ]
+    for r in demand_cdf(records):
+        lines.append(
+            f"| {r['spares']} | {r['success_frac']:.1%} | "
+            f"[{r['wilson95_lo']:.1%}, {r['wilson95_hi']:.1%}] |"
+        )
+    lines.append("")
+    for k in knees:
+        kp = "-" if k.knee_point is None else str(k.knee_point)
+        kw = "-" if k.knee_wilson is None else str(k.knee_wilson)
+        need = min_reps_for_target(k.target)
+        note = "" if reps >= need else f"  _(needs >={need} reps to certify; have {reps})_"
+        lines.append(f"- **{k.target:.0%} target**: point-estimate knee = **{kp}**  |  "
+                     f"certified (Wilson lower >= target) = {kw}{note}")
+    if verdict is not None:
+        lines.append("")
+        if verdict.verdict == "inconclusive":
+            lines.append(f"- _Formula check ({verdict.target:.0%}): **inconclusive** -- "
+                         f"the demand CDF never reached the target (too many "
+                         f"non-success replications; raise --reps or inspect "
+                         f"outcomes in results.json)._")
+        else:
+            v = verdict
+            sign = "" if v.delta == 0 else (f"+{v.delta}" if v.delta > 0 else str(v.delta))
+            lines.append(
+                f"- _Formula check ({v.target:.0%}): prior={v.prior_spares}, "
+                f"empirical (point) knee={v.empirical_knee} (delta={sign} packs) -> "
+                f"**{v.verdict.upper()}**. Data-demanded margin over the zero-margin "
+                f"base = {v.measured_margin} packs._")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # entrypoint                                                                   #
 # --------------------------------------------------------------------------- #
@@ -492,6 +874,69 @@ def _spare_counts(args, prior) -> list[int]:
             raise SystemExit("--spare-range STEP must be positive")
         return list(range(start, stop + 1, step))
     return default_spare_range(prior, span=args.span)
+
+
+def _main_demand(args, cfg: Config, prior, coverage_j) -> int:
+    """The --demand-mode entrypoint half: one unbounded batch, crash-safe
+    per-replication partial log, post-hoc CDF/knees/prior read-out."""
+    # one shared factory + indices 1..reps => exact pairing with any grid run
+    rng = RngFactory(cfg.sim.master_seed)
+
+    run = RunContext(base_dir=args.out)
+    sim = run.simulation("spare-sizing-demand")
+    sim.write_plan({
+        "schema": "uav-swarm-sim/plan/v1",
+        "kind": "plan",
+        "identity": sim.identity(config_hash=cfg.config_hash),
+        "setup": {
+            "mode": "spare_sizing_demand",
+            "pool": "unbounded (fleet.total_reserve_batteries=None)",
+            "reps": args.reps,
+            "targets": list(TARGETS),
+            "margin_packs": args.margin,
+            "n_drones": cfg.fleet.n_drones,
+            "n_bays": cfg.swap.n_bays,
+            "service_time_s": cfg.swap.service_time_s,
+            "master_seed": cfg.sim.master_seed,
+            "total_coverage_j": coverage_j,
+        },
+    })
+    partial_path = sim.path(PARTIAL_FILENAME)
+
+    def _progress(rec: DemandRecord) -> None:
+        d = "inf" if rec.demand is None else rec.demand
+        print(f"  rep {rec.replication:>4}/{args.reps}: {rec.outcome}  D={d}",
+              file=sys.stderr)
+
+    print(f"Measuring swap-pack demand: {args.reps} replications, "
+          f"unbounded pool...", file=sys.stderr)
+    if args.resume:
+        print(f"[resume] continuing from {args.resume}", file=sys.stderr)
+    records = demand_with_partials(cfg, args.reps, rng, partial_path,
+                                   resume_path=args.resume, progress=_progress)
+
+    knees = demand_knees(records)
+    # same validate target as the grid report (SpareSizingReport.build)
+    vknee = next((k for k in knees if k.target == 0.99),
+                 knees[0] if knees else None)
+    verdict = validate_formula(prior, vknee) if vknee is not None else None
+
+    sim.write_results(_demand_results_dict(records, prior, args.reps,
+                                           sim.identity(), knees, verdict))
+    plot_path = sim.path("demand_cdf.png")
+    plotted = _plot_demand(str(plot_path), records, knees, prior)
+    run.finalize(summary={
+        "mode": "demand",
+        "knees": {f"{k.target:.2f}": k.knee_wilson for k in knees},
+        "analytical_prior_spares": prior.prior_spares,
+        "formula_verdict": None if verdict is None else verdict.verdict,
+    })
+
+    print(_render_demand(records, knees, verdict, prior, args.reps))
+    print(f"\n[structured output: {run.dir}]")
+    if plotted:
+        print(f"[demand CDF plot: {plot_path}]")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -511,10 +956,21 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default="runs", help="runs/ base directory")
     ap.add_argument("--resume", default=None, metavar="PARTIAL_JSONL",
                     help="path to a previous run's results_partial.jsonl; its "
-                         "completed spare counts are verified against this run's "
-                         "identity (master_seed/config/reps), skipped in the "
-                         "sweep, and merged into the final report")
+                         "completed points (grid mode: spare counts; demand "
+                         "mode: replications) are verified against this run's "
+                         "identity (master_seed/config/reps), skipped, and "
+                         "merged into the final report")
+    ap.add_argument("--demand-mode", action="store_true",
+                    help="measure per-replication swap-pack demand D under an "
+                         "UNBOUNDED pool instead of sweeping a B-grid: one batch "
+                         "of --reps replications; knees at both targets are "
+                         "reconstructed from the demand CDF via the equivalence "
+                         "success(k,B) <=> D_k <= B (see module docstring)")
     args = ap.parse_args(argv)
+
+    if args.demand_mode and (args.spares is not None or args.spare_range is not None):
+        raise SystemExit("--demand-mode replaces the spare grid entirely; "
+                         "drop --spares/--spare-range (there is nothing to sweep)")
 
     cfg = load_config(args.config)
 
@@ -529,6 +985,8 @@ def main(argv=None) -> int:
                   f"still reported).", file=sys.stderr)
 
     prior, coverage_j = _compute_prior(cfg, args.margin)
+    if args.demand_mode:
+        return _main_demand(args, cfg, prior, coverage_j)
     counts = _spare_counts(args, prior)
 
     # one shared factory => paired seeds across every spare count
