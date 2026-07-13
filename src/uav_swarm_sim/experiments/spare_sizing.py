@@ -302,7 +302,7 @@ def demand_cdf(records: Sequence[DemandRecord]) -> list[dict]:
     if n == 0 or bmax is None:
         return []
     rows: list[dict] = []
-    for b in range(0, bmax + 1):
+    for b in range(bmax + 1):
         k = demand_success_count(records, b)
         lo, hi, phat = wilson_ci(k, n)
         rows.append({"spares": b, "n_le": k, "success_frac": phat,
@@ -328,7 +328,7 @@ def demand_knees(records: Sequence[DemandRecord],
         kp: int | None = None
         kw: int | None = None
         if n and bmax is not None:
-            for b in range(0, bmax + 1):
+            for b in range(bmax + 1):
                 k = demand_success_count(records, b)
                 if kp is None and k / n >= t:
                     kp = b
