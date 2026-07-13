@@ -19,12 +19,17 @@ from uav_swarm_sim.experiments.spare_sizing import (
     KNEE_RULE_POINT,
     KNEE_RULE_WILSON,
     TARGETS,
+    DemandRecord,
     SparePoint,
     SpareSizingReport,
     analytical_spare_prior,
     default_spare_range,
+    demand_cdf,
+    demand_knees,
+    demand_success_count,
     find_knee,
     knees_at_targets,
+    max_finite_demand,
     min_reps_for_target,
     validate_formula,
     wilson_ci,
@@ -406,6 +411,304 @@ def test_interrupted_plus_resumed_results_match_uninterrupted(tmp_path, config_p
     logged = [json.loads(line)["spares"] for line in
               (tmp_path / "resumed.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sorted(logged) == counts
+
+
+# --------------------------------------------------------------------------- #
+# demand mode: pure core (AC4 -- hand-computed Wilson knees)                    #
+# --------------------------------------------------------------------------- #
+def _drec(k, d):
+    """A DemandRecord: finite d = successful unbounded run with demand d;
+    d=None = non-success (D = infinity)."""
+    outcome = "MISSION_SUCCESS" if d is not None else "MISSION_FAILED"
+    return DemandRecord(replication=k, outcome=outcome, demand=d)
+
+
+def _demand_batch(*counts_at):
+    """Build records from (demand, how_many) pairs, e.g. (3, 90), (5, 6)."""
+    records, k = [], 1
+    for d, cnt in counts_at:
+        for _ in range(cnt):
+            records.append(_drec(k, d))
+            k += 1
+    return records
+
+
+def test_demand_success_count_and_max_finite_demand():
+    recs = _demand_batch((1, 2), (4, 1), (None, 1))
+    assert demand_success_count(recs, 0) == 0
+    assert demand_success_count(recs, 1) == 2
+    assert demand_success_count(recs, 3) == 2
+    assert demand_success_count(recs, 4) == 3    # the D=inf record never counts
+    assert demand_success_count(recs, 100) == 3
+    assert max_finite_demand(recs) == 4
+    assert max_finite_demand([_drec(1, None)]) is None
+
+
+def test_demand_knees_hand_computed_both_targets():
+    # n=100: 90 reps demand 3, 6 reps demand 5, 4 reps demand 8.
+    # CDF: P(D<=b) = 0 (b<3), 0.90 (3<=b<5), 0.96 (5<=b<8), 1.00 (b>=8).
+    recs = _demand_batch((3, 90), (5, 6), (8, 4))
+    knees = {k.target: k for k in demand_knees(recs, TARGETS)}
+    # 95 % target: point knee at first b with frac >= 0.95 -> b=5 (0.96);
+    # Wilson lower of 96/100 is ~0.90 < 0.95, of 100/100 is ~0.963 -> b=8.
+    assert knees[0.95].knee_point == 5
+    assert wilson_ci(96, 100)[0] < 0.95 < wilson_ci(100, 100)[0]
+    assert knees[0.95].knee_wilson == 8
+    # 99 % target: point knee at b=8 (1.00); Wilson lower of a PERFECT 100/100
+    # is ~0.963 < 0.99 (needs >= 381 reps) -> no certified knee at any b.
+    assert knees[0.99].knee_point == 8
+    assert wilson_ci(100, 100)[0] < 0.99
+    assert knees[0.99].knee_wilson is None
+    assert min_reps_for_target(0.99) > 100  # exactly why it cannot certify
+
+
+def test_demand_knees_all_demands_equal():
+    # n=80, every rep demands exactly 4 packs: the CDF is a single step 0 -> 1.
+    recs = _demand_batch((4, 80))
+    knees = {k.target: k for k in demand_knees(recs, TARGETS)}
+    # point knees for both targets sit AT the step
+    assert knees[0.95].knee_point == 4
+    assert knees[0.99].knee_point == 4
+    # 80 reps clear the 95 % Wilson floor (73) but not the 99 % one (381)
+    assert wilson_ci(80, 80)[0] >= 0.95
+    assert knees[0.95].knee_wilson == 4
+    assert knees[0.99].knee_wilson is None
+
+
+def test_demand_knees_below_wilson_floor_yield_no_certified_knee():
+    # 10 flawless reps: point knee resolves, Wilson-certified knee cannot
+    # (10 < 73 [95 %] < 381 [99 %]) -- the CLI's existing [warn] covers this.
+    recs = _demand_batch((2, 10))
+    knees = {k.target: k for k in demand_knees(recs, TARGETS)}
+    assert knees[0.95].knee_point == 2 and knees[0.99].knee_point == 2
+    assert knees[0.95].knee_wilson is None
+    assert knees[0.99].knee_wilson is None
+
+
+def test_demand_knees_nonsuccess_blocks_targets():
+    # 3 successes + 1 non-success (D=inf): frac never exceeds 0.75.
+    recs = _demand_batch((1, 3), (None, 1))
+    for k in demand_knees(recs, TARGETS):
+        assert k.knee_point is None and k.knee_wilson is None
+    # and with NO successful rep at all the scan domain is empty
+    for k in demand_knees([_drec(1, None)], TARGETS):
+        assert k.knee_point is None and k.knee_wilson is None
+
+
+def test_demand_cdf_rows_match_wilson_ci():
+    recs = _demand_batch((1, 2), (3, 1), (None, 1))  # n=4, max finite D=3
+    rows = demand_cdf(recs)
+    assert [r["spares"] for r in rows] == [0, 1, 2, 3]
+    for r in rows:
+        k = demand_success_count(recs, r["spares"])
+        lo, hi, phat = wilson_ci(k, 4)
+        assert (r["n_le"], r["success_frac"]) == (k, phat)
+        assert (r["wilson95_lo"], r["wilson95_hi"]) == (lo, hi)
+    assert demand_cdf([_drec(1, None)]) == []  # no success -> empty CDF
+
+
+# --------------------------------------------------------------------------- #
+# demand mode: partial jsonl + resume (AC5)                                    #
+# --------------------------------------------------------------------------- #
+def _write_demand_line(path, identity, k, outcome, demand, per_drone=None):
+    import json
+    rec = {
+        "schema": "uav-swarm-sim/spare-sizing-demand-partial/v1",
+        "kind": "demand",
+        **identity,
+        "replication": k, "outcome": outcome, "demand": demand,
+        "per_drone_swaps": per_drone or {},
+        "written_at": "2026-07-13T00:00:00+00:00",
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def test_demand_load_parses_records_and_tolerates_truncated_final_line(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import load_demand_records
+
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 3}
+    p = tmp_path / "results_partial.jsonl"
+    _write_demand_line(p, ident, 1, "MISSION_SUCCESS", 2, {"0": 1, "1": 1})
+    _write_demand_line(p, ident, 2, "MISSION_FAILED", None, {"0": 3})
+    with open(p, "a", encoding="utf-8") as f:  # crash mid-append
+        f.write('{"schema": "uav-swarm-sim/spare-sizing-demand-partial/v1", "repl')
+    identity, records = load_demand_records(p)
+    assert identity == ident
+    assert sorted(records) == [1, 2]
+    assert records[1].demand == 2
+    assert records[1].per_drone_swaps == {0: 1, 1: 1}  # keys back to int
+    assert records[2].demand is None and records[2].outcome == "MISSION_FAILED"
+
+
+def test_demand_and_grid_partial_logs_reject_each_other(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import (
+        load_demand_records, load_partial_points)
+
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 2}
+    demand_log = tmp_path / "demand.jsonl"
+    _write_demand_line(demand_log, ident, 1, "MISSION_SUCCESS", 1)
+    grid_log = tmp_path / "grid.jsonl"
+    _write_partial_line(grid_log, ident, spares=0, n_reps=2, n_success=2)
+    # a grid --resume must refuse a demand log, and vice versa: the schema
+    # string is the cross-mode firewall
+    with pytest.raises(SystemExit, match="unsupported schema"):
+        load_partial_points(demand_log)
+    with pytest.raises(SystemExit, match="unsupported schema"):
+        load_demand_records(grid_log)
+
+
+def test_demand_load_rejects_malformed_record_and_empty_log(tmp_path):
+    import json
+    from uav_swarm_sim.experiments.run_spare_sizing import load_demand_records
+
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 2}
+    broken = tmp_path / "missing_key.jsonl"
+    broken.write_text(json.dumps({
+        "schema": "uav-swarm-sim/spare-sizing-demand-partial/v1", "kind": "demand",
+        **ident, "replication": 1, "outcome": "MISSION_SUCCESS",
+        "per_drone_swaps": {},  # no "demand" key
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="malformed record"):
+        load_demand_records(broken)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(SystemExit, match="no completed replications"):
+        load_demand_records(empty)
+
+
+def test_demand_resume_identity_mismatch_and_out_of_range_reps(tmp_path):
+    from uav_swarm_sim.experiments.run_spare_sizing import _validated_demand_resume
+
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 3}
+    p = tmp_path / "results_partial.jsonl"
+    _write_demand_line(p, ident, 1, "MISSION_SUCCESS", 1)
+    _write_demand_line(p, ident, 99, "MISSION_SUCCESS", 1)  # outside 1..3
+    # identity mismatch -> refuse loudly (same wording as the grid path)
+    other = {"master_seed": 8, "config_hash": "h", "reps_per_point": 3}
+    with pytest.raises(SystemExit, match="identity mismatch.*master_seed"):
+        _validated_demand_resume(p, other, 3)
+    with pytest.raises(SystemExit, match="no such file"):
+        _validated_demand_resume(tmp_path / "nope.jsonl", ident, 3)
+    # matching identity: replication 99 is ignored, replication 1 resumed
+    done = _validated_demand_resume(p, ident, 3)
+    assert sorted(done) == [1]
+
+
+def test_demand_mode_cli_rejects_spare_grid_flags():
+    from uav_swarm_sim.experiments.run_spare_sizing import main
+
+    with pytest.raises(SystemExit, match="demand-mode replaces the spare grid"):
+        main(["--demand-mode", "--spares", "0", "1"])
+    with pytest.raises(SystemExit, match="demand-mode replaces the spare grid"):
+        main(["--demand-mode", "--spare-range", "0", "4", "1"])
+
+
+# --------------------------------------------------------------------------- #
+# demand mode: the count-constraint equivalence, locked empirically (AC3)      #
+# --------------------------------------------------------------------------- #
+def _tiny_demand_cfg(config_path):
+    """Small enough to swap: 2 drones on ~20 Wh packs over the smoke area give
+    demands D in {1, 2} with MISSION_SUCCESS in ~a second per replication."""
+    from uav_swarm_sim.infrastructure.config import load_config
+    return load_config(
+        config_path,
+        overrides={
+            "fleet.n_drones": 2,
+            "fleet.battery_capacity_wh": 20.0,
+            "failure.hazard_rate_per_hour": 0.0,
+            "env.geojson_path": "data/areas/smoke_area.geojson",
+            "env.obstacle_density_per_km2": 4.0,
+            "env.obstacle_size_range_m": [10.0, 30.0],
+            "sim.dt_s": 1.0,
+            "sim.max_timesteps": 20000,
+        },
+    )
+
+
+@pytest.mark.slow
+def test_demand_equals_grid_success_for_every_replication_and_pool_size(config_path):
+    """THE equivalence lock: success(k, B) == (D_k <= B) for EVERY (k, B) pair.
+
+    Demand mode measures D_k once under an unbounded pool; the classic grid
+    then re-runs the SAME replications at every pool size 0..max(D)+1 and the
+    engine's own terminal outcome must match the count-constraint prediction
+    exactly -- the code-level argument (single decrement site, no other pool
+    reader) made empirical.
+    """
+    from uav_swarm_sim.experiments.run_spare_sizing import _with_reserve, run_demand
+    from uav_swarm_sim.infrastructure.enums import Outcome, PlannerKind
+    from uav_swarm_sim.infrastructure.rng import RngFactory
+    from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
+
+    cfg = _tiny_demand_cfg(config_path)
+    reps = 3
+    records = run_demand(cfg, reps, RngFactory(cfg.sim.master_seed))
+    assert [r.replication for r in records] == [1, 2, 3]
+    finite = [r.demand for r in records if r.demand is not None]
+    assert finite, "tiny config must yield at least one successful unbounded run"
+    assert max(finite) >= 1, "tiny config must actually demand swap packs"
+    for r in records:  # per-drone array sums to the fleet demand (same source)
+        if r.demand is not None:
+            assert sum(r.per_drone_swaps.values()) == r.demand
+
+    for b in range(0, max(finite) + 2):
+        cfg_b = _with_reserve(cfg, b)
+        for rec in records:
+            out = SimulationEngine(cfg_b, RngFactory(cfg.sim.master_seed),
+                                   replication=rec.replication,
+                                   planner=PlannerKind.DUBINS).run().outcome
+            expected = rec.demand is not None and rec.demand <= b
+            assert (out is Outcome.MISSION_SUCCESS) == expected, \
+                f"equivalence broken at (k={rec.replication}, B={b}): " \
+                f"D_k={rec.demand}, engine outcome={out}"
+
+
+@pytest.mark.slow
+def test_demand_partial_log_appended_per_replication_and_resume_matches(tmp_path, config_path):
+    """Crash-safety + resume in demand mode: one fsync'd line per replication,
+    and interrupted+resumed records identical to an uninterrupted batch."""
+    import json
+    from uav_swarm_sim.experiments.run_spare_sizing import (
+        _partial_identity, append_demand_record, demand_with_partials, run_demand)
+    from uav_swarm_sim.infrastructure.rng import RngFactory
+
+    cfg = _tiny_demand_cfg(config_path)
+    reps = 3
+    seed = cfg.sim.master_seed
+    ident = _partial_identity(cfg, reps)
+
+    # uninterrupted reference batch, with the per-replication append spied on
+    full_log = tmp_path / "full.jsonl"
+    seen: list[int] = []
+
+    def _spy(rec):
+        lines = full_log.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == len(seen) + 1  # already on disk when progress fires
+        on_disk = json.loads(lines[-1])
+        assert on_disk["kind"] == "demand"
+        assert on_disk["replication"] == rec.replication
+        assert on_disk["demand"] == rec.demand
+        seen.append(rec.replication)
+
+    full = demand_with_partials(cfg, reps, RngFactory(seed), full_log, progress=_spy)
+    assert seen == [1, 2, 3]
+
+    # a batch 'crashed' after replication 2...
+    crashed_log = tmp_path / "crashed.jsonl"
+    run_demand(cfg, reps, RngFactory(seed), replications=[1, 2],
+               progress=lambda rec: append_demand_record(crashed_log, rec, ident))
+    # ...and resumed: only replication 3 is actually simulated
+    resumed = demand_with_partials(cfg, reps, RngFactory(seed),
+                                   tmp_path / "resumed.jsonl",
+                                   resume_path=crashed_log)
+    as_tuple = lambda r: (r.replication, r.outcome, r.demand,
+                          sorted(r.per_drone_swaps.items()))
+    assert [as_tuple(r) for r in resumed] == [as_tuple(r) for r in full]
+    # the resumed run's own log is self-contained (replayed + new replication)
+    logged = [json.loads(line)["replication"] for line in
+              (tmp_path / "resumed.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sorted(logged) == [1, 2, 3]
 
 
 @pytest.mark.slow
