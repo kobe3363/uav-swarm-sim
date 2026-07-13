@@ -299,6 +299,33 @@ def test_load_partial_tolerates_truncated_final_line(tmp_path):
     assert points[1].n_success == 2
 
 
+def test_load_partial_rejects_unknown_schema_and_malformed_record(tmp_path):
+    import json
+    from uav_swarm_sim.experiments.run_spare_sizing import load_partial_points
+
+    # a record from some FUTURE/foreign schema (identity fields happen to exist)
+    # must be refused up front, not silently accepted as resume state
+    wrong = tmp_path / "wrong_schema.jsonl"
+    wrong.write_text(json.dumps({
+        "schema": "uav-swarm-sim/spare-sizing-partial/v99",
+        "master_seed": 7, "config_hash": "h", "reps_per_point": 2,
+        "spares": 0, "n_reps": 2, "n_success": 2, "n_failed": 0, "n_incomplete": 0,
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="unsupported schema"):
+        load_partial_points(wrong)
+
+    # structurally-valid JSON missing a required count field: a clear SystemExit,
+    # not a raw KeyError
+    ident = {"master_seed": 7, "config_hash": "h", "reps_per_point": 2}
+    broken = tmp_path / "missing_key.jsonl"
+    broken.write_text(json.dumps({
+        "schema": "uav-swarm-sim/spare-sizing-partial/v1", **ident,
+        "spares": 0, "n_reps": 2, "n_failed": 0, "n_incomplete": 0,  # no n_success
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="malformed record"):
+        load_partial_points(broken)
+
+
 def test_resume_ignores_counts_outside_current_grid(tmp_path):
     from uav_swarm_sim.experiments.run_spare_sizing import _validated_resume
 
@@ -376,7 +403,7 @@ def test_interrupted_plus_resumed_results_match_uninterrupted(tmp_path, config_p
     assert json.dumps(d_full, sort_keys=True) == json.dumps(d_res, sort_keys=True)
 
     # the resumed run's own partial log is self-contained (replayed + new point)
-    logged = [json.loads(l)["spares"] for l in
+    logged = [json.loads(line)["spares"] for line in
               (tmp_path / "resumed.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sorted(logged) == counts
 

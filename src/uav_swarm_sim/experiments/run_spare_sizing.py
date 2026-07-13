@@ -244,16 +244,23 @@ def load_partial_points(path) -> tuple[dict, dict[int, SparePoint]]:
                 print(f"[resume] ignoring truncated final line in {path}",
                       file=sys.stderr)
                 continue
-            raise SystemExit(f"--resume: corrupt line {i + 1} in {path}")
+            raise SystemExit(f"--resume: corrupt line {i + 1} in {path}") from None
+        if rec.get("schema") != PARTIAL_SCHEMA:
+            raise SystemExit(f"--resume: unsupported schema {rec.get('schema')!r} "
+                             f"at line {i + 1} in {path} (expected {PARTIAL_SCHEMA!r})")
         ident = {k: rec.get(k) for k in ("master_seed", "config_hash", "reps_per_point")}
         if identity is None:
             identity = ident
         elif ident != identity:
             raise SystemExit(f"--resume: inconsistent run identity at line {i + 1} "
                              f"in {path} (mixed runs in one file?)")
-        pt = SparePoint(spares=int(rec["spares"]), n_reps=int(rec["n_reps"]),
-                        n_success=int(rec["n_success"]), n_failed=int(rec["n_failed"]),
-                        n_incomplete=int(rec["n_incomplete"]))
+        try:
+            pt = SparePoint(spares=int(rec["spares"]), n_reps=int(rec["n_reps"]),
+                            n_success=int(rec["n_success"]), n_failed=int(rec["n_failed"]),
+                            n_incomplete=int(rec["n_incomplete"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SystemExit(f"--resume: malformed record at line {i + 1} "
+                             f"in {path}: {exc}") from exc
         points[pt.spares] = pt
     if identity is None:
         raise SystemExit(f"--resume: no completed points in {path}")
