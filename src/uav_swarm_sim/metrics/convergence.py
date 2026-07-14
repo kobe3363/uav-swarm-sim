@@ -38,10 +38,16 @@ def wilson_ci(k: int, n: int, z: float = Z_95) -> tuple[float, float, float]:
     sensibly at the extremes ``k == 0`` and ``k == n`` -- exactly the regime the
     99 % target lives in. ``n == 0`` yields the vacuous ``(0.0, 1.0, nan)``.
 
-    Moved here (verbatim) from ``experiments.spare_sizing`` so the metrics layer
-    can use it without importing upward; ``spare_sizing`` re-exports it.
+    Moved here from ``experiments.spare_sizing`` so the metrics layer can use
+    it without importing upward; ``spare_sizing`` re-exports it. Impossible
+    inputs (negative counts, k > n, non-finite or non-positive z) are rejected
+    rather than silently producing reversed or vacuous intervals.
     """
-    if n <= 0:
+    if not (math.isfinite(z) and z > 0):
+        raise ValueError("z must be a finite positive quantile")
+    if n < 0 or k < 0 or k > n:
+        raise ValueError("counts must satisfy 0 <= k <= n")
+    if n == 0:
         return (0.0, 1.0, float("nan"))
     phat = k / n
     z2 = z * z

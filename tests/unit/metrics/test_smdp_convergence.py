@@ -240,6 +240,27 @@ def test_wilson_ci_reexport_is_same_object():
     assert reexported is wilson_ci
 
 
+def test_wilson_ci_rejects_impossible_inputs():
+    # impossible counts and degenerate z raise instead of returning reversed
+    # or vacuous intervals; the documented k == n == 0 empty case survives
+    for k, n in [(-1, 4), (5, 4), (0, -3)]:
+        with pytest.raises(ValueError):
+            wilson_ci(k, n)
+    for z in (0.0, -Z_95, math.inf, math.nan):
+        with pytest.raises(ValueError):
+            wilson_ci(3, 4, z=z)
+    lo, hi, phat = wilson_ci(0, 0)
+    assert (lo, hi) == (0.0, 1.0) and math.isnan(phat)
+
+
+def test_min_reps_for_target_rejects_degenerate_z():
+    from uav_swarm_sim.experiments.spare_sizing import min_reps_for_target
+    for z in (0.0, -1.0, math.inf, math.nan):
+        with pytest.raises(ValueError):
+            min_reps_for_target(0.99, z=z)
+    assert min_reps_for_target(0.99) >= 381  # documented reps floor intact
+
+
 def test_report_json_serializable_and_table_readable():
     est = estimate(_cyclic_history(3, _CYCLE), close_failure_loop=True)
     rep = convergence_report(est)

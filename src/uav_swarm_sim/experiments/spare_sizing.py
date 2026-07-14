@@ -59,6 +59,8 @@ def min_reps_for_target(target: float, z: float = Z_95) -> int:
     """
     if not (0.0 < target < 1.0):
         raise ValueError("target must be in (0, 1)")
+    if not (math.isfinite(z) and z > 0.0):
+        raise ValueError("z must be a finite positive quantile")
     return math.ceil(z * z * target / (1.0 - target))
 
 
