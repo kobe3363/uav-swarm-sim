@@ -190,6 +190,34 @@ def plot_mc_convergence(trace: list[tuple[int, float, float]], out: Path) -> Pat
     return _save(fig, out)
 
 
+def plot_smdp_convergence(report, out: Path) -> Path:
+    """Per-state SMDP evidence: visit-count bars (state colors) with each
+    state's widest outgoing Wilson-95%-CI width annotated on top. Takes a
+    ``metrics.smdp_convergence.ConvergenceReport``."""
+    fig, ax = plt.subplots(figsize=(9, 5))
+    labels = [sc.state.name for sc in report.per_state]
+    visits = [sc.visits for sc in report.per_state]
+    colors = [STATE_COLORS[sc.state] for sc in report.per_state]
+    x = np.arange(len(labels))
+    ax.bar(x, visits, color=colors)
+    for xi, sc in zip(x, report.per_state):
+        if sc.transitions:
+            w = max(c.width for c in sc.transitions.values())
+            note = f"CI w={w:.2f}"
+        else:
+            note = "no out"
+        ax.annotate(note, (xi, sc.visits), ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+    ax.set_ylabel("visits (raw sojourns)")
+    title = "SMDP per-state evidence (visits + widest transition CI width)"
+    if report.weakest_by_visits is not None:
+        s, v = report.weakest_by_visits
+        title += f"\nweakest: {s.name} ({v} visits)"
+    ax.set_title(title, fontsize=10)
+    return _save(fig, out)
+
+
 def plot_comparison_box(data: dict[str, list[float]], metric: str, out: Path) -> Path:
     fig, ax = plt.subplots(figsize=(8, 5))
     labels = list(data.keys())

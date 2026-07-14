@@ -24,6 +24,7 @@ from ..infrastructure.enums import DecompositionAlgo, PlannerKind
 from ..infrastructure.rng import RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
 from ..infrastructure import visualization as viz
+from ..metrics.smdp_convergence import convergence_report, format_table, report_to_json
 from ..metrics.smdp_estimator import estimate
 from ..metrics.stationary_distribution import stationary
 from ..metrics.efficiency_score import efficiency
@@ -73,8 +74,14 @@ def main(argv=None) -> int:
         viz.plot_pi_bars(emb, tim, sim.path("pi_bars.png"))
         pi_line = f" | efficiency {efficiency(pi_time, est.states):.3f}"
 
+    # per-state convergence diagnostics (additive: new results key + new figure)
+    conv = convergence_report(est)
+    if conv.per_state:
+        viz.plot_smdp_convergence(conv, sim.path("smdp_convergence.png"))
+
     # results.json
-    sim.write_results(build_results_single(result, est, identity=identity, wall_time_s=wall))
+    sim.write_results(build_results_single(result, est, identity=identity, wall_time_s=wall,
+                                           convergence=report_to_json(conv)))
 
     # artifacts (all into the simulation folder)
     viz.plot_environment(eng.env, None, sim.path("environment.png"))
@@ -94,6 +101,7 @@ def main(argv=None) -> int:
     print(f"[single] outcome={result.outcome.value} coverage={result.coverage_frac:.3f} "
           f"energy={m.total_energy_j:.0f} J duration={m.duration_s:.0f} s "
           f"workload_std={m.workload_std_m:.1f} m{pi_line}")
+    print(format_table(conv))
     print(f"run -> {run.dir}/  (simulation: {sim.dir.name}/)")
     return 0
 

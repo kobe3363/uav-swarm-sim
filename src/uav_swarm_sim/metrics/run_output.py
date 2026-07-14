@@ -391,9 +391,15 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
     }
 
 
-def build_results_single(result, est, *, identity: dict, wall_time_s: float) -> dict:
+def build_results_single(result, est, *, identity: dict, wall_time_s: float,
+                         convergence: dict | None = None) -> dict:
     """The OUTCOME of a single mission (the visual-demo case): terminal outcome,
-    its SMDP, and the single-run metrics."""
+    its SMDP, and the single-run metrics.
+
+    ``convergence``, when given, is attached ADDITIVELY as ``smdp.convergence``
+    (the per-state visit/Wilson-CI diagnostics block from
+    ``metrics.smdp_convergence.report_to_json``); every pre-existing key and
+    value is unchanged, and default None keeps old callers byte-identical."""
     m = result.metrics
     smdp: dict = {"ergodic": bool(getattr(est, "ergodic", False))}
     if getattr(est, "ergodic", False):
@@ -402,6 +408,8 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float) -> 
         _, pi_time = stationary(est)
         smdp["stationary_pi_time"] = {s.value: float(pi_time[i]) for i, s in enumerate(est.states)}
         smdp["efficiency"] = float(efficiency(pi_time, est.states))
+    if convergence is not None:
+        smdp["convergence"] = convergence
 
     return {
         "schema": RESULTS_SCHEMA,

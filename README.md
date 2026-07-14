@@ -190,7 +190,7 @@ runs/run-2026-06-28-11-59-35/          ← a RUN  (name = the dated folder, id =
     plan.json                          ← the launch PLAN (every input/setup)
     results.json                       ← the OUTCOME (success rate, SMDP, MC logic, timing)
     environment.png partition.png paths.png replay.gif state_gantt.png
-    battery.png pi_bars.png tracks_drone_*.gpx
+    battery.png pi_bars.png smdp_convergence.png tracks_drone_*.gpx
   simulation-kmeans/ ...
 ```
 
@@ -200,6 +200,16 @@ Runs are identified and compared by `run_id` (GUID), `run_name` (date), and a pe
 - **`results.json`** — for a Monte-Carlo batch: how many replications ran and **why it stopped** (`ci_converged` vs `reached_n_max`) with the full convergence trace; mission outcome counts and success fraction (distinct from the SMDP non-ergodic share); the SMDP stationary distribution + efficiency (with 95% CIs); per-metric mean/std/CI (energy, duration, workload std, planning time); and total + per-replication wall time. For a single mission: the terminal outcome, its SMDP, the single-run metrics, and timing.
 
 All JSON is strict-valid (non-finite values become `null`), so it loads cleanly in `jq`, pandas, or any GIS/analysis tool.
+
+### SMDP convergence diagnostics (per-state visits + Wilson CIs)
+
+The embedded-chain matrix P̂ is a row-wise maximum-likelihood estimate from raw transition counts, so its trustworthiness is bounded by its least-visited state. `run_single_mission` therefore also reports, per state (module `metrics/smdp_convergence.py`):
+
+- the raw **visit count** (including truncated terminal sojourns that produced no outgoing transition),
+- a **Wilson 95% CI** for every observed transition probability p̂ᵢⱼ (the cell count as a binomial against the row total — stays inside [0, 1] and behaves sensibly at 0/1, exactly where rare states live),
+- a **weakest-state summary**: the visited state with the fewest visits, and the single widest transition CI in the whole matrix.
+
+It lands in three places: a new `smdp.convergence` block in `results.json` (purely additive — all pre-existing keys are unchanged), a console table (`SMDP convergence per state`), and `smdp_convergence.png` (visit bars + widest-CI annotations). **How to read the weakest state:** everything derived from the stationary distribution (π_time, efficiency) flows through every row of P̂; if the weakest state's CI is wide (e.g. one visit ⇒ p̂ ∈ {0, 1} with a CI spanning most of [0, 1]), the π values involving it are anecdotal — run more replications or a longer mission before quoting them. **Multinomial caveat:** each row is one multinomial sample and the Wilson intervals are per-cell (j vs not-j) marginals, *not* a joint confidence region for the row. The heavy sweep scripts (`run_shape_sweep`, `run_scale_tiers`, `run_spare_sizing`) are deliberately untouched; `pool_counts` + `report_from_counts` are exported so a Monte-Carlo caller can pool raw counts across replications later.
 
 ---
 
