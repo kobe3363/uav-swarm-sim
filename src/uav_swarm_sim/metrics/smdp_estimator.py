@@ -50,6 +50,12 @@ class SmdpEstimate:
     ergodic: bool
     unreachable: list[AgentState]
     closed_failure_loop: bool
+    # raw visit counts per state (same index as states), INCLUDING truncated
+    # terminal sojourns that produced no outgoing transition -- so
+    # visits[i] >= n_transitions[i].sum(), with equality unless state i ended
+    # an agent's history unclosed. Default None keeps the frozen dataclass
+    # backward-compatible; estimate() always fills it.
+    visits: np.ndarray | None = None
 
 
 def estimate(
@@ -115,6 +121,7 @@ def estimate(
         ergodic=ergodic,
         unreachable=unreachable,
         closed_failure_loop=close_failure_loop,
+        visits=np.array([visits[idx[s]] for s in visited], dtype=float),
     )
 
 

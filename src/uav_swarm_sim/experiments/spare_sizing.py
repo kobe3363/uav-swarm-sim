@@ -31,7 +31,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from ..metrics.convergence import Z_95
+from ..metrics.convergence import Z_95, wilson_ci  # noqa: F401  (wilson_ci re-exported; body moved to metrics.convergence)
 
 # The two thesis targets are fixed by the DoR. Named here as the single source of
 # truth so the CLI, the plot and the tests agree.
@@ -60,27 +60,6 @@ def min_reps_for_target(target: float, z: float = Z_95) -> int:
     if not (0.0 < target < 1.0):
         raise ValueError("target must be in (0, 1)")
     return math.ceil(z * z * target / (1.0 - target))
-
-
-def wilson_ci(k: int, n: int, z: float = Z_95) -> tuple[float, float, float]:
-    """Wilson score interval for a binomial success proportion.
-
-    Returns ``(lo, hi, phat)`` with ``phat = k/n`` the point estimate and
-    ``[lo, hi]`` the two-sided score interval at confidence ``z`` (default 95 %).
-    Unlike the normal (Wald) interval it stays inside ``[0, 1]`` and behaves
-    sensibly at the extremes ``k == 0`` and ``k == n`` -- exactly the regime the
-    99 % target lives in. ``n == 0`` yields the vacuous ``(0.0, 1.0, nan)``.
-    """
-    if n <= 0:
-        return (0.0, 1.0, float("nan"))
-    phat = k / n
-    z2 = z * z
-    denom = 1.0 + z2 / n
-    center = (phat + z2 / (2.0 * n)) / denom
-    half = (z / denom) * math.sqrt(phat * (1.0 - phat) / n + z2 / (4.0 * n * n))
-    lo = max(0.0, center - half)
-    hi = min(1.0, center + half)
-    return (lo, hi, phat)
 
 
 # --------------------------------------------------------------------------- #
