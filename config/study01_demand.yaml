@@ -137,6 +137,13 @@ coverage:
   operating_margin_m: 50.0    # convex-hull dilation (== one coverage swath; >> the
                               # 5 m clearance_buffer_m) so a detour can pass OUTSIDE
                               # an obstacle sitting on the hull edge.
+  transit_free_space: true    # FIX-B1 (STUDY-01): route S1 transit chords (initial
+                              # assign, post-swap resume, redistribution re-transit)
+                              # around obstacles at plan time. Eliminates the swap
+                              # livelock: a blocked straight resume chord otherwise
+                              # loops S_OBS -> boxed-in -> RTH -> swap forever
+                              # (reference: rep 1, drone #3, 151 swaps). An
+                              # unobstructed chord stays the straight chord.
 
 aero:
   formation_drag_reduction: 0.1514   # Guo et al. 2025, homogeneous formation (15.14%)
@@ -230,6 +237,11 @@ safety:
   obstacle_buffer_m: 5.0
   predict_horizon_s: 5.0      # proactive monitoring lookahead
   obstacle_recovery: true     # Task 2.5 Q2: skip obstructed coverage legs + boxed-in RTH (prevents S_OBS thrashing)
+  stall_detector: true        # FIX-B4 (STUDY-01): halt early (MISSION_INCOMPLETE +
+                              # stalled_agents diagnostic) when a drone requests 5
+                              # consecutive swaps with zero coverage progress --
+                              # a residual livelock then costs ~2 ks sim-time, not
+                              # the full 25 ks max_timesteps burn.
 
 rth:
   check_interval_s: 5.0
