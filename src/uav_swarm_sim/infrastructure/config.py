@@ -183,6 +183,13 @@ class SafetyConfig:
     # hash is unchanged (the hash is taken over the raw YAML, which is absent
     # this key unless explicitly added).
     obstacle_recovery: bool = False
+    # FIX-B4: engine-level swap-livelock net. When true, an agent that requests
+    # 5 consecutive swaps without any coverage-leg progress is flagged stalled
+    # and the mission halts early (outcome stays MISSION_INCOMPLETE) with the
+    # agents reported in MissionResult.stalled_agents -- a fast, honestly
+    # labelled diagnostic instead of a max_timesteps burn. Defaults false =>
+    # byte-identical (same optional-key hash rule as obstacle_recovery).
+    stall_detector: bool = False
 
 
 @dataclass(frozen=True)
@@ -491,6 +498,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         obstacle_buffer_m=float(_require(sf, "obstacle_buffer_m", "safety")),
         predict_horizon_s=float(_require(sf, "predict_horizon_s", "safety")),
         obstacle_recovery=bool(sf.get("obstacle_recovery", False)),
+        stall_detector=bool(sf.get("stall_detector", False)),
     )
     rt = _require(raw, "rth", "")
     rth = RTHConfig(

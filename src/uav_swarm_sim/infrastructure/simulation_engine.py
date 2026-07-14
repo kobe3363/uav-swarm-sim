@@ -90,6 +90,37 @@ _LOG = logging.getLogger(__name__)
 # existing abort gate (``coverage_frac < 0.999``) so success/abort agree.
 _COVERAGE_COMPLETE_FRAC = 0.999
 
+# FIX-B4: consecutive no-progress swap cycles before an agent counts as stalled.
+_STALL_SWAP_BUDGET = 5
+
+
+class StallDetector:
+    """FIX-B4 (safety.stall_detector): swap-livelock net.
+
+    ``observe`` is called once per SWAP_REQUEST with the agent's current
+    coverage-leg index (``_cov_idx``). A swap request at the SAME index as the
+    agent's previous request is one no-progress cycle; ``_STALL_SWAP_BUDGET``
+    consecutive such cycles flag the agent stalled (a livelocked drone burns a
+    pack + ~2.5 min per cycle forever -- see the demand-probe root-cause
+    diagnosis). The engine halts the mission early when ``stalled`` is
+    non-empty; the first request and any request after real progress reset the
+    count, so a legitimately multi-sortie drone can never trip it.
+    """
+
+    def __init__(self, budget: int = _STALL_SWAP_BUDGET) -> None:
+        self._budget = budget
+        self._last_idx: dict[int, int] = {}
+        self._count: dict[int, int] = {}
+        self.stalled: set[int] = set()
+
+    def observe(self, agent_id: int, cov_idx: int) -> None:
+        prev = self._last_idx.get(agent_id)
+        count = self._count.get(agent_id, 0) + 1 if prev == cov_idx else 0
+        self._count[agent_id] = count
+        self._last_idx[agent_id] = cov_idx
+        if count >= self._budget:
+            self.stalled.add(agent_id)
+
 
 class SimulationEngine:
     def __init__(
@@ -245,6 +276,8 @@ class SimulationEngine:
         self.swap_station = SwapStation(
             cfg.swap, self.launch_pose, cfg.fleet.total_reserve_batteries
         )
+        # FIX-B4: swap-livelock net (default OFF => no tracking, byte-identical)
+        self._stall = StallDetector() if cfg.safety.stall_detector else None
         self.safety = SafetyMonitor(self.layers, self.aero, cfg.safety, self.motion)
         # dynamic obstacles + swarm sensing (feature is OFF unless enabled in config)
         self.sensing = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
@@ -364,6 +397,13 @@ class SimulationEngine:
             # right after event routing + position logging. Failure is tested
             # before success; the first match halts the dt loop.
             outcome = self._evaluate_terminal(t)
+            # FIX-B4: swap-livelock early halt. Checked only after the regular
+            # terminal evaluation so a same-tick genuine terminal outcome always
+            # wins; the outcome stays MISSION_INCOMPLETE (the same label the
+            # max_timesteps burn would eventually produce), the stalled agents
+            # are reported via MissionResult.stalled_agents.
+            if outcome is None and self._stall is not None and self._stall.stalled:
+                outcome = Outcome.MISSION_INCOMPLETE
             if outcome is not None:
                 self._outcome = outcome
                 complete = outcome is Outcome.MISSION_SUCCESS
@@ -394,8 +434,9 @@ class SimulationEngine:
                 coverage_frac=coverage_frac,
             )
         aborted = (not complete) or (len(self.fleet.active()) == 0 and coverage_frac < 0.999)
+        stalled = tuple(sorted(self._stall.stalled)) if self._stall is not None else ()
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
-                             cfg.config_hash, self._outcome)
+                             cfg.config_hash, self._outcome, stalled_agents=stalled)
 
     def _plan_transit(self, a: Pose, b: Pose):
         """An S1 transit leg: the straight CRUISE chord, unless FIX-B1
@@ -415,7 +456,12 @@ class SimulationEngine:
             elif e.type is EventType.NEW_TASK:
                 self._redistribute(e, t)
             elif e.type is EventType.SWAP_REQUEST:
-                self.swap_station.request(e.payload.get("agent_id"), t)
+                aid = e.payload.get("agent_id")
+                if self._stall is not None:
+                    a = self.fleet.agents.get(aid)
+                    if a is not None:
+                        self._stall.observe(aid, a._cov_idx)
+                self.swap_station.request(aid, t)
             elif e.type is EventType.SWAP_DONE:
                 a = self.fleet.agents.get(e.payload.get("agent_id"))
                 if a is not None:
