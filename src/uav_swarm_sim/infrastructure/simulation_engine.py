@@ -26,6 +26,7 @@ from ..infrastructure.core_types import (
     DroneStateView,
     Event,
     MissionResult,
+    Path,
     Pose,
 )
 from ..infrastructure.enums import (
@@ -438,7 +439,7 @@ class SimulationEngine:
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
                              cfg.config_hash, self._outcome, stalled_agents=stalled)
 
-    def _plan_transit(self, a: Pose, b: Pose):
+    def _plan_transit(self, a: Pose, b: Pose) -> Path:
         """An S1 transit leg: the straight CRUISE chord, unless FIX-B1
         (coverage.transit_free_space) routes a blocked chord around the
         buffered obstacles at plan time. Default OFF => exactly the chord."""

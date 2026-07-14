@@ -22,7 +22,7 @@ moment inter-layer climbs are flown as legs, their vertical extent is counted.
 from __future__ import annotations
 
 import math
-from typing import Protocol
+from typing import Callable, Protocol
 
 from ..infrastructure.core_types import (
     CoveragePlan,
@@ -71,7 +71,7 @@ class Agent:
         layer: int = 0,
         coverage_altitude_m: float | None = None,
         sensor_power_w: float = 0.0,
-        transit_planner=None,
+        transit_planner: Callable[[Pose, Pose], Path] | None = None,
     ) -> None:
         self.id = id
         self.spec = spec
