@@ -324,3 +324,7 @@ class MissionResult:
     # Defaulted so any existing direct MissionResult(...) construction is
     # unaffected; the engine always passes the resolved Outcome.
     outcome: Outcome = Outcome.MISSION_INCOMPLETE
+    # FIX-B4 (safety.stall_detector): agents whose swap-livelock cut the run
+    # short -- >= 5 consecutive swap requests without coverage progress.
+    # Empty tuple always, unless the detector is enabled AND it fired.
+    stalled_agents: tuple[int, ...] = ()

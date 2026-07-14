@@ -202,3 +202,74 @@ def route_connector(
     if not _path_clear(routed, env):
         return chord  # infeasible realized path -> fall back (S_OBS remains the net)
     return routed
+
+
+def _chain_cruise_legs(polyline, start: Pose, end: Pose, motion) -> Path:
+    """The CRUISE twin of ``_chain_turn_legs``: chain ``motion.plan(v_i, v_{i+1},
+    CRUISE)`` along the polyline into ONE Path, with the same heading treatment
+    (each interior vertex faces the next; the final pose keeps ``end.heading``).
+    Kept separate so the connector chain stays byte-untouched."""
+    poses: list[Pose] = [start]
+    for i in range(1, len(polyline) - 1):
+        nx_pt = polyline[i + 1]
+        h = math.atan2(nx_pt[1] - polyline[i][1], nx_pt[0] - polyline[i][0])
+        poses.append(Pose(polyline[i][0], polyline[i][1], h, start.z))
+    poses.append(Pose(end.x, end.y, end.heading, start.z))
+
+    segs = []
+    cur = start
+    for nxt in poses[1:]:
+        leg = motion.plan(cur, nxt, ManeuverType.CRUISE)
+        segs.extend(leg.segments)
+        cur = leg.end_pose or nxt
+    return Path.from_segments(segs)
+
+
+def route_transit(
+    a: Pose,
+    b: Pose,
+    motion,
+    env,
+    *,
+    enabled: bool,
+    operating_area: str = "convex_hull",
+    margin_m: float = 50.0,
+) -> Path:
+    """FIX-B1: the single source of truth for an S1 TRANSIT leg's geometry --
+    the CRUISE twin of ``route_connector`` (which stays connector-only and
+    byte-untouched, since its chord and chained legs are TURN-typed).
+
+    A blind straight transit chord that crosses an obstacle prism is the root
+    of the swap livelock: the runtime S_OBS recovery cannot make lateral
+    progress on a transit leg (the resume replays the same chord), the boxed-in
+    escalation sends the drone home, the landing swaps unconditionally, and the
+    relaunch replays the identical blocked chord forever. Routing the chord
+    around the buffered obstacles at plan time removes the collision course
+    before the SafetyMonitor ever sees it.
+
+    Semantics mirror ``route_connector`` exactly: returns the straight
+    ``motion.plan(a, b, CRUISE)`` chord when routing is off, when there are no
+    obstacles, or when the chord is unobstructed (all byte-identical to today);
+    only a blocked chord is rerouted, and every fallback returns the chord
+    unchanged (a detour never makes a transit *worse*; runtime S_OBS recovery
+    remains the safety net exactly as before).
+    """
+    chord = motion.plan(a, b, ManeuverType.CRUISE)
+    if not enabled:
+        return chord
+    obs = env.buffered_obstacles
+    if obs is None:
+        return chord
+    seg = LineString([a.as_xy(), b.as_xy()])
+    if not obs.intersects(seg):
+        return chord  # unobstructed -> straight chord (byte-identical)
+
+    region = flyable_region(env.area, obs, operating_area, margin_m)
+    polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
+    if polyline is None or len(polyline) < 2:
+        return chord  # boxed in -> fall back (never worse than today)
+    routed = _chain_cruise_legs(polyline, a, b, motion)
+    # validate the realized motion (arcs may bulge where the polyline was straight)
+    if not _path_clear(routed, env):
+        return chord  # infeasible realized path -> fall back (S_OBS remains the net)
+    return routed

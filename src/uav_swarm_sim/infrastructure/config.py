@@ -101,10 +101,23 @@ class CoverageConfig:
     50 m == one coverage swath) gives a detour room to pass *outside* an obstacle
     sitting on the hull edge; it is deliberately >> ``env.clearance_buffer_m``
     (5 m) and tied to an existing length scale rather than a magic number.
+
+    ``transit_free_space`` (FIX-B1) applies the same plan-time routing to the S1
+    TRANSIT chords -- the initial assign transit, ``Agent._resume_transit`` after
+    a swap, and the redistribution re-transit -- via
+    ``visibility_router.route_transit`` (the CRUISE twin of ``route_connector``).
+    A blocked straight transit chord is the swap-livelock root cause: S_OBS
+    cannot make lateral progress on a transit leg, the boxed-in escalation sends
+    the drone home, the unconditional swap burns a pack, and the relaunch
+    replays the identical chord. Defaults **OFF** so every existing run is
+    byte-identical (an unobstructed chord stays the straight chord even when
+    on); it shares ``operating_area``/``operating_margin_m`` with the connector
+    routing. The S3_RTH return leg is deliberately NOT routed (out of scope).
     """
     ferry_free_space: bool = False
     operating_area: str = "convex_hull"   # "convex_hull" | "bbox" | "survey"
     operating_margin_m: float = 50.0
+    transit_free_space: bool = False      # FIX-B1: obstacle-aware S1 transit routing
 
 
 @dataclass(frozen=True)
@@ -170,6 +183,13 @@ class SafetyConfig:
     # hash is unchanged (the hash is taken over the raw YAML, which is absent
     # this key unless explicitly added).
     obstacle_recovery: bool = False
+    # FIX-B4: engine-level swap-livelock net. When true, an agent that requests
+    # 5 consecutive swaps without any coverage-leg progress is flagged stalled
+    # and the mission halts early (outcome stays MISSION_INCOMPLETE) with the
+    # agents reported in MissionResult.stalled_agents -- a fast, honestly
+    # labelled diagnostic instead of a max_timesteps burn. Defaults false =>
+    # byte-identical (same optional-key hash rule as obstacle_recovery).
+    stall_detector: bool = False
 
 
 @dataclass(frozen=True)
@@ -396,6 +416,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         ferry_free_space=bool(cov.get("ferry_free_space", False)),
         operating_area=str(cov.get("operating_area", "convex_hull")),
         operating_margin_m=float(cov.get("operating_margin_m", 50.0)),
+        transit_free_space=bool(cov.get("transit_free_space", False)),
     )
     a = _require(raw, "aero", "")
     aero = AeroConfig(
@@ -477,6 +498,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         obstacle_buffer_m=float(_require(sf, "obstacle_buffer_m", "safety")),
         predict_horizon_s=float(_require(sf, "predict_horizon_s", "safety")),
         obstacle_recovery=bool(sf.get("obstacle_recovery", False)),
+        stall_detector=bool(sf.get("stall_detector", False)),
     )
     rt = _require(raw, "rth", "")
     rth = RTHConfig(

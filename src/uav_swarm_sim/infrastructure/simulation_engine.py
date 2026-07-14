@@ -26,6 +26,7 @@ from ..infrastructure.core_types import (
     DroneStateView,
     Event,
     MissionResult,
+    Path,
     Pose,
 )
 from ..infrastructure.enums import (
@@ -64,6 +65,7 @@ from ..planning.launch_site_optimizer import optimize as optimize_launch
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.target_mission import generate_targets, plan_target_mission
 from ..planning.dynamic_obstacles import DynamicObstacleField
+from ..planning.visibility_router import route_transit
 from ..execution.sensing import SensingCoordinator
 from ..planning.weighted_decomposition import (
     TgcBasicDecomposer,
@@ -88,6 +90,37 @@ _LOG = logging.getLogger(__name__)
 # Coverage is treated as 100% complete at/above this fraction. Mirrors the
 # existing abort gate (``coverage_frac < 0.999``) so success/abort agree.
 _COVERAGE_COMPLETE_FRAC = 0.999
+
+# FIX-B4: consecutive no-progress swap cycles before an agent counts as stalled.
+_STALL_SWAP_BUDGET = 5
+
+
+class StallDetector:
+    """FIX-B4 (safety.stall_detector): swap-livelock net.
+
+    ``observe`` is called once per SWAP_REQUEST with the agent's current
+    coverage-leg index (``_cov_idx``). A swap request at the SAME index as the
+    agent's previous request is one no-progress cycle; ``_STALL_SWAP_BUDGET``
+    consecutive such cycles flag the agent stalled (a livelocked drone burns a
+    pack + ~2.5 min per cycle forever -- see the demand-probe root-cause
+    diagnosis). The engine halts the mission early when ``stalled`` is
+    non-empty; the first request and any request after real progress reset the
+    count, so a legitimately multi-sortie drone can never trip it.
+    """
+
+    def __init__(self, budget: int = _STALL_SWAP_BUDGET) -> None:
+        self._budget = budget
+        self._last_idx: dict[int, int] = {}
+        self._count: dict[int, int] = {}
+        self.stalled: set[int] = set()
+
+    def observe(self, agent_id: int, cov_idx: int) -> None:
+        prev = self._last_idx.get(agent_id)
+        count = self._count.get(agent_id, 0) + 1 if prev == cov_idx else 0
+        self._count[agent_id] = count
+        self._last_idx[agent_id] = cov_idx
+        if count >= self._budget:
+            self.stalled.add(agent_id)
 
 
 class SimulationEngine:
@@ -184,6 +217,19 @@ class SimulationEngine:
             cfg.safety.min_separation_m,
         )
 
+        # FIX-B1: obstacle-aware S1 transit routing (coverage.transit_free_space,
+        # default OFF => every transit stays the straight CRUISE chord,
+        # byte-identical). Uses the layer-0 map, same as launch siting and RTH.
+        if cfg.coverage.transit_free_space:
+            _env0, _cov = self.env, cfg.coverage
+            self._transit_planner = lambda a, b: route_transit(
+                a, b, self.motion, _env0, enabled=True,
+                operating_area=_cov.operating_area,
+                margin_m=_cov.operating_margin_m,
+            )
+        else:
+            self._transit_planner = None
+
         # --- mission planning: area coverage OR target visit -------------- #
         self._mission_type = cfg.mission.type
         self._weight_targets = cfg.mission.weight_targets_by_battery
@@ -231,6 +277,8 @@ class SimulationEngine:
         self.swap_station = SwapStation(
             cfg.swap, self.launch_pose, cfg.fleet.total_reserve_batteries
         )
+        # FIX-B4: swap-livelock net (default OFF => no tracking, byte-identical)
+        self._stall = StallDetector() if cfg.safety.stall_detector else None
         self.safety = SafetyMonitor(self.layers, self.aero, cfg.safety, self.motion)
         # dynamic obstacles + swarm sensing (feature is OFF unless enabled in config)
         self.sensing = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
@@ -261,7 +309,8 @@ class SimulationEngine:
                 agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
                               self.formation, self.deploy_poses[i], recorder=recorder,
                               layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer),
-                              sensor_power_w=cfg.sensor.sensor_power_w)
+                              sensor_power_w=cfg.sensor.sensor_power_w,
+                              transit_planner=self._transit_planner)
                 if self._mission_type is MissionType.TARGET_VISIT:
                     plan = self.plans.get(i)
                     if plan is not None and plan.waypoints:
@@ -274,7 +323,7 @@ class SimulationEngine:
                         plan = (grid.coverage(zone, self.spec) if grid is not None
                                 else boustrophedon(zone, self.spec, self.motion, self.em,
                                                    env=self.env, coverage=cfg.coverage))
-                        transit = self.motion.plan(self.deploy_poses[i], zone.entry_pose, ManeuverType.CRUISE)
+                        transit = self._plan_transit(self.deploy_poses[i], zone.entry_pose)
                         agent.assign(plan, transit)
                         self.plans[i] = plan
                 agents.append(agent)
@@ -349,6 +398,13 @@ class SimulationEngine:
             # right after event routing + position logging. Failure is tested
             # before success; the first match halts the dt loop.
             outcome = self._evaluate_terminal(t)
+            # FIX-B4: swap-livelock early halt. Checked only after the regular
+            # terminal evaluation so a same-tick genuine terminal outcome always
+            # wins; the outcome stays MISSION_INCOMPLETE (the same label the
+            # max_timesteps burn would eventually produce), the stalled agents
+            # are reported via MissionResult.stalled_agents.
+            if outcome is None and self._stall is not None and self._stall.stalled:
+                outcome = Outcome.MISSION_INCOMPLETE
             if outcome is not None:
                 self._outcome = outcome
                 complete = outcome is Outcome.MISSION_SUCCESS
@@ -379,8 +435,17 @@ class SimulationEngine:
                 coverage_frac=coverage_frac,
             )
         aborted = (not complete) or (len(self.fleet.active()) == 0 and coverage_frac < 0.999)
+        stalled = tuple(sorted(self._stall.stalled)) if self._stall is not None else ()
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
-                             cfg.config_hash, self._outcome)
+                             cfg.config_hash, self._outcome, stalled_agents=stalled)
+
+    def _plan_transit(self, a: Pose, b: Pose) -> Path:
+        """An S1 transit leg: the straight CRUISE chord, unless FIX-B1
+        (coverage.transit_free_space) routes a blocked chord around the
+        buffered obstacles at plan time. Default OFF => exactly the chord."""
+        if self._transit_planner is not None:
+            return self._transit_planner(a, b)
+        return self.motion.plan(a, b, ManeuverType.CRUISE)
 
     # ------------------------------------------------------------------ #
     def _route_events(self, t: float) -> None:
@@ -392,7 +457,12 @@ class SimulationEngine:
             elif e.type is EventType.NEW_TASK:
                 self._redistribute(e, t)
             elif e.type is EventType.SWAP_REQUEST:
-                self.swap_station.request(e.payload.get("agent_id"), t)
+                aid = e.payload.get("agent_id")
+                if self._stall is not None:
+                    a = self.fleet.agents.get(aid)
+                    if a is not None:
+                        self._stall.observe(aid, a._cov_idx)
+                self.swap_station.request(aid, t)
             elif e.type is EventType.SWAP_DONE:
                 a = self.fleet.agents.get(e.payload.get("agent_id"))
                 if a is not None:
@@ -414,7 +484,7 @@ class SimulationEngine:
             zone = new_part.zones.get(a.id)
             if zone is None:
                 continue
-            transit = self.motion.plan(a.pose, zone.entry_pose, ManeuverType.CRUISE)
+            transit = self._plan_transit(a.pose, zone.entry_pose)
             a.adopt_plan(new_plans[a.id], transit)
 
     def _redistribute_targets(self, active, t: float) -> None:
