@@ -64,6 +64,7 @@ from ..planning.launch_site_optimizer import optimize as optimize_launch
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.target_mission import generate_targets, plan_target_mission
 from ..planning.dynamic_obstacles import DynamicObstacleField
+from ..planning.visibility_router import route_transit
 from ..execution.sensing import SensingCoordinator
 from ..planning.weighted_decomposition import (
     TgcBasicDecomposer,
@@ -184,6 +185,19 @@ class SimulationEngine:
             cfg.safety.min_separation_m,
         )
 
+        # FIX-B1: obstacle-aware S1 transit routing (coverage.transit_free_space,
+        # default OFF => every transit stays the straight CRUISE chord,
+        # byte-identical). Uses the layer-0 map, same as launch siting and RTH.
+        if cfg.coverage.transit_free_space:
+            _env0, _cov = self.env, cfg.coverage
+            self._transit_planner = lambda a, b: route_transit(
+                a, b, self.motion, _env0, enabled=True,
+                operating_area=_cov.operating_area,
+                margin_m=_cov.operating_margin_m,
+            )
+        else:
+            self._transit_planner = None
+
         # --- mission planning: area coverage OR target visit -------------- #
         self._mission_type = cfg.mission.type
         self._weight_targets = cfg.mission.weight_targets_by_battery
@@ -261,7 +275,8 @@ class SimulationEngine:
                 agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
                               self.formation, self.deploy_poses[i], recorder=recorder,
                               layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer),
-                              sensor_power_w=cfg.sensor.sensor_power_w)
+                              sensor_power_w=cfg.sensor.sensor_power_w,
+                              transit_planner=self._transit_planner)
                 if self._mission_type is MissionType.TARGET_VISIT:
                     plan = self.plans.get(i)
                     if plan is not None and plan.waypoints:
@@ -274,7 +289,7 @@ class SimulationEngine:
                         plan = (grid.coverage(zone, self.spec) if grid is not None
                                 else boustrophedon(zone, self.spec, self.motion, self.em,
                                                    env=self.env, coverage=cfg.coverage))
-                        transit = self.motion.plan(self.deploy_poses[i], zone.entry_pose, ManeuverType.CRUISE)
+                        transit = self._plan_transit(self.deploy_poses[i], zone.entry_pose)
                         agent.assign(plan, transit)
                         self.plans[i] = plan
                 agents.append(agent)
@@ -382,6 +397,14 @@ class SimulationEngine:
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
                              cfg.config_hash, self._outcome)
 
+    def _plan_transit(self, a: Pose, b: Pose):
+        """An S1 transit leg: the straight CRUISE chord, unless FIX-B1
+        (coverage.transit_free_space) routes a blocked chord around the
+        buffered obstacles at plan time. Default OFF => exactly the chord."""
+        if self._transit_planner is not None:
+            return self._transit_planner(a, b)
+        return self.motion.plan(a, b, ManeuverType.CRUISE)
+
     # ------------------------------------------------------------------ #
     def _route_events(self, t: float) -> None:
         for e in self.bus.drain():
@@ -414,7 +437,7 @@ class SimulationEngine:
             zone = new_part.zones.get(a.id)
             if zone is None:
                 continue
-            transit = self.motion.plan(a.pose, zone.entry_pose, ManeuverType.CRUISE)
+            transit = self._plan_transit(a.pose, zone.entry_pose)
             a.adopt_plan(new_plans[a.id], transit)
 
     def _redistribute_targets(self, active, t: float) -> None:

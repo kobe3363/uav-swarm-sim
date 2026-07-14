@@ -71,6 +71,7 @@ class Agent:
         layer: int = 0,
         coverage_altitude_m: float | None = None,
         sensor_power_w: float = 0.0,
+        transit_planner=None,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -87,6 +88,10 @@ class Agent:
         self.layer = layer
         self.coverage_altitude_m = coverage_altitude_m
         self._sensor_power_w = sensor_power_w  # camera/gimbal payload draw while filming (S2)
+        # FIX-B1: obstacle-aware S1 transit planner (engine-injected when
+        # coverage.transit_free_space is on). None => the straight CRUISE chord,
+        # byte-identical to the pre-fix behaviour.
+        self._transit_planner = transit_planner
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -388,6 +393,8 @@ class Agent:
             entry = nxt.start_pose or self.pose
         else:
             entry = self.pose
+        if self._transit_planner is not None:
+            return self._transit_planner(self.base, entry)
         return self.motion.plan(self.base, entry, ManeuverType.CRUISE)
 
     def _avoidance_plan(self) -> Path:
