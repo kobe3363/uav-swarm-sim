@@ -56,6 +56,7 @@ from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import make_motion_model
 from ..planning.classic_voronoi import ClassicVoronoiDecomposer
 from ..planning.coverage_path import boustrophedon
+from ..planning.energy_map import battery_tied_cell_m, build_energy_map
 from ..planning.environment_map import LayerStack
 from ..planning.geojson_parser import load_area
 from ..planning.grid_planner import GridPlanner
@@ -204,6 +205,25 @@ class SimulationEngine:
                 cfg.launch, self.tgc, self.env, self.motion, self.em, self.aero,
                 self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
             )
+
+        # EM-01 Stage 1 (rth.energy_map, default OFF => byte-identical): build
+        # the per-replication energy cost-to-go map once, now that env + base
+        # are known. Built and attached only -- NOTHING consumes it yet; the
+        # RTH decide / routing consumers are later stages of
+        # docs/proposals/energy_map_rth.md. Deterministic, no RNG draw.
+        self.energy_map = None
+        if cfg.rth.energy_map.enabled:
+            emc = cfg.rth.energy_map
+            cell = emc.cell_m if emc.cell_m is not None else battery_tied_cell_m(
+                self.spec.battery_capacity_j,
+                self.spec.power_w[ManeuverType.CRUISE], self.spec.v_cruise,
+            )
+            with phase("build.energy_map"):
+                self.energy_map = build_energy_map(
+                    self.env, self.launch_pose, cell, self.em, self.spec.v_cruise,
+                    yellow_penalty=emc.yellow_penalty,
+                    red_threshold=emc.red_threshold,
+                )
 
         # 2.5D (Task 2.4): distribute the N drones on a ring around the launch
         # pose instead of stacking them at one (x, y). This is the single source
