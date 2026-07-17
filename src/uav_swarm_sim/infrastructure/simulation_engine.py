@@ -219,10 +219,17 @@ class SimulationEngine:
                 self.spec.power_w[ManeuverType.CRUISE], self.spec.v_cruise,
             )
             with phase("build.energy_map"):
+                # Stage 2 (author's universal-extent rule): inflate the grid by
+                # the ferry margin so every physically reachable pose is IN the
+                # grid by construction -- coverage plans do not exist yet at
+                # this point (they are built below), so the extent comes from
+                # bbox(area U base) + operating_margin_m, which bounds every
+                # transit/ferry/RTH excursion the routers can produce.
                 self.energy_map = build_energy_map(
                     self.env, self.launch_pose, cell, self.em, self.spec.v_cruise,
                     yellow_penalty=emc.yellow_penalty,
                     red_threshold=emc.red_threshold,
+                    margin_m=cfg.coverage.operating_margin_m,
                 )
 
         # 2.5D (Task 2.4): distribute the N drones on a ring around the launch
@@ -315,6 +322,10 @@ class SimulationEngine:
         rth = RthCalculator(
             self.em, self.motion, self.spec, cfg.rth, self.launch_pose,
             cfg.env.coverage_altitude_m, self.env,
+            # EM-01 Stage 2: None when enabled is off; with enabled=True but
+            # decide=False the calculator consumes nothing (Stage-1 gate test
+            # stays green) -- the decide sub-flag is checked inside.
+            energy_map=self.energy_map,
         )
         self.rth = rth
 

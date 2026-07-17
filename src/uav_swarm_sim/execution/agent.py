@@ -21,6 +21,7 @@ moment inter-layer climbs are flown as legs, their vertical extent is counted.
 """
 from __future__ import annotations
 
+import logging
 import math
 from typing import Callable, Protocol
 
@@ -48,6 +49,8 @@ from .state_machine import AgentContext, StateMachine
 # (safety.obstacle_recovery enabled); otherwise it is inert and the agent's S_OBS
 # behaviour is byte-identical to the pre-Q2 baseline.
 _OBS_REENTRY_BUDGET = 6
+
+log = logging.getLogger(__name__)
 
 
 class Recorder(Protocol):
@@ -122,6 +125,15 @@ class Agent:
         self._last_rth_t = -1e9
         self._swap_done = False
 
+        # EM-01 Stage 2 (rth.energy_map.decide): per-sortie arming threshold
+        # (seam 7b) + battery-quantized decide cadence (design doc section 7).
+        # All four are inert when the flag is off (_arm_sortie early-returns,
+        # step() takes the verbatim 5 s time-cadence arm).
+        self._arm_level_j = float("inf")
+        self._rth_last_check_level_j = float("inf")
+        self._sortie_idx = 0
+        self.sortie_arms: list[tuple[int, float]] = []
+
         # Task 2.5 Q2 (stateful S_OBS recovery). Dormant unless the SafetyMonitor
         # sends recovery-mode threat signals; all three default to the inert state
         # so the pre-Q2 S_OBS behaviour is byte-identical when the flag is off.
@@ -181,6 +193,10 @@ class Agent:
         if self.state in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S_OBS):
             self._set_legs([transit])
             self.state = AgentState.S1_TRANSIT
+            # EM-01 Stage 2: the remaining plan just changed and this jump
+            # bypasses _apply_transition, so the old arm is unsound -- re-arm
+            # here. (The S0_IDLE branch re-arms via the S0 -> S1 transition.)
+            self._arm_sortie()
         elif self.state is AgentState.S0_IDLE:
             self._launch_ready = True
 
@@ -222,9 +238,28 @@ class Agent:
             self._threat_cleared = True
 
         # periodic RTH check while in coverage (filming or ferrying)
-        if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY) and (t - self._last_rth_t) >= self.rth.check_interval_s:
-            self._last_rth_t = t
-            self._rth_decision = self.rth.decide(self) == "RETURN_NOW"
+        if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY):
+            # getattr: test stubs replace the calculator with bare objects, and
+            # the flag-off arm must not require the Stage-2 surface on them
+            if getattr(self.rth, "map_decide_on", False):
+                # EM-01 Stage 2: battery-quantized cadence below the per-sortie
+                # arming threshold. Above it the decide is provably CONTINUE
+                # (sortie_arm_j bound; _arm_sortie cleared any stale decision),
+                # so it is skipped entirely. S_OBS threat handling is untouched
+                # -- the cadence governs the energy decision only.
+                lvl = self.battery.level_j
+                if lvl <= self._arm_level_j and (
+                    self._rth_last_check_level_j - lvl
+                ) >= self.rth.decide_step_j:
+                    self._rth_last_check_level_j = lvl
+                    self._rth_decision = self.rth.decide(self) == "RETURN_NOW"
+                else:
+                    self._rth_decision = getattr(self, "_rth_decision", False)
+            elif (t - self._last_rth_t) >= self.rth.check_interval_s:
+                self._last_rth_t = t
+                self._rth_decision = self.rth.decide(self) == "RETURN_NOW"
+            else:
+                self._rth_decision = getattr(self, "_rth_decision", False)
         else:
             self._rth_decision = getattr(self, "_rth_decision", False)
 
@@ -316,6 +351,9 @@ class Agent:
         if dst is AgentState.S1_TRANSIT:
             self._launch_ready = False
             self._set_legs([self._transit] if self._transit is not None else [])
+            # EM-01 Stage 2: this branch is every sortie start (initial launch
+            # AND post-swap relaunch both come through S0 -> S1). No-op flag-off.
+            self._arm_sortie()
         elif dst is AgentState.S2_MISSION:
             self._set_legs(self._cov_legs[self._cov_idx:])
         elif dst is AgentState.S3_RTH:
@@ -408,25 +446,55 @@ class Agent:
     # ------------------------------------------------------------------ #
     # RTH lookahead                                                      #
     # ------------------------------------------------------------------ #
-    def lookahead(self) -> tuple[float, Pose]:
+    def lookahead(self, from_idx: int | None = None) -> tuple[float, Pose]:
         """Energy of the next coverage leg(s) and the pose at its end.
 
         Mirrors execution exactly: propulsion via path_energy plus the camera
         payload term the leg's COVERAGE segments will draw (see _tick_dynamics), so
         the dynamic route-vs-return reserve sees the true continue-cost while
         filming rather than underestimating it and deferring to the battery nets.
+
+        ``from_idx`` (EM-01 Stage 2): evaluate the bundle as if the drone stood
+        at coverage index ``from_idx`` -- lets ``_arm_sortie`` enumerate every
+        remaining bundle through this one method (single source of truth).
+        Default ``None`` is the live ``_cov_idx`` path, byte-identical.
         """
-        if self._cov_idx >= len(self._cov_legs):
+        k = self._cov_idx if from_idx is None else from_idx
+        if k >= len(self._cov_legs):
             return 0.0, self.pose
-        leg = self._cov_legs[self._cov_idx]
+        leg = self._cov_legs[k]
         e_next = self.em.path_energy(leg) + self._leg_sensor_energy(leg)
         p_next = leg.end_pose or self.pose
         # include the following connector if present
-        if self._cov_idx + 1 < len(self._cov_legs):
-            conn = self._cov_legs[self._cov_idx + 1]
+        if k + 1 < len(self._cov_legs):
+            conn = self._cov_legs[k + 1]
             e_next += self.em.path_energy(conn) + self._leg_sensor_energy(conn)
             p_next = conn.end_pose or p_next
         return e_next, p_next
+
+    def _arm_sortie(self) -> None:
+        """EM-01 Stage 2 seam 7b: recompute the arming threshold for the sortie
+        that is starting (every S0->S1 launch and every redistribution re-task).
+
+        Also clears any stale RETURN_NOW: ``_rth_decision=True`` survives
+        S3 -> S_SWAP -> S0 -> S1, and on the map arm a fresh battery sits ABOVE
+        the arm so nothing would re-evaluate and the stale True would instantly
+        re-trigger RTH. Resetting ``_rth_last_check_level_j`` to inf makes the
+        first below-arm tick always evaluate (the arm-crossing check for free).
+        """
+        if not getattr(self.rth, "map_decide_on", False):
+            return
+        self._sortie_idx += 1
+        self._rth_decision = False
+        self._rth_last_check_level_j = float("inf")
+        bundles = [self.lookahead(k) for k in range(self._cov_idx, len(self._cov_legs))]
+        self._arm_level_j = self.rth.sortie_arm_j(bundles, self.coverage_altitude_m)
+        self.sortie_arms.append((self._sortie_idx, self._arm_level_j))
+        log.debug(
+            "agent %d sortie %d: RTH arm %.0f J (%.3f of capacity)",
+            self.id, self._sortie_idx, self._arm_level_j,
+            self._arm_level_j / self.spec.battery_capacity_j,
+        )
 
     def _leg_sensor_energy(self, leg) -> float:
         """Camera payload energy this leg will draw at execution: sensor power over
