@@ -68,7 +68,7 @@ def _metrics_tuple(m):
             dict(m.per_agent_energy_j), dict(m.per_agent_length_m))
 
 
-def _run_signature(res):
+def _run_signature(res) -> tuple:
     """The complete byte-identity artifact for a run: summary metrics + the
     full FSM sojourn trajectory (Sojourn is a frozen dataclass, so the lists
     compare by value) + the terminal outcome / coverage / stalled set."""
