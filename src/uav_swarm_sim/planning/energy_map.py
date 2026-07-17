@@ -100,8 +100,8 @@ def battery_tied_cell_m(
     distance whose CRUISE cost is exactly ``frac`` of the battery capacity --
     ``frac * capacity / (P_cruise / v_cruise)``. Defaults (360 kJ, 220 W,
     12 m/s) give ~19.64 m. Strictly battery-tied, never obstacle-tied."""
-    if capacity_j <= 0 or cruise_power_w <= 0 or v_cruise <= 0 or frac <= 0:
-        raise ValueError("battery_tied_cell_m requires positive inputs")
+    if not all(math.isfinite(v) and v > 0 for v in (capacity_j, cruise_power_w, v_cruise, frac)):
+        raise ValueError("battery_tied_cell_m requires finite positive inputs")
     return frac * capacity_j * v_cruise / cruise_power_w
 
 
@@ -166,8 +166,15 @@ def build_energy_map(
     edges). The base cell is forced traversable at x1.0 regardless (it is the
     return target); a base inside an obstacle logs a warning, never raises.
     """
-    if cell_m <= 0:
-        raise ValueError("build_energy_map requires cell_m > 0")
+    # Guard non-finite inputs for direct callers (config load already validates
+    # the gated path): NaN slips through ordinary comparisons and would corrupt
+    # grid sizing or turn yellow cells into blocked ones.
+    if not math.isfinite(cell_m) or cell_m <= 0:
+        raise ValueError("build_energy_map requires a finite cell_m > 0")
+    if not math.isfinite(yellow_penalty) or yellow_penalty < 1.0:
+        raise ValueError("build_energy_map requires a finite yellow_penalty >= 1.0")
+    if not math.isfinite(red_threshold) or not (0.0 < red_threshold <= 1.0):
+        raise ValueError("build_energy_map requires a finite red_threshold in (0, 1]")
     frame = _base_aligned_frame(env, base_pose, cell_m)
     nx, ny = frame.nx, frame.ny
     n = nx * ny

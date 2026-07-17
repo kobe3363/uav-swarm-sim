@@ -149,10 +149,23 @@ def test_energy_map_overrides(config_path):
 @pytest.mark.parametrize("key, bad", [
     ("rth.energy_map.cell_m", -1.0),
     ("rth.energy_map.cell_m", 0.0),
+    ("rth.energy_map.cell_m", float("nan")),
+    ("rth.energy_map.cell_m", float("inf")),
     ("rth.energy_map.yellow_penalty", 0.5),
+    ("rth.energy_map.yellow_penalty", float("nan")),
+    ("rth.energy_map.yellow_penalty", float("inf")),
     ("rth.energy_map.red_threshold", 0.0),
     ("rth.energy_map.red_threshold", 1.5),
+    ("rth.energy_map.red_threshold", float("nan")),
 ])
 def test_energy_map_rejects_invalid_values(config_path, key, bad):
     with pytest.raises(ConfigError, match="energy_map"):
         load_config(config_path, overrides={key: bad})
+
+
+def test_energy_map_rejects_non_mapping(config_path):
+    """A scalar/list ``rth.energy_map`` must raise ConfigError, not the
+    AttributeError that ``.get`` on a non-dict would otherwise throw."""
+    for bad in (True, [1, 2], "on"):
+        with pytest.raises(ConfigError, match="energy_map must be a mapping"):
+            load_config(config_path, overrides={"rth.energy_map": bad})

@@ -251,8 +251,21 @@ def test_grid_origin_centers_base_in_its_cell(kit, base_xy):
 def test_battery_tied_cell_m_default_arithmetic():
     # 360 kJ x 12 m/s / 220 W / 1000 = 19.6363... m (~20 m, doc section 3)
     assert battery_tied_cell_m(360_000.0, 220.0, 12.0) == pytest.approx(19.6363, abs=1e-3)
-    with pytest.raises(ValueError):
-        battery_tied_cell_m(0.0, 220.0, 12.0)
+    for bad in (0.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            battery_tied_cell_m(bad, 220.0, 12.0)
+
+
+def test_build_energy_map_rejects_non_finite_params(kit):
+    env = EnvironmentMap(AREA, [], 5.0)
+    base = Pose(500.0, 500.0, 0.0)
+    spec, em = kit
+    for kw in ({"yellow_penalty": float("nan")}, {"red_threshold": float("inf")}):
+        with pytest.raises(ValueError):
+            build_energy_map(env, base, CELL, em, spec.v_cruise, **kw)
+    for bad_cell in (float("nan"), float("inf"), 0.0):
+        with pytest.raises(ValueError):
+            build_energy_map(env, base, bad_cell, em, spec.v_cruise)
 
 
 if __name__ == "__main__":

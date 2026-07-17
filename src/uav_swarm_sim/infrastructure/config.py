@@ -18,7 +18,7 @@ import copy
 import hashlib
 import json
 from dataclasses import dataclass, field
-from math import radians
+from math import isfinite, radians
 from pathlib import Path
 from typing import Any
 
@@ -523,6 +523,8 @@ def _build(raw: dict, config_hash: str) -> Config:
     )
     rt = _require(raw, "rth", "")
     emr = rt.get("energy_map", {}) or {}
+    if not isinstance(emr, dict):
+        raise ConfigError("rth.energy_map must be a mapping")
     cell_raw = emr.get("cell_m", None)
     energy_map = EnergyMapConfig(
         enabled=bool(emr.get("enabled", False)),
@@ -676,13 +678,18 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("rth.reserve_frac must be in [0, 1)")
 
     # ---- EM-01 energy map (Stage 1) ----
+    # Finiteness is checked first: YAML admits .nan/.inf, and NaN silently
+    # passes ordinary comparisons (NaN <= 0 and NaN < 1.0 are both False), so a
+    # bare range check would let a non-finite value reach the grid builder.
     emc = cfg.rth.energy_map
-    if emc.cell_m is not None and emc.cell_m <= 0:
-        raise ConfigError("rth.energy_map.cell_m must be > 0 (or omitted for battery-tied)")
-    if emc.yellow_penalty < 1.0:
-        raise ConfigError("rth.energy_map.yellow_penalty must be >= 1.0")
-    if not (0.0 < emc.red_threshold <= 1.0):
-        raise ConfigError("rth.energy_map.red_threshold must be in (0, 1]")
+    if emc.cell_m is not None and (not isfinite(emc.cell_m) or emc.cell_m <= 0):
+        raise ConfigError(
+            "rth.energy_map.cell_m must be a finite value > 0 (or omitted for battery-tied)"
+        )
+    if not isfinite(emc.yellow_penalty) or emc.yellow_penalty < 1.0:
+        raise ConfigError("rth.energy_map.yellow_penalty must be finite and >= 1.0")
+    if not isfinite(emc.red_threshold) or not (0.0 < emc.red_threshold <= 1.0):
+        raise ConfigError("rth.energy_map.red_threshold must be finite and in (0, 1]")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):
