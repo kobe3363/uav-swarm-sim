@@ -357,7 +357,15 @@ class Agent:
         elif dst is AgentState.S2_MISSION:
             self._set_legs(self._cov_legs[self._cov_idx:])
         elif dst is AgentState.S3_RTH:
-            ret = self.motion.plan(self.pose, self.base, ManeuverType.CRUISE)
+            # EM-01 Stage 3 (seam 7c): map-routed return home. getattr: test
+            # stubs replace the calculator with bare objects (same rule as the
+            # Stage-2 map_decide_on read); flag-off => attr False => the
+            # straight chord below, byte-identical.
+            ret = None
+            if getattr(self.rth, "map_route_on", False):
+                ret = self.rth.plan_return(self.pose)
+            if ret is None:
+                ret = self.motion.plan(self.pose, self.base, ManeuverType.CRUISE)
             self._set_legs([ret])
         elif dst is AgentState.S_SWAP:
             bus.publish(Event(EventType.SWAP_REQUEST, t, {"agent_id": self.id}))
@@ -431,6 +439,14 @@ class Agent:
             entry = nxt.start_pose or self.pose
         else:
             entry = self.pose
+        # EM-01 Stage 3 (seam 7d): when map routing is on it REPLACES the B1
+        # router on this path (transit_free_space stays an independent flag so
+        # the A/B can isolate map- vs B1- vs straight-routing); a map fallback
+        # (None) drops through to the exact pre-Stage-3 behaviour below.
+        if getattr(self.rth, "map_route_on", False):
+            routed = self.rth.plan_resume(self.base, entry)
+            if routed is not None:
+                return routed
         if self._transit_planner is not None:
             return self._transit_planner(self.base, entry)
         return self.motion.plan(self.base, entry, ManeuverType.CRUISE)

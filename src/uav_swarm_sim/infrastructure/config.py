@@ -213,12 +213,25 @@ class EnergyMapConfig:
     its gate test are unchanged); ``decide`` requires ``enabled``. Also an
     optional key absent from default.yaml => flag-off hash and fixtures
     unchanged.
+
+    Stage 3 (``route``): consume the map's parent pointers as ROUTES -- the
+    S3_RTH return leg and the post-swap resume transit follow the obstacle-
+    aware cell-center polyline instead of a straight chord (seams 7c + 7d, the
+    obstacle-boxing fix). Independent of ``decide`` so the A/B can isolate
+    decide-only vs routing-only arms; ``route`` requires ``enabled``; same
+    optional-key rule (absent from default.yaml => hash/fixtures unchanged).
+    NOTE: ``route`` WITHOUT ``decide`` is an isolation arm only -- the flown
+    return follows the map while the energy budget stays analytic (straight
+    chord, x1.5 fudge), so budget and flown path can diverge on long detours.
+    The consistent map configuration is ``decide`` + ``route`` together, where
+    both sides share the same Dijkstra cost by construction (seam 7a).
     """
     enabled: bool = False
     cell_m: float | None = None      # None => battery-tied derived
     yellow_penalty: float = 1.5      # traversal weight of a partially occupied cell
     red_threshold: float = 0.5       # occupancy fraction at/above which a cell blocks
     decide: bool = False             # Stage 2: map-based RTH decide + arming + cadence
+    route: bool = False              # Stage 3: map-routed S3 return + resume transit
 
 
 @dataclass(frozen=True)
@@ -541,6 +554,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         yellow_penalty=float(emr.get("yellow_penalty", 1.5)),
         red_threshold=float(emr.get("red_threshold", 0.5)),
         decide=bool(emr.get("decide", False)),
+        route=bool(emr.get("route", False)),
     )
     rth = RTHConfig(
         check_interval_s=float(_require(rt, "check_interval_s", "rth")),
@@ -706,6 +720,8 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("rth.energy_map.red_threshold must be finite and in (0, 1]")
     if emc.decide and not emc.enabled:
         raise ConfigError("rth.energy_map.decide requires rth.energy_map.enabled: true")
+    if emc.route and not emc.enabled:
+        raise ConfigError("rth.energy_map.route requires rth.energy_map.enabled: true")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):

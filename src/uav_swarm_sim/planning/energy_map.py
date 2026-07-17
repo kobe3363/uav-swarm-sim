@@ -29,8 +29,11 @@ Grid conventions (author's Stage-1 decisions):
 Occupancy is measured against ``env.buffered_obstacles`` -- the same
 clearance-buffered union ``path_clear`` and the connector/transit routers
 operate on (environment_map.py, visibility_router.py) -- so a map-derived path
-respects the regulatory clearance and can never raise S_OBS (which triggers on
-the RAW union).
+respects the regulatory clearance. One documented residue (Stage-3 review):
+a sub-cell RAW intrusion inside a YELLOW (partially occupied) cell can still
+sit on a center-to-center hop and trip S_OBS -- the yellow x1.5 penalty steers
+Dijkstra around such cells whenever a comparable green corridor exists, and
+the runtime S_OBS sidestep remains the net for the rest.
 
 Edge cost = cruise hop energy x max(penalty of the two cells it connects).
 The max is deliberate and conservative: a hop into OR out of a yellow cell
