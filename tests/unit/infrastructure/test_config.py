@@ -111,3 +111,61 @@ def test_hash_changes_with_override(config_path):
     a = load_config(config_path)
     b = load_config(config_path, overrides={"fleet.n_drones": 30})
     assert a.config_hash != b.config_hash
+
+
+# --------------------------------------------------------------------------- #
+# config: EM-01 rth.energy_map (Stage 1, optional-key gating)                  #
+# --------------------------------------------------------------------------- #
+def test_energy_map_defaults_off_and_absent_from_default_yaml(config_path):
+    """The rth.energy_map block is deliberately ABSENT from default.yaml, so
+    the provenance hash and every existing fixture stay unchanged (the same
+    optional-key rule as telemetry / obstacle_recovery / stall_detector)."""
+    import yaml
+
+    raw = yaml.safe_load(config_path.read_text())
+    assert "energy_map" not in raw["rth"]
+
+    emc = load_config(config_path).rth.energy_map
+    assert emc.enabled is False
+    assert emc.cell_m is None          # None => battery-tied derived
+    assert emc.yellow_penalty == 1.5
+    assert emc.red_threshold == 0.5
+
+
+def test_energy_map_overrides(config_path):
+    cfg = load_config(config_path, overrides={
+        "rth.energy_map.enabled": True,
+        "rth.energy_map.cell_m": 25.0,
+        "rth.energy_map.yellow_penalty": 2.0,
+        "rth.energy_map.red_threshold": 0.4,
+    })
+    emc = cfg.rth.energy_map
+    assert emc.enabled is True
+    assert emc.cell_m == 25.0
+    assert emc.yellow_penalty == 2.0
+    assert emc.red_threshold == 0.4
+
+
+@pytest.mark.parametrize("key, bad", [
+    ("rth.energy_map.cell_m", -1.0),
+    ("rth.energy_map.cell_m", 0.0),
+    ("rth.energy_map.cell_m", float("nan")),
+    ("rth.energy_map.cell_m", float("inf")),
+    ("rth.energy_map.yellow_penalty", 0.5),
+    ("rth.energy_map.yellow_penalty", float("nan")),
+    ("rth.energy_map.yellow_penalty", float("inf")),
+    ("rth.energy_map.red_threshold", 0.0),
+    ("rth.energy_map.red_threshold", 1.5),
+    ("rth.energy_map.red_threshold", float("nan")),
+])
+def test_energy_map_rejects_invalid_values(config_path, key, bad):
+    with pytest.raises(ConfigError, match="energy_map"):
+        load_config(config_path, overrides={key: bad})
+
+
+def test_energy_map_rejects_non_mapping(config_path):
+    """A scalar/list ``rth.energy_map`` must raise ConfigError, not the
+    AttributeError that ``.get`` on a non-dict would otherwise throw."""
+    for bad in (True, [1, 2], "on"):
+        with pytest.raises(ConfigError, match="energy_map must be a mapping"):
+            load_config(config_path, overrides={"rth.energy_map": bad})

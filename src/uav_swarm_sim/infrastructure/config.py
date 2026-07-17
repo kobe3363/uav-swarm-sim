@@ -18,7 +18,7 @@ import copy
 import hashlib
 import json
 from dataclasses import dataclass, field
-from math import radians
+from math import isfinite, radians
 from pathlib import Path
 from typing import Any
 
@@ -193,9 +193,30 @@ class SafetyConfig:
 
 
 @dataclass(frozen=True)
+class EnergyMapConfig:
+    """EM-01 Stage 1: per-replication energy cost-to-go map (planning/energy_map.py).
+
+    OFF by default and, like telemetry / obstacle_recovery / stall_detector,
+    deliberately ABSENT from default.yaml: ``config_hash`` is taken over the raw
+    YAML, so omitting the ``rth.energy_map`` block leaves the hash and every
+    fixture unchanged, and a flag-off run is byte-identical by construction
+    (Stage 1 builds and attaches the map only -- nothing consumes it yet).
+
+    ``cell_m`` None => battery-tied resolution (design doc section 3): the cell
+    edge is the distance costing exactly 1/1000 of the battery capacity at
+    reference CRUISE (~19.64 m for the default 360 kJ / 220 W / 12 m/s).
+    """
+    enabled: bool = False
+    cell_m: float | None = None      # None => battery-tied derived
+    yellow_penalty: float = 1.5      # traversal weight of a partially occupied cell
+    red_threshold: float = 0.5       # occupancy fraction at/above which a cell blocks
+
+
+@dataclass(frozen=True)
 class RTHConfig:
     check_interval_s: float
     reserve_frac: float
+    energy_map: EnergyMapConfig = field(default_factory=EnergyMapConfig)
 
 
 @dataclass(frozen=True)
@@ -501,9 +522,20 @@ def _build(raw: dict, config_hash: str) -> Config:
         stall_detector=bool(sf.get("stall_detector", False)),
     )
     rt = _require(raw, "rth", "")
+    emr = rt.get("energy_map", {}) or {}
+    if not isinstance(emr, dict):
+        raise ConfigError("rth.energy_map must be a mapping")
+    cell_raw = emr.get("cell_m", None)
+    energy_map = EnergyMapConfig(
+        enabled=bool(emr.get("enabled", False)),
+        cell_m=None if cell_raw is None else float(cell_raw),
+        yellow_penalty=float(emr.get("yellow_penalty", 1.5)),
+        red_threshold=float(emr.get("red_threshold", 0.5)),
+    )
     rth = RTHConfig(
         check_interval_s=float(_require(rt, "check_interval_s", "rth")),
         reserve_frac=float(_require(rt, "reserve_frac", "rth")),
+        energy_map=energy_map,
     )
     si = _require(raw, "sim", "")
     sim = SimConfig(
@@ -644,6 +676,20 @@ def _validate(cfg: Config, raw: dict) -> None:
 
     if not (0.0 <= cfg.rth.reserve_frac < 1.0):
         raise ConfigError("rth.reserve_frac must be in [0, 1)")
+
+    # ---- EM-01 energy map (Stage 1) ----
+    # Finiteness is checked first: YAML admits .nan/.inf, and NaN silently
+    # passes ordinary comparisons (NaN <= 0 and NaN < 1.0 are both False), so a
+    # bare range check would let a non-finite value reach the grid builder.
+    emc = cfg.rth.energy_map
+    if emc.cell_m is not None and (not isfinite(emc.cell_m) or emc.cell_m <= 0):
+        raise ConfigError(
+            "rth.energy_map.cell_m must be a finite value > 0 (or omitted for battery-tied)"
+        )
+    if not isfinite(emc.yellow_penalty) or emc.yellow_penalty < 1.0:
+        raise ConfigError("rth.energy_map.yellow_penalty must be finite and >= 1.0")
+    if not isfinite(emc.red_threshold) or not (0.0 < emc.red_threshold <= 1.0):
+        raise ConfigError("rth.energy_map.red_threshold must be finite and in (0, 1]")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):
