@@ -670,8 +670,12 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError(
             f"coverage.operating_area must be one of {sorted(_op_areas)}"
         )
-    if cfg.coverage.operating_margin_m < 0:
-        raise ConfigError("coverage.operating_margin_m must be >= 0")
+    # Finiteness explicit: YAML admits .nan/.inf and NaN passes a bare < 0
+    # check; the value feeds flyable_region buffering and (Stage 2) the
+    # energy-map grid extent, which must fail here as ConfigError, not later
+    # as a ValueError mid-build.
+    if not isfinite(cfg.coverage.operating_margin_m) or cfg.coverage.operating_margin_m < 0:
+        raise ConfigError("coverage.operating_margin_m must be finite and >= 0")
 
     if not (0.0 < cfg.aero.formation_drag_reduction < 1.0):
         raise ConfigError("aero.formation_drag_reduction must be in (0, 1)")
