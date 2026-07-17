@@ -1,10 +1,18 @@
 """EM-01 Stage 3 gate: the ``route`` sub-flag owns ALL Stage-3 behaviour change,
 and map routing resolves THE boxing livelock the straight chords cannot.
 
-Byte-identity: ``enabled=True, route=False`` must stay metrics-byte-identical
-to ``enabled=False`` (pins Stage 3's own flag the way test_energy_map_stage2
+Byte-identity: ``enabled=True, route=False`` must produce a byte-identical
+RUN to ``enabled=False`` (pins Stage 3's own flag the way test_energy_map_stage2
 pins ``decide``; the stage-1/2 gates keep covering the flag-off path against
-main).
+main). The check compares the full run signature -- the summary metrics AND
+the complete FSM sojourn trajectory (every state, transition time and exit
+reason) AND the outcome / coverage / stalled set -- not just a metrics digest,
+so a Stage-3 regression cannot pass by leaving the summary metrics coincidentally
+equal. Config hashes are deliberately NOT compared: flipping ``enabled`` on
+changes the raw YAML and therefore the provenance hash by design; the byte-
+identity contract is over the run OUTPUT. The default config's hash stays
+unchanged structurally (``route`` is absent from default.yaml) -- that optional-
+key contract is owned by the stage-1/2 gates.
 
 THE BOXING TEST (the stage's acceptance criterion): the REAL pathological
 replication from the transit-livelock root-cause report -- study01_demand
@@ -60,17 +68,31 @@ def _metrics_tuple(m):
             dict(m.per_agent_energy_j), dict(m.per_agent_length_m))
 
 
+def _run_signature(res):
+    """The complete byte-identity artifact for a run: summary metrics + the
+    full FSM sojourn trajectory (Sojourn is a frozen dataclass, so the lists
+    compare by value) + the terminal outcome / coverage / stalled set."""
+    return (
+        _metrics_tuple(res.metrics),
+        tuple(res.history.sojourns()),
+        res.outcome,
+        res.coverage_frac,
+        res.stalled_agents,
+    )
+
+
 @pytest.mark.slow
-def test_route_off_metrics_byte_identical(config_path):
-    """enabled=True with route left at its default (False) consumes nothing."""
+def test_route_off_byte_identical(config_path):
+    """enabled=True with route left at its default (False) consumes nothing --
+    the full run (metrics + trajectory + outcome) is byte-identical."""
     base = _tiny_cfg(config_path)
     cfg_build = dataclasses.replace(
         base, rth=dataclasses.replace(base.rth, energy_map=EnergyMapConfig(enabled=True)))
     assert cfg_build.rth.energy_map.route is False  # guards the shipped default
 
-    m_off = _metrics_tuple(_engine(base).run().metrics)
-    m_build = _metrics_tuple(_engine(cfg_build).run().metrics)
-    assert m_build == m_off
+    sig_off = _run_signature(_engine(base).run())
+    sig_build = _run_signature(_engine(cfg_build).run())
+    assert sig_build == sig_off
 
 
 def _swaps_per_drone(res) -> dict[int, int]:
