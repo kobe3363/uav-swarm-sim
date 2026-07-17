@@ -105,10 +105,26 @@ def battery_tied_cell_m(
     return frac * capacity_j * v_cruise / cruise_power_w
 
 
-def _base_aligned_frame(env: EnvironmentMap, base_pose: Pose, cell_m: float) -> GridFrame:
+def _base_aligned_frame(
+    env: EnvironmentMap, base_pose: Pose, cell_m: float, margin_m: float = 0.0
+) -> GridFrame:
     """A GridFrame whose lattice puts ``base_pose`` at the CENTER of its cell,
-    extended by whole cells to cover ``env.area.bounds`` plus a one-cell pad."""
+    extended by whole cells to cover ``env.area.bounds`` inflated by
+    ``margin_m`` plus a one-cell pad.
+
+    ``margin_m`` (Stage 2, author's universal-extent rule): the engine passes
+    ``coverage.operating_margin_m`` so that every pose a drone can physically
+    occupy is IN the grid by construction -- the bbox is convex, so straight
+    RTH/transit chords between in-bbox points stay in-bbox, and the
+    ferry/transit routers detour at most ``operating_margin_m`` outside the
+    hull (S_OBS sidesteps are 15 m). Base-alignment is unaffected: only the
+    extent grows, the origin logic is identical (default 0.0 => the Stage-1
+    frame, byte-identical)."""
     minx, miny, maxx, maxy = env.area.bounds
+    minx -= margin_m
+    miny -= margin_m
+    maxx += margin_m
+    maxy += margin_m
     # Lower-left corner of the base cell on the base-anchored lattice.
     bx = base_pose.x - 0.5 * cell_m
     by = base_pose.y - 0.5 * cell_m
@@ -155,6 +171,7 @@ def build_energy_map(
     *,
     yellow_penalty: float = 1.5,
     red_threshold: float = 0.5,
+    margin_m: float = 0.0,
 ) -> EnergyMap:
     """Build the per-replication return-cost map: occupancy penalty grid +
     one Dijkstra from the base cell. Deterministic (no RNG); pure function of
@@ -175,7 +192,9 @@ def build_energy_map(
         raise ValueError("build_energy_map requires a finite yellow_penalty >= 1.0")
     if not math.isfinite(red_threshold) or not (0.0 < red_threshold <= 1.0):
         raise ValueError("build_energy_map requires a finite red_threshold in (0, 1]")
-    frame = _base_aligned_frame(env, base_pose, cell_m)
+    if not math.isfinite(margin_m) or margin_m < 0:
+        raise ValueError("build_energy_map requires a finite margin_m >= 0")
+    frame = _base_aligned_frame(env, base_pose, cell_m, margin_m)
     nx, ny = frame.nx, frame.ny
     n = nx * ny
 

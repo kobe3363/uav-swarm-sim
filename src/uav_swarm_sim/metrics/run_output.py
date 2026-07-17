@@ -392,14 +392,20 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
 
 
 def build_results_single(result, est, *, identity: dict, wall_time_s: float,
-                         convergence: dict | None = None) -> dict:
+                         convergence: dict | None = None,
+                         rth_arming: dict | None = None) -> dict:
     """The OUTCOME of a single mission (the visual-demo case): terminal outcome,
     its SMDP, and the single-run metrics.
 
     ``convergence``, when given, is attached ADDITIVELY as ``smdp.convergence``
     (the per-state visit/Wilson-CI diagnostics block from
     ``metrics.smdp_convergence.report_to_json``); every pre-existing key and
-    value is unchanged, and default None keeps old callers byte-identical."""
+    value is unchanged, and default None keeps old callers byte-identical.
+
+    ``rth_arming`` (EM-01 Stage 2) follows the same additive rule as a
+    top-level ``rth_arming`` key: the runner passes it ONLY when
+    ``rth.energy_map.decide`` is on, so the flag-off results.json key set is
+    unchanged."""
     m = result.metrics
     smdp: dict = {"ergodic": bool(getattr(est, "ergodic", False))}
     if getattr(est, "ergodic", False):
@@ -411,7 +417,7 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
     if convergence is not None:
         smdp["convergence"] = convergence
 
-    return {
+    out = {
         "schema": RESULTS_SCHEMA,
         "kind": "results",
         "mode": "single_mission",
@@ -434,3 +440,6 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
         },
         "timing": {"wall_time_total_s": round(wall_time_s, 3)},
     }
+    if rth_arming is not None:
+        out["rth_arming"] = rth_arming
+    return out

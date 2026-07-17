@@ -205,11 +205,20 @@ class EnergyMapConfig:
     ``cell_m`` None => battery-tied resolution (design doc section 3): the cell
     edge is the distance costing exactly 1/1000 of the battery capacity at
     reference CRUISE (~19.64 m for the default 360 kJ / 220 W / 12 m/s).
+
+    Stage 2 (``decide``): consume the map in the RTH decision -- map-based
+    ``return_energy`` (seam 7a, no x1.5 fudge), per-sortie arming threshold
+    (seam 7b) and battery-quantized decide cadence (design doc section 7).
+    ``enabled`` alone still only builds-and-attaches (the Stage 1 contract and
+    its gate test are unchanged); ``decide`` requires ``enabled``. Also an
+    optional key absent from default.yaml => flag-off hash and fixtures
+    unchanged.
     """
     enabled: bool = False
     cell_m: float | None = None      # None => battery-tied derived
     yellow_penalty: float = 1.5      # traversal weight of a partially occupied cell
     red_threshold: float = 0.5       # occupancy fraction at/above which a cell blocks
+    decide: bool = False             # Stage 2: map-based RTH decide + arming + cadence
 
 
 @dataclass(frozen=True)
@@ -531,6 +540,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         cell_m=None if cell_raw is None else float(cell_raw),
         yellow_penalty=float(emr.get("yellow_penalty", 1.5)),
         red_threshold=float(emr.get("red_threshold", 0.5)),
+        decide=bool(emr.get("decide", False)),
     )
     rth = RTHConfig(
         check_interval_s=float(_require(rt, "check_interval_s", "rth")),
@@ -660,8 +670,12 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError(
             f"coverage.operating_area must be one of {sorted(_op_areas)}"
         )
-    if cfg.coverage.operating_margin_m < 0:
-        raise ConfigError("coverage.operating_margin_m must be >= 0")
+    # Finiteness explicit: YAML admits .nan/.inf and NaN passes a bare < 0
+    # check; the value feeds flyable_region buffering and (Stage 2) the
+    # energy-map grid extent, which must fail here as ConfigError, not later
+    # as a ValueError mid-build.
+    if not isfinite(cfg.coverage.operating_margin_m) or cfg.coverage.operating_margin_m < 0:
+        raise ConfigError("coverage.operating_margin_m must be finite and >= 0")
 
     if not (0.0 < cfg.aero.formation_drag_reduction < 1.0):
         raise ConfigError("aero.formation_drag_reduction must be in (0, 1)")
@@ -690,6 +704,8 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("rth.energy_map.yellow_penalty must be finite and >= 1.0")
     if not isfinite(emc.red_threshold) or not (0.0 < emc.red_threshold <= 1.0):
         raise ConfigError("rth.energy_map.red_threshold must be finite and in (0, 1]")
+    if emc.decide and not emc.enabled:
+        raise ConfigError("rth.energy_map.decide requires rth.energy_map.enabled: true")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):

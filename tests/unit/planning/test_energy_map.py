@@ -266,6 +266,39 @@ def test_build_energy_map_rejects_non_finite_params(kit):
     for bad_cell in (float("nan"), float("inf"), 0.0):
         with pytest.raises(ValueError):
             build_energy_map(env, base, bad_cell, em, spec.v_cruise)
+    for bad_margin in (float("nan"), float("inf"), -1.0):
+        with pytest.raises(ValueError):
+            build_energy_map(env, base, CELL, em, spec.v_cruise, margin_m=bad_margin)
+
+
+# --------------------------------------------------------------------------- #
+# 10. Stage 2: margin_m expands the extent (universal-extent rule)             #
+# --------------------------------------------------------------------------- #
+def test_frame_margin_expands_extent(kit):
+    """margin_m inflates the covered bbox (the engine passes
+    coverage.operating_margin_m so ferry/transit excursions outside the hull
+    stay in-grid); base-alignment is untouched and margin_m=0 is the Stage-1
+    frame bit-for-bit."""
+    env = EnvironmentMap(AREA, [], 5.0)
+    base = Pose(500.0, 500.0, 0.0)
+    plain = _build(env, base, kit)
+    wide = _build(env, base, kit, margin_m=50.0)
+
+    # margin_m=0 default == Stage-1 behaviour (same frame)
+    assert plain.frame == _build(env, base, kit, margin_m=0.0).frame
+
+    # the widened grid covers the inflated bbox...
+    minx, miny, maxx, maxy = env.area.bounds
+    f = wide.frame
+    assert f.origin_x <= minx - 50.0 and f.origin_y <= miny - 50.0
+    assert f.origin_x + f.nx * f.cell_m >= maxx + 50.0
+    assert f.origin_y + f.ny * f.cell_m >= maxy + 50.0
+    assert f.nx > plain.frame.nx and f.ny > plain.frame.ny
+
+    # ...and the base still sits at the CENTER of its cell with E_home == 0
+    bi, bj = f.world_to_cell(base.x, base.y)
+    assert f.cell_center(bi, bj) == pytest.approx((base.x, base.y), abs=1e-9)
+    assert wide.e_home[bi, bj] == 0.0
 
 
 if __name__ == "__main__":

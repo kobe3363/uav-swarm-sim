@@ -17,6 +17,7 @@ Produces:
 from __future__ import annotations
 
 import argparse
+import math
 from time import perf_counter
 
 from ..infrastructure.config import load_config
@@ -79,9 +80,30 @@ def main(argv=None) -> int:
     if conv.per_state:
         viz.plot_smdp_convergence(conv, sim.path("smdp_convergence.png"))
 
+    # EM-01 Stage 2 (rth.energy_map.decide): per-sortie arming thresholds +
+    # map-hit/fallback counters. Built ONLY when the flag is on, so the
+    # flag-off results.json key set is byte-identical (additive-key rule).
+    rth_arming = None
+    if cfg.rth.energy_map.decide:
+        cap = cfg.fleet.battery_capacity_j
+        rth_arming = {
+            # [sortie_idx, arm_j, arm_frac]; an infinite arm (empty remaining
+            # plan => never skip the decide) is stored as null (valid JSON).
+            "per_agent": {
+                str(aid): [
+                    [s, arm, arm / cap] if math.isfinite(arm) else [s, None, None]
+                    for s, arm in a.sortie_arms
+                ]
+                for aid, a in sorted(eng.fleet.agents.items())
+            },
+            "n_map_hits": eng.rth.n_map_hits,
+            "n_map_fallbacks": eng.rth.n_map_fallbacks,
+        }
+
     # results.json
     sim.write_results(build_results_single(result, est, identity=identity, wall_time_s=wall,
-                                           convergence=report_to_json(conv)))
+                                           convergence=report_to_json(conv),
+                                           rth_arming=rth_arming))
 
     # artifacts (all into the simulation folder)
     viz.plot_environment(eng.env, None, sim.path("environment.png"))

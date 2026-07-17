@@ -169,3 +169,40 @@ def test_energy_map_rejects_non_mapping(config_path):
     for bad in (True, [1, 2], "on"):
         with pytest.raises(ConfigError, match="energy_map must be a mapping"):
             load_config(config_path, overrides={"rth.energy_map": bad})
+
+
+# --------------------------------------------------------------------------- #
+# config: EM-01 rth.energy_map.decide (Stage 2 sub-flag)                       #
+# --------------------------------------------------------------------------- #
+def test_energy_map_decide_defaults_off_and_absent(config_path):
+    """Same optional-key rule as Stage 1: ``decide`` defaults False and the
+    whole block stays absent from default.yaml (hash/fixtures unchanged)."""
+    import yaml
+
+    raw = yaml.safe_load(config_path.read_text())
+    assert "energy_map" not in raw["rth"]
+    assert load_config(config_path).rth.energy_map.decide is False
+
+
+def test_energy_map_decide_override_parses(config_path):
+    cfg = load_config(config_path, overrides={
+        "rth.energy_map.enabled": True,
+        "rth.energy_map.decide": True,
+    })
+    assert cfg.rth.energy_map.enabled is True
+    assert cfg.rth.energy_map.decide is True
+
+
+def test_energy_map_decide_requires_enabled(config_path):
+    """decide=True without enabled=True is a contradiction (the map would not
+    be built) and must fail loudly at load time."""
+    with pytest.raises(ConfigError, match="decide"):
+        load_config(config_path, overrides={"rth.energy_map.decide": True})
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf")])
+def test_operating_margin_rejects_non_finite_and_negative(config_path, bad):
+    """NaN passes a bare < 0 check; the margin feeds flyable_region buffering
+    and the Stage-2 energy-map extent, so it must die here as ConfigError."""
+    with pytest.raises(ConfigError, match="operating_margin_m"):
+        load_config(config_path, overrides={"coverage.operating_margin_m": bad})
