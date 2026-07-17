@@ -220,6 +220,11 @@ class EnergyMapConfig:
     obstacle-boxing fix). Independent of ``decide`` so the A/B can isolate
     decide-only vs routing-only arms; ``route`` requires ``enabled``; same
     optional-key rule (absent from default.yaml => hash/fixtures unchanged).
+    NOTE: ``route`` WITHOUT ``decide`` is an isolation arm only -- the flown
+    return follows the map while the energy budget stays analytic (straight
+    chord, x1.5 fudge), so budget and flown path can diverge on long detours.
+    The consistent map configuration is ``decide`` + ``route`` together, where
+    both sides share the same Dijkstra cost by construction (seam 7a).
     """
     enabled: bool = False
     cell_m: float | None = None      # None => battery-tied derived

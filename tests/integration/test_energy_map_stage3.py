@@ -100,9 +100,15 @@ def test_boxing_map_routing_unblocks_the_livelocked_replication():
     assert eng.rth.map_route_on
     assert res.outcome is Outcome.MISSION_SUCCESS
     assert res.stalled_agents == ()
+    # full coverage, and the map never had to fall back to a straight chord
+    assert res.coverage_frac >= 0.999
+    assert eng.rth.n_route_fallbacks == 0
     swaps = _swaps_per_drone(res)
-    # the pathological signature (151 swaps on drone #3) is gone: bounds mirror
-    # the FIX-B1 arm of test_transit_livelock (healthy reps have D <= 11)
+    # the pathological signature (151 swaps on drone #3) is gone. Deliberately
+    # BOUNDS, not the exact per-drone counts (2 each at delivery): swap demand
+    # is physics-dependent and exact pinning would break spuriously on later
+    # flag-on stages -- same convention as the FIX-B1 arm of
+    # test_transit_livelock (healthy reps have D <= 11)
     assert sum(swaps.values()) <= 15
     assert swaps.get(3, 0) <= 5
 
