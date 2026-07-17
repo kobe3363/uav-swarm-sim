@@ -18,12 +18,16 @@ import math
 from typing import TYPE_CHECKING
 
 from ..infrastructure.config import RTHConfig
-from ..infrastructure.core_types import Pose
+from ..infrastructure.core_types import Path, Pose
 from ..infrastructure.enums import ManeuverType
 from ..physical_model.drone_specs import PlatformSpec
 from ..physical_model.energy_model import EnergyModel
-from ..physical_model.motion_model import MotionModel
+from ..physical_model.motion_model import HolonomicModel, MotionModel
 from ..physical_model.vertical_segments import landing_profile
+# EM-01 Stage 3: runtime planning imports are cycle-safe (the planning package
+# never imports execution); only the EnergyMap TYPE stays behind TYPE_CHECKING.
+from ..planning.energy_map import route_home
+from ..planning.visibility_router import _chain_cruise_legs, _path_clear
 
 if TYPE_CHECKING:  # import-time cycle guard only; runtime access is duck-typed
     from ..planning.energy_map import EnergyMap
@@ -33,6 +37,11 @@ if TYPE_CHECKING:  # import-time cycle guard only; runtime access is duck-typed
 # (1% cap = 3600 J ~ 10 cell hops at the battery-tied resolution). A design
 # quantum, not a tunable -- deliberately NOT a config knob.
 _DECIDE_STEP_FRAC = 0.01
+
+# EM-01 Stage 3: consecutive route-polyline vertices closer than this collapse
+# into one, so the base cell center (which coincides with the base pose exactly
+# by the base-aligned lattice) never produces a zero-length chained leg.
+_ROUTE_DEDUP_EPS_M = 1e-6
 
 
 class RthCalculator:
@@ -63,10 +72,15 @@ class RthCalculator:
         # build-and-attach-only contract (its gate test asserts no metric moves).
         self._map = energy_map
         self._map_decide = energy_map is not None and cfg.energy_map.decide
+        # EM-01 Stage 3 (seams 7c+7d): map-routed S3 return + resume transit,
+        # gated the same way on BOTH the built map and rth.energy_map.route --
+        # independent of the decide arm so the A/B can isolate the two.
+        self._map_route = energy_map is not None and cfg.energy_map.route
         # Observability (Stage 5 A/B will report fallback rate as a boxing
         # proxy). Plain ints, never serialized on the flag-off path.
         self.n_map_hits = 0
         self.n_map_fallbacks = 0
+        self.n_route_fallbacks = 0
 
     @property
     def check_interval_s(self) -> float:
@@ -76,6 +90,11 @@ class RthCalculator:
     def map_decide_on(self) -> bool:
         """True when the Stage-2 map-based decide arm is active."""
         return self._map_decide
+
+    @property
+    def map_route_on(self) -> bool:
+        """True when the Stage-3 map-based return/resume routing arm is active."""
+        return self._map_route
 
     @property
     def decide_step_j(self) -> float:
@@ -112,6 +131,70 @@ class RthCalculator:
         if not math.isfinite(e):
             return None
         return e + self._landing_for(altitude_m).energy_j
+
+    def _routed_path(self, start: Pose, end: Pose, centers: list[Pose]) -> Path | None:
+        """Chain start -> cell centers -> end into ONE CRUISE Path via the
+        existing ``_chain_cruise_legs`` seam (the same polyline->Path handoff
+        the B1 router uses; heading treatment identical). Consecutive vertices
+        closer than ``_ROUTE_DEDUP_EPS_M`` collapse (the base cell center
+        coincides with the base pose exactly). Returns None (-> caller falls
+        back) for a degenerate polyline, or -- on a NON-holonomic motion model
+        only -- when the realized Path clips a raw obstacle (``_path_clear``):
+        holonomic hops ARE the straight polyline the map certified against the
+        buffered union, but Dubins arcs can bulge outside the certified cells,
+        so curvature > 0 gets the same one-shot net the B1 router uses."""
+        polyline: list[tuple[float, float]] = [start.as_xy()]
+        for c in centers:
+            xy = c.as_xy()
+            if math.dist(xy, polyline[-1]) > _ROUTE_DEDUP_EPS_M:
+                polyline.append(xy)
+        end_xy = end.as_xy()
+        if math.dist(end_xy, polyline[-1]) <= _ROUTE_DEDUP_EPS_M:
+            polyline.pop()
+        polyline.append(end_xy)
+        if len(polyline) < 2:
+            return None
+        path = _chain_cruise_legs(polyline, start, end, self._motion)
+        if (
+            not isinstance(self._motion, HolonomicModel)
+            and self._env is not None
+            and not _path_clear(path, self._env)
+        ):
+            return None
+        return path
+
+    def plan_return(self, from_pose: Pose) -> Path | None:
+        """Seam 7c (EM-01 Stage 3): the S3_RTH return leg as the parent-pointer
+        polyline home -- ``route_home`` already walks cell -> base, which IS the
+        flight direction. None (with ``n_route_fallbacks`` counted) when the
+        pose is outside the grid or its cell is unreachable (E_home = inf, a
+        boxed pocket) -- the agent then flies the pre-Stage-3 straight chord."""
+        try:
+            centers = route_home(self._map, from_pose)
+        except ValueError:
+            self.n_route_fallbacks += 1
+            return None
+        path = self._routed_path(from_pose, self._base, centers)
+        if path is None:
+            self.n_route_fallbacks += 1
+        return path
+
+    def plan_resume(self, base: Pose, entry: Pose) -> Path | None:
+        """Seam 7d (EM-01 Stage 3): the post-swap resume transit base -> entry.
+        The map stores RETURN costs, but its Dijkstra is undirected over
+        symmetric edge weights (energy_map.py), so the shortest entry -> base
+        parent chain REVERSED is a shortest base -> entry route through the
+        same free corridors -- the homeward energy semantics do not change the
+        geometry. Fallback contract mirrors ``plan_return``."""
+        try:
+            centers = route_home(self._map, entry)
+        except ValueError:
+            self.n_route_fallbacks += 1
+            return None
+        path = self._routed_path(base, entry, list(reversed(centers)))
+        if path is None:
+            self.n_route_fallbacks += 1
+        return path
 
     def return_energy(
         self, from_pose: Pose, in_formation: bool = False, altitude_m: float | None = None
