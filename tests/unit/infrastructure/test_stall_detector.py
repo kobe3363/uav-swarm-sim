@@ -60,3 +60,14 @@ def test_agents_are_tracked_independently():
 def test_stall_detector_defaults_off(config_path):
     cfg = load_config(config_path)
     assert cfg.safety.stall_detector is False
+
+
+def test_observe_returns_true_exactly_on_the_budget_hit():
+    """EM-01 Stage 4: the boolean return is the skip-on-stall trigger. False on
+    the baseline swap and every under-budget cycle, True on the hit itself."""
+    det = StallDetector()
+    assert det.observe(3, 30) is False       # first swap: baseline
+    for _ in range(_STALL_SWAP_BUDGET - 1):
+        assert det.observe(3, 30) is False   # cycles 1..4
+    assert det.observe(3, 30) is True        # cycle 5: budget hit
+    assert det.stalled == {3}

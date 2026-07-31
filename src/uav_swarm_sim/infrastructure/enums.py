@@ -123,13 +123,22 @@ class SensingMode(Enum):
 
 
 class Outcome(Enum):
-    """Terminal mission outcome (Phase 2, Task 2.2).
+    """Terminal mission outcome (Phase 2, Task 2.2; MISSION_PARTIAL: EM-01 Stage 4).
 
     Decided once per tick inside ``SimulationEngine.run()`` by a mutually-exclusive
-    evaluation (failure is tested before success). Carried on ``MissionResult``.
+    evaluation (failure is tested before partial before success). Carried on
+    ``MissionResult``.
 
-    MISSION_SUCCESS    -- 100% of the partitioned area is covered AND every
-                          surviving drone has returned to S0_IDLE.
+    MISSION_SUCCESS    -- coverage complete (every leg flown) AND every surviving
+                          drone has returned to S0_IDLE.
+    MISSION_PARTIAL    -- every REACHABLE leg was flown, but >= 1 coverage strip
+                          was forfeited as physically unreachable for this
+                          executor (obstacle-boxed; skipped after the
+                          safety.stall_skip no-progress swap budget). A physical
+                          limit, not a policy failure: ``skipped_legs != ()``,
+                          ``coverage_frac < 1.0``, and the mission terminates
+                          cleanly without a timestep burn. Never produced when
+                          safety.stall_skip is off.
     MISSION_FAILED     -- a physics-dictated halt: an AIRBORNE drone's battery
                           reached 0 (forced into S_FAIL mid-flight), or the shared
                           swap reserve was exhausted before coverage completed.
@@ -138,9 +147,12 @@ class Outcome(Enum):
                           S_FAIL for the elevated-hazard Monte-Carlo / SMDP
                           statistics and the run continues via redistribution.
     MISSION_INCOMPLETE -- neither terminal condition fired before the run ended
-                          (e.g. the sim.max_timesteps ceiling). Default outcome.
+                          (livelock / stall halt / the sim.max_timesteps
+                          ceiling -- an executor problem, not geometry). Default
+                          outcome.
     """
     MISSION_SUCCESS = "MISSION_SUCCESS"
+    MISSION_PARTIAL = "MISSION_PARTIAL"
     MISSION_FAILED = "MISSION_FAILED"
     MISSION_INCOMPLETE = "MISSION_INCOMPLETE"
 
