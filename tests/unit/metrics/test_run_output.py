@@ -183,6 +183,40 @@ def test_outcome_counts_by_terminal_outcome():
     assert counts["MISSION_INCOMPLETE"] == 0
 
 
+def test_outcome_counts_sum_invariant_covers_every_outcome_member():
+    """Every Outcome member must land in exactly one bucket: a run whose
+    outcome isn't in the bucket set must not be silently dropped."""
+    runs = [
+        SingleRunResult([], {}, 0.5, outcome=Outcome.MISSION_SUCCESS),
+        SingleRunResult([], {}, 0.5, outcome=Outcome.MISSION_PARTIAL),
+        SingleRunResult([], {}, 0.5, outcome=Outcome.MISSION_FAILED),
+        SingleRunResult([], {}, 0.5, outcome=Outcome.MISSION_INCOMPLETE),
+    ]
+    counts = _outcome_counts(runs)
+    assert sum(counts.values()) == len(runs)
+
+
+def test_outcome_counts_partial_present_as_zero_when_absent():
+    counts = _outcome_counts(_fake_mc().runs)  # no PARTIAL run in this fixture
+    assert counts["MISSION_PARTIAL"] == 0
+
+
+def test_results_mc_outcomes_block_reports_n_partial():
+    runs = [
+        SingleRunResult([], {}, 0.5, outcome=Outcome.MISSION_SUCCESS),
+        SingleRunResult([], {}, 0.5, outcome=Outcome.MISSION_PARTIAL),
+    ]
+    mc = MCResult(
+        n_runs=2, converged=True,
+        pi_time_mean={}, pi_time_ci={},
+        efficiency_mean=0.5, efficiency_ci=0.0, aborted_frac=0.0,
+        convergence_trace=[], runs=runs,
+    )
+    res = build_results_mc(mc, identity={}, wall_time_s=1.0)
+    assert res["outcomes"]["n_partial"] == 1
+    assert res["outcomes"]["outcome_counts"]["MISSION_PARTIAL"] == 1
+
+
 def test_results_mc_reports_outcomes_smdp_stop_reason_and_timing():
     mc = _fake_mc()
     identity = {"run_id": "r", "config_hash": "abc"}

@@ -314,7 +314,8 @@ def build_plan(cfg, *, identity: dict, algo, planner, engine=None) -> dict:
 # --------------------------------------------------------------------------- #
 # results.json builders                                                        #
 # --------------------------------------------------------------------------- #
-_OUTCOMES = (Outcome.MISSION_SUCCESS, Outcome.MISSION_FAILED, Outcome.MISSION_INCOMPLETE)
+_OUTCOMES = (Outcome.MISSION_SUCCESS, Outcome.MISSION_PARTIAL, Outcome.MISSION_FAILED,
+             Outcome.MISSION_INCOMPLETE)
 
 
 def _outcome_counts(runs) -> dict[str, int]:
@@ -372,6 +373,7 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
             "n_success": n_success,
             "n_failed": counts.get(Outcome.MISSION_FAILED.value, 0),
             "n_incomplete": counts.get(Outcome.MISSION_INCOMPLETE.value, 0),
+            "n_partial": counts.get(Outcome.MISSION_PARTIAL.value, 0),
             "success_frac": (n_success / n_total) if n_total else None,
             "outcome_counts": counts,
             "smdp_aborted_frac": mc.aborted_frac,  # SMDP non-ergodic share (distinct from mission failure)
