@@ -31,10 +31,21 @@ from types import SimpleNamespace
 import pytest
 
 from uav_swarm_sim.execution.agent import Agent
+from uav_swarm_sim.execution.events import EventBus
 from uav_swarm_sim.infrastructure.config import ConfigError, EnergyMapConfig, load_config
-from uav_swarm_sim.infrastructure.enums import Outcome, PlannerKind
+from uav_swarm_sim.infrastructure.core_types import Event
+from uav_swarm_sim.infrastructure.enums import (
+    EventType,
+    MissionType,
+    Outcome,
+    PlannerKind,
+)
 from uav_swarm_sim.infrastructure.rng import RngFactory
-from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
+from uav_swarm_sim.infrastructure.simulation_engine import (
+    _STALL_SWAP_BUDGET,
+    SimulationEngine,
+    StallDetector,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -60,6 +71,8 @@ class _LegStub:
         self._cov_idx = cov_idx
         self._skipped_cov: tuple[int, ...] = ()
         self._cov_frac_deficit = 0
+
+    skip_stuck_leg = Agent.skip_stuck_leg
 
 
 def test_skip_on_a_strip_forfeits_strip_and_following_connector():
@@ -103,6 +116,51 @@ def test_repeated_stalls_walk_the_plan_and_terminate():
     assert s._cov_idx == 9
     assert s._skipped_cov == (0, 2, 4, 6, 8)
     assert s._cov_frac_deficit == 9
+
+
+# --------------------------------------------------------------------------- #
+# the mission-type boundary: skip-on-stall is BOUSTROPHEDON ONLY               #
+# --------------------------------------------------------------------------- #
+class _EngineStub:
+    """Duck-typed engine for ``SimulationEngine._route_events``: the
+    SWAP_REQUEST branch reads only these five attributes, so the guard can be
+    pinned without building (and flying) a whole mission."""
+
+    def __init__(self, mission_type: MissionType) -> None:
+        self.bus = EventBus()
+        self._stall = StallDetector()
+        self._stall_skip = True
+        self._mission_type = mission_type
+        self.agent = _LegStub(10, 4)
+        self.fleet = SimpleNamespace(agents={3: self.agent})
+        self.swap_station = SimpleNamespace(request=lambda aid, t: None)
+
+    def stall_out(self) -> None:
+        """Route enough no-progress swap requests to hit the stall budget."""
+        for _ in range(_STALL_SWAP_BUDGET + 1):
+            self.bus.publish(Event(EventType.SWAP_REQUEST, 0.0, {"agent_id": 3}))
+            SimulationEngine._route_events(self, 0.0)
+
+
+def test_area_coverage_stall_skips_the_leg_and_clears_the_halt_flag():
+    eng = _EngineStub(MissionType.COVERAGE)
+    eng.stall_out()
+    assert eng.agent._skipped_cov == (4,)
+    assert eng.agent._cov_idx == 6
+    assert eng._stall.stalled == set()      # un-flagged: the mission goes on
+
+
+def test_target_visit_never_skips_and_keeps_the_fix_b4_halt():
+    """Tour plans have no strip/connector structure and their coverage_frac
+    would credit a skipped target as visited, so stall_skip is a deliberate
+    no-op there: the agent keeps its leg and stays flagged, which is what the
+    engine's early-halt turns into MISSION_INCOMPLETE (never MISSION_PARTIAL --
+    _skipped_legs stays empty, so the PARTIAL branch cannot fire)."""
+    eng = _EngineStub(MissionType.TARGET_VISIT)
+    eng.stall_out()
+    assert eng.agent._skipped_cov == ()
+    assert eng.agent._cov_idx == 4          # leg untouched
+    assert eng._stall.stalled == {3}        # FIX-B4 halt path intact
 
 
 # --------------------------------------------------------------------------- #
