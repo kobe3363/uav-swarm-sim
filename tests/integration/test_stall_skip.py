@@ -133,7 +133,9 @@ class _EngineStub:
         self._mission_type = mission_type
         self.agent = _LegStub(10, 4)
         self.fleet = SimpleNamespace(agents={3: self.agent})
-        self.swap_station = SimpleNamespace(request=lambda aid, t: None)
+        # underscore-prefixed: the stub mirrors SwapStation.request(aid, t) but
+        # the queue itself is irrelevant to the guard under test
+        self.swap_station = SimpleNamespace(request=lambda _aid, _t: None)
 
     def stall_out(self) -> None:
         """Route enough no-progress swap requests to hit the stall budget."""
