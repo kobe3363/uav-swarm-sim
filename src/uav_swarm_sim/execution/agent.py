@@ -113,6 +113,14 @@ class Agent:
         self._transit: Path | None = None
         self._leg_mode: str = "boustrophedon"
 
+        # EM-01 Stage 4 (safety.stall_skip): strips forfeited after a stall
+        # (original leg indices, even = strip) + the leg-count deficit the
+        # coverage fraction must NOT credit. Both stay at their inert values
+        # unless the engine calls skip_stuck_leg, so the flag-off path is
+        # byte-identical (cov_idx - 0 == cov_idx in _coverage_frac).
+        self._skipped_cov: tuple[int, ...] = ()
+        self._cov_frac_deficit: int = 0
+
         # flags
         self._launch_ready = False
         self._failure = False
@@ -150,6 +158,8 @@ class Agent:
         self._leg_mode = getattr(plan, "leg_mode", "boustrophedon")
         self._cov_legs = self._build_coverage_legs(plan.waypoints)
         self._cov_idx = 0
+        self._skipped_cov = ()
+        self._cov_frac_deficit = 0
         self._coverage_complete = False
         self._launch_ready = True
 
@@ -188,6 +198,11 @@ class Agent:
         self._leg_mode = getattr(plan, "leg_mode", "boustrophedon")
         self._cov_legs = self._build_coverage_legs(plan.waypoints)
         self._cov_idx = 0
+        # Stage 4: skips belong to the plan they were observed on; a re-task
+        # starts a fresh plan, so MissionResult.skipped_legs reflects the FINAL
+        # plans (matches the redistribution simplification note above).
+        self._skipped_cov = ()
+        self._cov_frac_deficit = 0
         self._coverage_complete = False
         self._transit = transit
         if self.state in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S_OBS):
@@ -450,6 +465,35 @@ class Agent:
         if self._transit_planner is not None:
             return self._transit_planner(self.base, entry)
         return self.motion.plan(self.base, entry, ManeuverType.CRUISE)
+
+    def skip_stuck_leg(self) -> None:
+        """EM-01 Stage 4 (safety.stall_skip): forfeit the coverage leg this agent
+        has been stall-cycling on -- called by the engine when the StallDetector
+        budget hits (the empirical proof the leg is unreachable for this
+        executor; the plan-time E_home=inf criterion was measured over-inclusive
+        and is deliberately not used).
+
+        Even ``_cov_idx`` (a COVERAGE strip): the strip AND its following
+        connector are forfeited (the connector's sole purpose was reaching the
+        strips around it), the strip is recorded in ``_skipped_cov`` and both
+        legs enter the coverage-fraction deficit. Odd (a camera-off connector):
+        only the connector is dropped -- the next strip is still attempted via
+        the post-swap resume transit directly, so nothing is lost from coverage
+        and nothing is recorded. Runs while the agent is grounded in S_SWAP
+        (the leg queue is empty there); the bumped ``_cov_idx`` simply
+        retargets ``_resume_transit`` after SWAP_DONE. Repeated stalls skip
+        forward strip by strip, so termination is guaranteed by the finite leg
+        list."""
+        k = self._cov_idx
+        if k >= len(self._cov_legs):
+            return
+        if k % 2 == 0:
+            new = min(k + 2, len(self._cov_legs))
+            self._skipped_cov = self._skipped_cov + (k,)
+            self._cov_frac_deficit += new - k
+        else:
+            new = k + 1
+        self._cov_idx = new
 
     def _avoidance_plan(self) -> Path:
         # lateral sidestep then continue; effective at separating drones

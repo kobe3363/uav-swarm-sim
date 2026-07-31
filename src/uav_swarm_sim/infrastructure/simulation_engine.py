@@ -115,13 +115,19 @@ class StallDetector:
         self._count: dict[int, int] = {}
         self.stalled: set[int] = set()
 
-    def observe(self, agent_id: int, cov_idx: int) -> None:
+    def observe(self, agent_id: int, cov_idx: int) -> bool:
+        """Record one SWAP_REQUEST. Returns True when this observation hits the
+        no-progress budget (the caller may then divert to skip-on-stall, EM-01
+        Stage 4); the FIX-B4 halt path ignores the return value, so the flag-off
+        behaviour is unchanged."""
         prev = self._last_idx.get(agent_id)
         count = self._count.get(agent_id, 0) + 1 if prev == cov_idx else 0
         self._count[agent_id] = count
         self._last_idx[agent_id] = cov_idx
         if count >= self._budget:
             self.stalled.add(agent_id)
+            return True
+        return False
 
 
 class SimulationEngine:
@@ -306,6 +312,8 @@ class SimulationEngine:
         )
         # FIX-B4: swap-livelock net (default OFF => no tracking, byte-identical)
         self._stall = StallDetector() if cfg.safety.stall_detector else None
+        # EM-01 Stage 4: skip-on-stall (validated to require the detector)
+        self._stall_skip = cfg.safety.stall_skip and self._stall is not None
         self.safety = SafetyMonitor(self.layers, self.aero, cfg.safety, self.motion)
         # dynamic obstacles + swarm sensing (feature is OFF unless enabled in config)
         self.sensing = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
@@ -468,7 +476,8 @@ class SimulationEngine:
         aborted = (not complete) or (len(self.fleet.active()) == 0 and coverage_frac < 0.999)
         stalled = tuple(sorted(self._stall.stalled)) if self._stall is not None else ()
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
-                             cfg.config_hash, self._outcome, stalled_agents=stalled)
+                             cfg.config_hash, self._outcome, stalled_agents=stalled,
+                             skipped_legs=self._skipped_legs())
 
     def _plan_transit(self, a: Pose, b: Pose) -> Path:
         """An S1 transit leg: the straight CRUISE chord, unless FIX-B1
@@ -492,7 +501,19 @@ class SimulationEngine:
                 if self._stall is not None:
                     a = self.fleet.agents.get(aid)
                     if a is not None:
-                        self._stall.observe(aid, a._cov_idx)
+                        hit = self._stall.observe(aid, a._cov_idx)
+                        # EM-01 Stage 4 (safety.stall_skip): the budget-hitting
+                        # cycle forfeits the unreachable leg instead of halting
+                        # the run -- the agent is un-flagged (the mission goes
+                        # on), the skip retargets its post-swap resume, and the
+                        # gap is accounted in skipped_legs / MISSION_PARTIAL.
+                        # Boustrophedon only: tour plans have no strip/connector
+                        # structure and their coverage_frac would credit a
+                        # skipped target as visited.
+                        if (hit and self._stall_skip
+                                and self._mission_type is not MissionType.TARGET_VISIT):
+                            self._stall.stalled.discard(aid)
+                            a.skip_stuck_leg()
                 self.swap_station.request(aid, t)
             elif e.type is EventType.SWAP_DONE:
                 a = self.fleet.agents.get(e.payload.get("agent_id"))
@@ -545,6 +566,17 @@ class SimulationEngine:
             if plan is not None and plan.waypoints:
                 transit = self.motion.plan(a.pose, plan.waypoints[0].pose, ManeuverType.CRUISE)
                 a.adopt_plan(plan, transit)
+
+    def _skipped_legs(self) -> tuple[tuple[int, int], ...]:
+        """EM-01 Stage 4: every forfeited coverage strip as sorted
+        (agent_id, leg index) pairs. Always empty when safety.stall_skip is off
+        (skip_stuck_leg is then never called), so the flag-off path costs one
+        empty generator per terminal check and nothing else."""
+        return tuple(sorted(
+            (aid, k)
+            for aid, a in self.fleet.agents.items()
+            for k in getattr(a, "_skipped_cov", ())
+        ))
 
     def _mission_complete(self) -> bool:
         active = self.fleet.active()
@@ -624,6 +656,21 @@ class SimulationEngine:
                     t, Outcome.MISSION_FAILED, "pool_exhausted", coverage_frac=cov)
             return Outcome.MISSION_FAILED
 
+        # ---- Condition 1.5: MISSION_PARTIAL (EM-01 Stage 4) ---------------- #
+        # Every surviving drone finished every leg it did NOT forfeit and is
+        # idle, but >= 1 coverage strip was skipped as unreachable
+        # (safety.stall_skip). Checked BEFORE success so a forfeited strip can
+        # never be classified MISSION_SUCCESS even if the zone-area-weighted
+        # coverage fraction rounds above the completeness gate. Dead branch
+        # whenever the flag is off (skipped is then always empty).
+        skipped = self._skipped_legs()
+        if skipped and self._mission_complete():
+            if self.telemetry is not None:
+                self.telemetry.record_terminal(
+                    t, Outcome.MISSION_PARTIAL, "coverage_complete_with_gaps",
+                    coverage_frac=cov, n_skipped=len(skipped))
+            return Outcome.MISSION_PARTIAL
+
         # ---- Condition 2: MISSION_SUCCESS ---------------------------------- #
         # 100% area coverage AND every surviving drone parked in S0_IDLE.
         # ``_mission_complete`` already encodes "every survivor finished its
@@ -663,8 +710,13 @@ class SimulationEngine:
             a = self.fleet.agents.get(aid)
             if a is not None:
                 if len(a._cov_legs) > 0:
-                    # FIX: Give partial coverage credit based on legs completed
-                    fraction_done = min(1.0, a._cov_idx / len(a._cov_legs))
+                    # FIX: Give partial coverage credit based on legs completed.
+                    # EM-01 Stage 4: legs forfeited by skip-on-stall are jumped
+                    # by _cov_idx but must NOT be credited -- subtract the
+                    # deficit (0 whenever safety.stall_skip is off, so the
+                    # arithmetic is byte-identical there).
+                    done = a._cov_idx - getattr(a, "_cov_frac_deficit", 0)
+                    fraction_done = min(1.0, done / len(a._cov_legs))
                     covered += fraction_done * zone.area_m2
                 elif a._cov_idx >= len(a._cov_legs):
                     # Fallback for empty leg plans

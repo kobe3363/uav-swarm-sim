@@ -328,3 +328,10 @@ class MissionResult:
     # short -- >= 5 consecutive swap requests without coverage progress.
     # Empty tuple always, unless the detector is enabled AND it fired.
     stalled_agents: tuple[int, ...] = ()
+    # EM-01 Stage 4 (safety.stall_skip): coverage strips forfeited after a
+    # stall, as sorted (agent_id, coverage-leg index) pairs -- the index is the
+    # strip's position in the agent's FINAL coverage-leg list (even = strip).
+    # Explicit accounting, never a silent drop: any entry here forces the
+    # terminal outcome to MISSION_PARTIAL and an honestly reduced
+    # coverage_frac. Empty tuple always, unless the flag is on AND a skip fired.
+    skipped_legs: tuple[tuple[int, int], ...] = ()

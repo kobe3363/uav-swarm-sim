@@ -190,6 +190,18 @@ class SafetyConfig:
     # labelled diagnostic instead of a max_timesteps burn. Defaults false =>
     # byte-identical (same optional-key hash rule as obstacle_recovery).
     stall_detector: bool = False
+    # EM-01 Stage 4: skip-on-stall. Requires stall_detector (the detector IS the
+    # trigger). When true, the budget-hitting no-progress swap cycle FORFEITS
+    # the coverage leg the agent has been stall-cycling on (explicit accounting
+    # in MissionResult.skipped_legs, terminal outcome MISSION_PARTIAL) instead
+    # of halting the mission as MISSION_INCOMPLETE. A stall is treated as the
+    # EMPIRICAL proof that the leg is unreachable for this executor -- the
+    # plan-time E_home=inf criterion was measured over-inclusive (432/5520
+    # inf-entry strips fly fine; see the Stage 4 report) and is deliberately
+    # NOT implemented. A separate flag (not folded into stall_detector) because
+    # the FIX-B4 halt semantics are pinned by test_transit_livelock's
+    # test_fix_b4 arm. Defaults false => byte-identical (same optional-key rule).
+    stall_skip: bool = False
 
 
 @dataclass(frozen=True)
@@ -542,6 +554,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         predict_horizon_s=float(_require(sf, "predict_horizon_s", "safety")),
         obstacle_recovery=bool(sf.get("obstacle_recovery", False)),
         stall_detector=bool(sf.get("stall_detector", False)),
+        stall_skip=bool(sf.get("stall_skip", False)),
     )
     rt = _require(raw, "rth", "")
     emr = rt.get("energy_map", {}) or {}
@@ -704,6 +717,12 @@ def _validate(cfg: Config, raw: dict) -> None:
 
     if not (0.0 <= cfg.rth.reserve_frac < 1.0):
         raise ConfigError("rth.reserve_frac must be in [0, 1)")
+
+    # ---- EM-01 Stage 4: skip-on-stall ----
+    # Without the detector nothing ever observes a stall, so the flag would be a
+    # silent no-op; fail loudly instead.
+    if cfg.safety.stall_skip and not cfg.safety.stall_detector:
+        raise ConfigError("safety.stall_skip requires safety.stall_detector: true")
 
     # ---- EM-01 energy map (Stage 1) ----
     # Finiteness is checked first: YAML admits .nan/.inf, and NaN silently
