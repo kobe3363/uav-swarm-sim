@@ -82,8 +82,9 @@ Communicate with the user in **Lithuanian**; keep technical terms in English.
   the primary shape-study driver — both rejected by the author.
 
 ## Roadmap
-The canonical outstanding-task list lives in `docs/thesis_roadmap.md`. Read it before
-picking up any task. Task IDs (NOW-*, STUDY-*, ADV-*, ENG-*, FIX-*) refer to that file.
+The canonical outstanding-task list lives in `TODO.md` (repo root). Read it before
+picking up any task. It also defines the document hierarchy and the contradiction
+rule (code > CLAUDE.md > TODO.md > proposals > memory).
 
 ## Environment (the user's machine)
 Windows, MINGW64 git, venv (`source .venv/Scripts/activate`), Python 3.13.14. Repo path
