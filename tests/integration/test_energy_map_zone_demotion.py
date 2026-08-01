@@ -8,12 +8,13 @@ Two gates:
 Stage 1-3 gates use. ``zone_demotion`` only changes behaviour when True, so an
 in-process ``zone_demotion=False`` vs no-flag comparison would be a self-
 comparison in one post-B1 binary (proves nothing). Instead a full run signature
-is captured on the PRE-B1 base commit (``0409186``, the HEAD this change branches
-from) for a tiny map-ON ``decide+route`` mission and pinned as a literal tuple.
-That mission is deliberately one that NEVER crosses CRITICAL (it completes on a
-healthy battery -- 22 sojourns, all ``coverage_complete``), so the guard edit is
-exercised-as-inert: post-B1, the same run with ``zone_demotion`` at its default
-must reproduce the golden byte-for-byte. The helpers below are REPLICATED from
+is captured on the PRE-B1 base commit (``0409186``) for a tiny map-ON
+``decide+route`` mission and pinned as a literal tuple; the post-B1 flag-off run
+must reproduce it byte-for-byte. Crucially the mission DOES cross CRITICAL: at
+battery_capacity_wh=22.0 both drones drain into [0.20, 0.40) and return via
+``critical_battery`` (then swap and resume), so the flag-off run actually TAKES
+the gated ``not self._zone_demotion and CRITICAL`` branch -- the golden proves the
+guard path, not merely the config plumbing. The helpers below are REPLICATED from
 test_energy_map_stage4 (case a) rather than imported -- each gate owns its own
 signature machinery so a refactor of one cannot silently move another's goalposts.
 
@@ -62,11 +63,21 @@ def _run_signature(res) -> tuple:
 
 
 def _tiny_cfg(config_path):
-    """Mirrors test_energy_map_stage3/4._tiny_cfg exactly, then turns the map ON
-    (enabled+decide+route) with zone_demotion left at its default (False)."""
+    """Based on test_energy_map_stage3/4._tiny_cfg, then turns the map ON
+    (enabled+decide+route) with zone_demotion left at its default (False).
+
+    battery_capacity_wh is DELIBERATELY lowered to 22.0 (stage3/4 use 400.0, ~4x
+    the baseline pack, which finishes coverage on a healthy battery and never
+    enters [0.20, 0.40)). At 22.0 Wh both drones drain into CRITICAL and return
+    via 'critical_battery' before a swap+resume, so the golden actually EXERCISES
+    the gated ``not self._zone_demotion and CRITICAL`` branch. Measured viable
+    band: >16 Wh keeps the static net governing (below ~16 Wh the map's rth_energy
+    pre-empts as E_home/cap grows); <25 Wh still reaches CRITICAL (25 Wh+ never
+    crosses). 22.0 is chosen mid-band so a later tweak cannot silently stop
+    crossing CRITICAL and re-hollow the gate."""
     cfg = load_config(str(config_path), overrides={
         "fleet.n_drones": 2,
-        "fleet.battery_capacity_wh": 400.0,
+        "fleet.battery_capacity_wh": 22.0,
         "failure.hazard_rate_per_hour": 0.0,
         "env.geojson_path": "data/areas/smoke_area.geojson",
         "env.obstacle_density_per_km2": 4.0,
@@ -87,13 +98,15 @@ def _engine(cfg, replication=0):
 
 
 # --------------------------------------------------------------------------- #
-# GOLDEN: tiny map-ON (decide+route) mission, captured on PRE-B1 commit       #
-# 0409186. zone_demotion defaults False and this mission never crosses        #
-# CRITICAL, so post-B1 the run must reproduce this signature byte-for-byte.    #
+# GOLDEN: tiny map-ON (decide+route) mission at battery_capacity_wh=22.0,      #
+# captured on PRE-B1 commit 0409186 (EnergyMapConfig had no zone_demotion      #
+# field there). The mission DRAINS INTO CRITICAL -- both drones return via     #
+# critical_battery (t=227) then swap and resume -- so the post-B1 flag-off run #
+# must reproduce this byte-for-byte AND must take the gated CRITICAL branch.   #
 # --------------------------------------------------------------------------- #
 _GOLDEN_SIGNATURE = (
-    (113172.0, 272.0, 53.70099459505229, 0,
-     {0: 55640.0, 1: 57532.0}, {0: 1709.538321254871, 1: 1816.9403104449757}),
+    (160242.0, 486.0, 187.3955051435098, 2,
+     {0: 76788.0, 1: 83454.0}, {0: 2356.272426470001, 1: 2731.0634367570206}),
     (
         Sojourn(agent_id=0, state=AgentState.S0_IDLE, t_in=0.0, t_out=0.0, reason_out="launch"),
         Sojourn(agent_id=1, state=AgentState.S0_IDLE, t_in=0.0, t_out=0.0, reason_out="launch"),
@@ -111,12 +124,22 @@ _GOLDEN_SIGNATURE = (
         Sojourn(agent_id=1, state=AgentState.S2_MISSION, t_in=121.0, t_out=171.0, reason_out="ferry_start"),
         Sojourn(agent_id=0, state=AgentState.S_FERRY, t_in=170.0, t_out=178.0, reason_out="ferry_end"),
         Sojourn(agent_id=1, state=AgentState.S_FERRY, t_in=171.0, t_out=179.0, reason_out="ferry_end"),
-        Sojourn(agent_id=0, state=AgentState.S2_MISSION, t_in=178.0, t_out=228.0, reason_out="coverage_complete"),
-        Sojourn(agent_id=1, state=AgentState.S2_MISSION, t_in=179.0, t_out=229.0, reason_out="coverage_complete"),
-        Sojourn(agent_id=0, state=AgentState.S3_RTH, t_in=228.0, t_out=263.0, reason_out="mission_done"),
-        Sojourn(agent_id=1, state=AgentState.S3_RTH, t_in=229.0, t_out=272.0, reason_out="mission_done"),
-        Sojourn(agent_id=0, state=AgentState.S0_IDLE, t_in=263.0, t_out=272.0, reason_out="mission_end"),
-        Sojourn(agent_id=1, state=AgentState.S0_IDLE, t_in=272.0, t_out=272.0, reason_out="mission_end"),
+        Sojourn(agent_id=0, state=AgentState.S2_MISSION, t_in=178.0, t_out=227.0, reason_out="critical_battery"),
+        Sojourn(agent_id=1, state=AgentState.S2_MISSION, t_in=179.0, t_out=227.0, reason_out="critical_battery"),
+        Sojourn(agent_id=0, state=AgentState.S3_RTH, t_in=227.0, t_out=264.0, reason_out="swap"),
+        Sojourn(agent_id=1, state=AgentState.S3_RTH, t_in=227.0, t_out=269.0, reason_out="swap"),
+        Sojourn(agent_id=0, state=AgentState.S_SWAP, t_in=264.0, t_out=356.0, reason_out="swap_done"),
+        Sojourn(agent_id=0, state=AgentState.S0_IDLE, t_in=356.0, t_out=357.0, reason_out="launch"),
+        Sojourn(agent_id=1, state=AgentState.S_SWAP, t_in=269.0, t_out=361.0, reason_out="swap_done"),
+        Sojourn(agent_id=1, state=AgentState.S0_IDLE, t_in=361.0, t_out=362.0, reason_out="launch"),
+        Sojourn(agent_id=0, state=AgentState.S1_TRANSIT, t_in=357.0, t_out=367.0, reason_out="zone_entry"),
+        Sojourn(agent_id=1, state=AgentState.S1_TRANSIT, t_in=362.0, t_out=393.0, reason_out="zone_entry"),
+        Sojourn(agent_id=0, state=AgentState.S2_MISSION, t_in=367.0, t_out=417.0, reason_out="coverage_complete"),
+        Sojourn(agent_id=1, state=AgentState.S2_MISSION, t_in=393.0, t_out=443.0, reason_out="coverage_complete"),
+        Sojourn(agent_id=0, state=AgentState.S3_RTH, t_in=417.0, t_out=454.0, reason_out="mission_done"),
+        Sojourn(agent_id=1, state=AgentState.S3_RTH, t_in=443.0, t_out=486.0, reason_out="mission_done"),
+        Sojourn(agent_id=0, state=AgentState.S0_IDLE, t_in=454.0, t_out=486.0, reason_out="mission_end"),
+        Sojourn(agent_id=1, state=AgentState.S0_IDLE, t_in=486.0, t_out=486.0, reason_out="mission_end"),
     ),
     Outcome.MISSION_SUCCESS,
     1.0,
@@ -129,13 +152,21 @@ def test_zone_demotion_off_byte_identical_to_pre_b1(config_path):
     """Gate (1): map ON (decide+route) with zone_demotion at its default (False)
     reproduces the exact pre-B1 (0409186) run -- summary metrics, the full FSM
     sojourn trajectory, outcome, coverage and the stalled set all match. The
-    mission never crosses CRITICAL, so the demoted guard branch is inert here and
-    the signature pins that the B1 edit did not perturb the default path."""
+    mission DRAINS INTO CRITICAL (both drones return via critical_battery, then
+    swap and resume), so the flag-off run genuinely TAKES the gated
+    ``not self._zone_demotion and CRITICAL`` branch -- the golden proves the guard
+    path is byte-identical to pre-B1, not merely the config plumbing. If the
+    signature ever differs from the pre-B1 literal, that IS the regression this
+    cross-commit golden exists to catch: STOP and diff, do not repin."""
     cfg = _tiny_cfg(config_path)
     assert cfg.rth.energy_map.zone_demotion is False  # guards the shipped default
     res = _engine(cfg).run()
     assert _run_signature(res) == _GOLDEN_SIGNATURE
     assert res.skipped_legs == ()
+    # the golden MUST exercise the gated CRITICAL branch (guards against a future
+    # capacity tweak silently restoring a non-crossing config that re-hollows it)
+    reasons = {s.reason_out for s in res.history.sojourns()}
+    assert "critical_battery" in reasons
 
 
 def _return_reason_counts(res) -> Counter:
@@ -147,17 +178,21 @@ def _return_reason_counts(res) -> Counter:
     return c
 
 
-def _study01_engine(zone_demotion: bool):
+def _study01_engine(*, zone_demotion: bool) -> SimulationEngine:
     cfg = load_config("config/study01_demand.yaml")
+    # replace() the existing map config rather than building a fresh one, so any
+    # rth.energy_map fields the YAML defines (e.g. a future Stage-5 A/B block) are
+    # preserved instead of silently reset to dataclass defaults.
     cfg = dataclasses.replace(cfg, rth=dataclasses.replace(
-        cfg.rth, energy_map=EnergyMapConfig(
+        cfg.rth, energy_map=dataclasses.replace(
+            cfg.rth.energy_map,
             enabled=True, decide=True, route=True, zone_demotion=zone_demotion)))
     return SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), replication=1,
                             planner=PlannerKind.DUBINS)
 
 
 @pytest.mark.slow
-def test_zone_demotion_shifts_return_attribution_to_rth_energy(config_path):
+def test_zone_demotion_shifts_return_attribution_to_rth_energy():
     """Gate (2), the B1 observable: on the operational study01_demand config with
     the map deciding, turning zone_demotion ON removes the static CRITICAL net so
     the dynamic map governs the return. One replication is enough to show the
