@@ -171,14 +171,36 @@ def test_experiment_constants_requires_stall_detector(config_path):
         experiment_constants(cfg)
 
 
+def test_experiment_constants_refuses_preset_energy_map(config_path):
+    """A base config that already carries any rth.energy_map setting would
+    corrupt the ablation (arm 1 not static, arms 2-4 silently resetting
+    tunables) -- the harness fails fast instead."""
+    cfg = load_config(str(config_path), overrides={
+        "safety.stall_detector": True,
+        "rth.energy_map.enabled": True,
+    })
+    with pytest.raises(SystemExit, match="energy_map"):
+        experiment_constants(cfg)
+
+
 # --------------------------------------------------------------------------- #
 # 2. byte-identity gate: harness arm 1 == existing demand path                 #
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
-def test_arm1_byte_identical_to_run_demand(config_path):
-    """The harness's own engine loop reproduces run_demand bit for bit on the
-    same config: identical run signature underneath, identical shared record
-    fields on top."""
+def test_arm1_gate_against_run_demand(config_path):
+    """The arm-1 gate, stated precisely (what each half actually pins):
+
+    * RECORD level -- run_arm's record equals run_demand's ACTUAL output on
+      every field the two schemas share (replication, outcome, demand,
+      per_drone_swaps). This half really invokes run_demand.
+    * RUN level -- an engine built the way the harness builds it produces a
+      byte-identical full run signature to an engine built the way run_demand
+      builds it (``_with_reserve(cfg, None)``, algo=None, planner=DUBINS,
+      fresh factory). run_demand does not expose its engine, so this half
+      mirrors its construction (run_spare_sizing.py run_demand body) rather
+      than invoking it -- it pins construction-equivalence + engine
+      determinism, and the record-level half above ties that construction to
+      run_demand's real behavior."""
     base = experiment_constants(_tiny_cfg(config_path))
     cfg1 = arm_config(base, 1)
 
@@ -189,7 +211,7 @@ def test_arm1_byte_identical_to_run_demand(config_path):
     assert (ab.replication, ab.outcome, ab.demand, ab.per_drone_swaps) == \
         (dem.replication, dem.outcome, dem.demand, dem.per_drone_swaps)
 
-    # run level: the engine construction the two loops perform is identical
+    # run level: harness-style construction vs run_demand-style construction
     sig_ab = _run_signature(SimulationEngine(
         cfg1, RngFactory(cfg1.sim.master_seed), replication=1, algo=None,
         planner=PlannerKind.DUBINS).run())
@@ -362,6 +384,17 @@ def test_resume_tolerates_truncated_final_line_only(tmp_path):
     p.write_text(corrupted, encoding="utf-8")
     with pytest.raises(SystemExit, match="corrupt line"):
         load_ab_records(p)           # corrupt NON-final line: refused
+
+
+def test_resume_refuses_malformed_record(tmp_path):
+    """Valid JSON, right schema and identity, but a missing record field --
+    the fourth and last SystemExit branch of the crash-recovery loader."""
+    p = _write_partial(tmp_path, [_record(replication=1)])
+    line = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
+    del line["n_map_hits"]
+    p.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="malformed record"):
+        load_ab_records(p)
 
 
 def test_resume_missing_dir_and_empty_dir(tmp_path):

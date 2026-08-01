@@ -110,10 +110,20 @@ PARTIAL_FILENAME = "results_partial.jsonl"
 def experiment_constants(cfg: Config) -> Config:
     """The knobs pinned identically across ALL arms: unbounded pool (demand
     semantics) + stall_skip (orthogonal boxing accounting, held constant so the
-    arm contrast stays pure RTH). Everything else is left exactly as loaded."""
+    arm contrast stays pure RTH). Everything else is left exactly as loaded.
+
+    Fails fast when the base config already carries ANY ``rth.energy_map``
+    setting: arm 1 would silently stop being the static baseline and arms 2-4
+    would silently reset tunables (cell_m, penalties) to defaults, breaking
+    the "arms differ only by the four flags (+ arm-4 floor)" contract."""
     if not cfg.safety.stall_detector:
         raise SystemExit("rth-ab requires safety.stall_detector: true in the "
                          "base config (stall_skip depends on it)")
+    if cfg.rth.energy_map != EnergyMapConfig():
+        raise SystemExit(
+            "rth-ab requires a base config WITHOUT an rth.energy_map block: "
+            "the harness constructs each arm's flags itself, and a preset "
+            f"energy_map would corrupt the ablation (found {cfg.rth.energy_map})")
     cfg = _with_reserve(cfg, None)
     safety = dataclasses.replace(cfg.safety, stall_skip=True)
     return dataclasses.replace(cfg, safety=safety)
@@ -506,6 +516,13 @@ def main(argv=None) -> int:
         done = load_resume_dir(args.resume, identity)
         print(f"[resume] {len(done)} completed (arm, rep) pairs from "
               f"{args.resume}", file=sys.stderr)
+        skipped_arms = sorted({a for a, _ in done} - set(arms))
+        if skipped_arms:
+            print(f"[resume] WARNING: arms {skipped_arms} have completed "
+                  f"replications in {args.resume} but are not in --arms; they "
+                  f"are NOT replayed into the new run directory, so resume any "
+                  f"later run of those arms from the OLD directory, not this "
+                  f"one.", file=sys.stderr)
 
     run = RunContext(base_dir=args.out, name=unique_run_name("rth_ab"))
     per_arm: dict[int, list[AbRecord]] = {}
@@ -542,8 +559,11 @@ def main(argv=None) -> int:
         for rec in resumed:
             append_ab_record(partial_path, rec, identity)
 
-        def _progress(rec: AbRecord, _arm=arm) -> None:
-            append_ab_record(partial_path, rec, identity)
+        # both loop variables bound as defaults: run_arm calls the callback
+        # synchronously today, but the planned --jobs follow-up (E2) must not
+        # inherit a late-binding bug that appends every arm to the last arm's log
+        def _progress(rec: AbRecord, _arm=arm, _path=partial_path) -> None:
+            append_ab_record(_path, rec, identity)
             d = "inf" if rec.demand is None else rec.demand
             r = rec.reasons
             print(f"  arm {_arm} rep {rec.replication:>4}/{args.reps}: "
