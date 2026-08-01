@@ -15,7 +15,7 @@
 |---|---|---|
 | D1 | S5 formalus read-out (`docs/reports/s5_shipped_readout.md`, `s5_clean_readout.md`, NOW-03) | **NĖRA main'e** — `docs/` kataloge tik `thesis_roadmap.md`. §1.3 pastraipa remiasi tiesiogiai run artefaktais (`runs/shape_sweep_clean_postfix/`), ne read-out dokumentu. Formalus NOW-03 verdiktas — atvira priklausomybė. |
 | D2 | `run_spare_sizing --demand-mode` (B=∞ demand matavimas) | **YRA main'e** — PR #28, commit `ef15d41`; D fiksuojamas bendras ir per-drone (`spare_sizing.py:279-280`, `DemandRecord.demand` + `per_drone_swaps`). |
-| D3 | Analitinis N\* skaičiuotuvas | **VEIKIA** — `run_fleet_sizing_analyzer` patikrintas realiu paleidimu 2026-07-13 (git `ef15d41`), žr. §4.1. Pastaba: roadmap'o įrašas FIX-01 („analyzer broken") pasenęs — importo klaidos nebėra. |
+| D3 | Analitinis N\* skaičiuotuvas | **VEIKIA** — `run_fleet_sizing_analyzer` patikrintas realiu paleidimu 2026-07-13 (git `ef15d41`), žr. §4.1; importuojasi be klaidų ir 2026-08-01. |
 | D4 | Ploto tier'ų geometrija | **YRA** — `generate_shapes.py` turi `--target-area-m2` (normalizacija į tikslų plotą: `generate_shapes.py:144-150`), t. y. scaled formų šeimoms naujo kodo nereikia. |
 
 **Duomenų higiena (privaloma skaitant senesnius juodraščius).** 2026-07-05 rastas ir

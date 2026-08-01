@@ -49,7 +49,7 @@ map on identical seeds. Everything in §2 exists to unblock it.
 |---|---|---|---|
 | **A1** | Add `MISSION_PARTIAL` to `run_output._OUTCOMES` (~:317) | Without it PARTIAL gets no row in `outcome_counts` → Stage 5 A/B cannot report it. **Blocks C1.** | Sonnet High, Accept edits, standard thinking |
 | **A2** | Dedicated flag-off byte-identity test for Stage 4 (`safety.stall_skip`) | Stage 4 shipped with only a structural argument; every other stage has the test. This is debt, not a detail. | Sonnet High, Accept edits, standard thinking |
-| **A3** | Docs sync | `docs/proposals/energy_map_rth.md` §7e still describes the **falsified** plan-time feasibility criterion — replace with the runtime skip-on-stall criterion + the M0 numbers (432/5520 ∞-entry strips execute successfully; 20 m red cell is not a reachability test). Delete `docs/thesis_roadmap.md` and repoint `CLAUDE.md` §Roadmap at this file. Drop the obsolete FIX-01 entry. | Sonnet Medium, Accept edits, standard thinking |
+| **A3** | Docs sync | Fix `docs/proposals/energy_map_rth.md`: §7e now describes the shipped runtime skip-on-stall criterion + M0 numbers (432/5520 ∞-entry strips execute successfully; 20 m red cell is not a reachability test); §9/§10/§11 carry the merged B1 zone-demotion design, the 0.10 floor, the four-arm A/B, and the corrected **static 0.40** return threshold (not 0.20). Drop the stale FIX-01 parenthetical in `scale_sweep_v2.md`. (`docs/thesis_roadmap.md` already deleted; `CLAUDE.md` §Roadmap already points here — both done.) | Sonnet Medium, Accept edits, standard thinking |
 
 **A1 DoD:** PARTIAL appears in `outcome_counts` for a run that produces one; full pytest
 green with exact count reported; flag-off byte-identity unaffected.
@@ -58,18 +58,17 @@ green with exact count reported; flag-off byte-identity unaffected.
 
 | ID | Task | Why | Agent |
 |---|---|---|---|
-| **B1** | §9 battery-zone demotion: when the energy map is ON, demote the static `critical` 0.20 guard to a TERMINAL-only failsafe (~0.15) | The dynamic RTH must govern; the static net should only catch true emergencies. This is the change that makes `rth_energy` the dominant transition reason in the A/B. | **Fable/Opus High, Plan → author GO → Accept edits, extended thinking** |
+| **B1** | ~~§9 battery-zone demotion~~ **MERGED (PR #38).** When the map is deciding (`rth.energy_map.zone_demotion`, requires `decide`), the `critical_battery` guard branch is removed, leaving `terminal_battery` (`< battery_zones.critical`) as the failsafe. **No new constant, no `battery_zones` change** — the "~0.15 terminal" proposal was rejected (lowering `critical` to 0.15 is a no-op: the guard fires at `nominal=0.40`, so 0.15 merely widens CRITICAL to `[0.15, 0.40)`). B2 sweep then tunes the TERMINAL floor to **0.10 in-config** for the Stage-5 map arm. | done |
 
-**Author decision required before dispatch:** the exact terminal value (0.15 proposed).
-Thesis-affecting — it shifts every energy number.
-**B1 DoD:** flag-off byte-identity; transition-reason traces show `rth_energy` governing
-with the map ON; full pytest green.
+**B1 outcome:** flag-off byte-identity held; with the map ON `rth_energy` governs and
+`critical_battery` drops toward 0; full pytest green (443→450). B2 floor sweep: 0.20
+overrode the map on ~47% of returns, 0.10 removes the override (0.10≡0.05 at 1 km²).
 
 ### C. The thesis result
 
 | ID | Task | Why | Agent |
 |---|---|---|---|
-| **C1** | **Stage 5 A/B experiment.** Three arms on identical seeds: (1) static-20% baseline, (2) route-only map, (3) full map (decide + route). Flags already permit all three without code changes. Observables: sortie depth, demand median, success ceiling, PARTIAL rate, `rth_energy` vs `critical_battery` transition counts, energy/makespan. | This *is* the thesis contribution, measured. | **Fable/Opus High, Plan → author GO, extended thinking** (design + harness); execution by author on Azure |
+| **C1** | **Stage 5 A/B experiment.** Four arms on identical seeds: (1) **static-40%** baseline (map OFF), (2) route-only map, (3) decide+route with CRITICAL intact, (4) decide+route + `zone_demotion` (full effect, 0.10 floor). Flags already permit all four without code changes. Observables: sortie depth, demand median, success ceiling, PARTIAL rate, `rth_energy` vs `critical_battery` transition counts, energy/makespan. | This *is* the thesis contribution, measured. | **Fable/Opus High, Plan → author GO, extended thinking** (design + harness); execution by author on Azure |
 | **C2** | STUDY-01 re-run with the new RTH | Every current STUDY-01 number is superseded by the new physics (see §4). | Author runs; read-out by Opus High, read-only |
 | **C3** | Shipped S5 re-run with the new RTH | `runs/shape_sweep_shipped` is livelock-contaminated and pre-dates EM-01. | Author runs; read-out by Opus High, read-only |
 
@@ -85,7 +84,7 @@ lessons). Check whether the script has `--jobs` and say so *before* handing over
 
 | ID | Task | Notes |
 |---|---|---|
-| **D1** | Fix and send the supervisor package | Requires: (a) the 40% → 20% correction everywhere (the static pre-emption threshold is CRITICAL 0.20, `state_machine.py:97-98`; 40% is only a reporting bin, `battery.py:46-47`); (b) recompute the analytical-prior gap with the 20% floor (effective sortie window ~80%, not ~60% — the "≈8× underestimate" story may soften); (c) add the EM-01 results. Coordinator writes it; no agent. |
+| **D1** | Fix and send the supervisor package | Requires: (a) confirm the static return threshold is **0.40 everywhere** (not 0.20): the `critical_battery` guard fires the moment `f` drops below `nominal=0.40` because CRITICAL is the band `[0.20, 0.40)` (`battery.py:44-50`, `state_machine.py:113`, `run_regime_calculator.py:48-52`); 0.20 is TERMINAL onset, not the return point; (b) ~~recompute with a 20% floor~~ **obsolete** — there is no 20% correction; the effective sortie window is ~60% (1.0→0.40) and the "≈8× underestimate" story **stands** (it was computed with cap×(1−0.40)); (c) add the EM-01 results. Coordinator writes it; no agent. |
 | **D2** | Obtain supervisor decisions K1–K4 | Scope of the scale experiment: area tiers, n-grid ceiling, reps/CI target, clean vs shipped proportion. See `docs/proposals/scale_sweep_v2.md`. |
 | **D3** | Rewrite `scale_sweep_v2.md` after the author's narrowing | New axis (author's decision): **L-shape only**, growing (a) area at fixed edge proportions and (b) the *count* of static obstacles at *fixed* obstacle size (circles = trees). This separates "number of obstacles" from "fraction of area occupied". Dynamic obstacles out of scope. This replaces the 9-shape design. Do after D2. | Opus High, Plan mode, docs only |
 

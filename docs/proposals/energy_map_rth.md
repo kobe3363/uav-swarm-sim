@@ -14,8 +14,8 @@
 ## 0. Santrauka
 
 Šiandien tezės skelbiamas **dinaminis RTH** (`rth_calculator.decide`) numatytoje
-1 km² srityje praktiškai neveikia: jį efektyviai pakeičia statinis 20% baterijos
-slenkstis (§1). Grįžimo (S3_RTH) ir resume-transit keliai planuojami kaip tiesios
+1 km² srityje praktiškai neveikia: jį pre-emptina statinis **40%** baterijos
+slenkstis (CRITICAL guard'as ties `nominal=0.40`, §1). Grįžimo (S3_RTH) ir resume-transit keliai planuojami kaip tiesios
 stygos su reaktyviu 15 m sidestep, todėl kliūtys sukelia obstacle-boxing livelock
 ir riboja success rate (§1). O `path_clear` tikrinimas kas 5 s yra #1 CPU hotspot.
 
@@ -35,35 +35,39 @@ build'ą ir penkis integration seam'us (§§5–8), pateikia flag'avimo/rollout 
 
 ## 1. Motyvacija
 
-### 1.1 Dinaminis RTH nepastebimas: efektyviai valdo statinis 20% slenkstis
+### 1.1 Dinaminis RTH nepastebimas: efektyviai valdo statinis 40% slenkstis
 
 Coverage'o pertraukimo guard'ai vertinami tvarka (pirmas atitikmuo laimi,
-`state_machine.py:82-101`):
+`state_machine.py:109-116`):
 
 ```
-obstacle_threat  ->  rth_energy (:95-96)  ->  critical_battery 0.20 (:97-98)  ->  terminal_battery <0.20 (:99-100)
+obstacle_threat (:109-110)  ->  rth_energy (:111-112)  ->  critical_battery <0.40 (:113-114)  ->  terminal_battery <0.20 (:115-116)
 ```
 
-Svarbi pataisa ankstesniam framing'ui: **pre-emption įvyksta ties CRITICAL
-(0.20), NE ties nominal (0.40)**. `nominal=0.40` yra tik **reporting bin**
-(`battery.py:46-47`; `config.py:155-159`), NE grįžimo guard'as — state machine
-neturi jokio nominal guard'o. Guard'ų tvarkoje `rth_energy` (dinaminis) net
-testuojamas **pirmas** (`state_machine.py:95-96`), tad problema yra ne tvarka, o
-tai, kada `should_return` tampa `True`.
+**Svarbi pataisa ankstesniam framing'ui:** pre-emption įvyksta vos `f` nukrenta
+žemiau **0.40**, NE ties 0.20. `critical_battery` guard'as suveikia kai
+`battery_zone is CRITICAL`, o CRITICAL yra juosta `[critical, nominal) =
+[0.20, 0.40)` (`battery.py:44-50`, `config/default.yaml:215-216`,
+`config.py:155-159`) — tad guard'as kerta grįžimą juostos VIRŠUJE, ties
+`nominal=0.40`, ne apačioje. `nominal=0.40` NĖRA vien reporting bin — tai
+efektyvusis statinio grįžimo slenkstis (`run_regime_calculator.py:48-52`); 0.20
+yra tik TERMINAL pradžia. Guard'ų tvarkoje `rth_energy` (dinaminis) testuojamas
+**pirmas** (`state_machine.py:111-112`), tad problema yra ne tvarka, o tai, kada
+`should_return` tampa `True`.
 
-Autoriaus motyvacinė formuluotė (embedded verbatim):
+Autoriaus motyvacija (parafrazuota, patikslinta ties 0.40 — NE verbatim):
 
 > Dinaminis RTH (`should_return`: `level < E_home + e_next + reserve_frac·cap`)
-> guard'ų tvarkoje testuojamas pirmas (`state_machine.py:95-96`), bet 1 km²
+> guard'ų tvarkoje testuojamas pirmas (`state_machine.py:111-112`), bet 1 km²
 > plotuose grįžimo kaina maža, todėl jo slenkstis pasiekiamas tik ~20% baterijos
-> — sutampant su statiniu CRITICAL net (0.20). Todėl dinaminis sprendimas ir
-> grubus statinis tinklas suveikia beveik tuo pačiu momentu, ir dinamiškumas
-> lieka nepastebimas: efektyviai misiją valdo statinis 20% slenkstis. Tai tiksliai
-> motyvuoja scale ašį — didėjant plotui grįžimo kaina auga, `should_return`
-> slenkstis pakyla virš CRITICAL, ir dinaminis RTH pradeda realiai dominuoti.
-> Energijos žemėlapio indėlis: padaryti tą dominavimą poziciškai tikslų ir
-> obstacle-aware visuose masteliuose, o ne priklausomą nuo to, ar grįžimo kaina
-> atsitiktinai viršija statinį slenkstį.
+> — GILIAI žemiau statinio 0.40 net'o. Todėl statinis `critical_battery` tinklas
+> (0.40) suveikia gerokai anksčiau ir grąžina droną, kol dinaminis trigeris (~20%)
+> dar nepasiektas: dinamiškumas lieka nepastebimas, efektyviai misiją valdo
+> statinis 40% slenkstis. Tai tiksliai motyvuoja scale ašį — didėjant plotui
+> grįžimo kaina auga, `should_return` slenkstis pakyla virš statinio 0.40 net'o,
+> ir dinaminis RTH pradeda realiai dominuoti. Energijos žemėlapio indėlis:
+> padaryti tą dominavimą poziciškai tikslų ir obstacle-aware visuose masteliuose,
+> o ne priklausomą nuo to, ar grįžimo kaina atsitiktinai viršija statinį slenkstį.
 
 Skaitmeninis pagrindas (`should_return`, `rth_calculator.py:72-82`):
 `reserve = reserve_frac·cap = 0.05·360 000 = 18 000 J` (`reserve_frac=0.05`
@@ -71,7 +75,8 @@ Skaitmeninis pagrindas (`should_return`, `rth_calculator.py:72-82`):
 srityje grįžimo kaina nuo giliausio taško
 (~1 km × 18.333 J/m ≈ 18 kJ + landing) plius vieno coverage leg'o bundle yra maža
 capaciteto (360 kJ) atžvilgiu, todėl `level < e_next + return + reserve` sąlyga
-išsipildo tik ties ~20% — praktiškai sutampant su statiniu CRITICAL (0.20).
+išsipildo tik ties ~20% — t.y. giliai žemiau statinio **0.40** net'o, tad statinis
+grįžimo guard'as (0.40) suveikia gerokai anksčiau ir dinaminį trigerį užstoja.
 
 ### 1.2 Tiesios stygos + reaktyvus sidestep → obstacle-boxing
 
@@ -372,35 +377,73 @@ lieka **nepriklausomas flag'as** — švariam A/B (galima lyginti: styga vs FIX-
 visibility vs energy map). Touch point: `_resume_transit` + `_transit_planner`
 injekcija (`simulation_engine.py:223-231`).
 
-### 7e. Plan-time feasibility — skip-and-flag, NE tylus drop
-Jei coverage leg'o entry langelio `E_home = ∞` (nepasiekiama — kliūčių apsupta),
-leg'as praleidžiamas su **eksplicitine apskaita**: naujas per-leg statusas +
-naujas `MissionResult` laukas (pvz. `skipped_legs: tuple[int, ...]`), analogiškas
-esamam `stalled_agents` (`core_types.py:330`, `simulation_engine.py:440`). NE
-tylus drop — coverage gap log'inamas ir raportuojamas results.json (additive block
-precedentas `smdp_convergence.py:154`; schema versioning `run_spare_sizing.py:617`).
-Tai adresuoja liekamąjį boxing'ą (nepasiekiami leg'ai anksčiau degindavo timesteps
-iki INCOMPLETE).
+### 7e. Skip-and-flag, NE tylus drop — RUNTIME skip-on-stall (Stage 4, shipped)
+> **PATIKSLINTA (Stage 4 M0 matavimas):** plan-time `E_home = ∞` kriterijus
+> **FALSIFIKUOTAS** — nenaudojamas. Šis skirsnis aprašo TIKRĄ shipped mechanizmą.
+
+Ankstesnis pasiūlymas praleisti coverage leg'ą jau **plan-time**, jei jo entry
+langelio `E_home = ∞`, buvo atmestas: `E_home = ∞` NĖRA pasiekiamumo testas. M0
+matavimas (50 replikacijų) parodė 432/5520 ∞-entry strip'ų **sėkmingai** įvykdomus
+per S_OBS sub-cell koridorius (20 m raudonas langelis nereiškia nepasiekiamo
+strip'o). Plan-time skip būtų pavertęs 46 sėkmes į PARTIAL ir numušęs sample
+ceiling'ą **92% → 0%**.
+
+Vietoje to shipped mechanizmas yra **runtime skip-on-stall**: empirinis
+nepasiekiamumo įrodymas yra pats FIX-B4 `StallDetector` biudžeto pataikymas
+(5 no-progress swap'ai, `simulation_engine.py:99, 513`). Kai budget hit ∧
+`safety.stall_skip`: engine kviečia `agent.skip_stuck_leg()` (`agent.py:469`) →
+strip'as įrašomas į `MissionResult.skipped_legs` ((agent_id, leg) poros,
+`core_types.py:337`, `simulation_engine.py:480, 570`) → terminal outcome tampa
+`Outcome.MISSION_PARTIAL` (`enums.py:155`, `simulation_engine.py:659`). NE tylus
+drop — coverage gap log'inamas ir raportuojamas. Gate: `safety.stall_skip`
+(default OFF, reikalauja `safety.stall_detector`, `config.py:204, 729-730`);
+flag-off metu `skip_stuck_leg` niekada nekviečiamas → `skipped_legs` visada tuščias
+→ byte-identiška. „Skip-and-flag, ne tylus drop" dvasia išlieka — tik trigger'is
+yra runtime stall, ne plan-time reachability.
 
 ---
 
-## 9. Battery-zone nets demotion (sprendimas 8)
+## 9. Battery-zone nets demotion (sprendimas 8) — MERGED (B1)
 
-Kai map flag ON, statinis battery-zone net tampa **last-resort TERMINAL only**.
-Tiksliai keičiamos guard-eilutės `state_machine.py:97-100`:
-- `critical_battery` (0.20, `:97-98`) — demoted (nebe pirmas grįžimo net'as; map
-  `rth_energy` valdo);
-- `terminal_battery` (`:99-100`) — lieka kaip absoliutus saugiklis, bet ties
-  **~0.15** (siūlau **0.15**), t.y. žemiau tipinės map-triggered grįžimo, kad
-  suveiktų tik jei map kažkodėl neapsaugojo.
+> **Statusas: ĮGYVENDINTA** (`rth.energy_map.zone_demotion`, PR #38). Sprendimas
+> priimtas; žemiau — galutinis dizainas su B2 floor matavimo rezultatu.
 
-Reason attribution (`state_history.reason_out`, `state_history.py:25`) tada rodys
-**`rth_energy` dominuojant** (0→dauguma), o `critical_battery` nukris į ~0 — tai
-pat matuojamas A/B observable (§10). Terminal net demotion vertė (0.15 vs 0.20)
-lieka flag'e; default kai map ON = 0.15.
+**B1 — CRITICAL branch pašalinimas.** Kai map sprendžia (`zone_demotion = true`,
+reikalauja `decide`), statinio battery-zone net'o `critical_battery` guard-šaka
+**pašalinama** (`state_machine.py:113`, `_zone_demotion` sąlyga), paliekant
+`terminal_battery` (`< battery_zones.critical`, `:115-116`) kaip vienintelį
+saugiklį. **Nauja konstanta NEĮVEDAMA, `battery_zones` vertės NEKEIČIAMOS.**
 
-> **Thesis-affecting sprendimas (flag'uoju):** terminal net = 0.15 kai map ON.
-> Reikalauja autoriaus patvirtinimo (žr. koordinatoriaus reportą).
+Būtina pataisa: `critical_battery` guard suveikia ne ties 0.20, o **ties
+`nominal = 0.40`** — CRITICAL zona yra `[critical, nominal) = [0.20, 0.40)`
+(`battery.py:44-50`, `config/default.yaml:215-216`), tad guard'as kerta grįžimą
+vos `f` nukrenta žemiau **0.40** (`run_regime_calculator.py:48-52`). 0.20 yra tik
+TERMINAL pradžia, NE grįžimo taškas. Todėl demotion pašalina **0.40** statinį
+net'ą, o TERMINAL failsafe lieka ties **0.20**.
+
+**Kodėl „~0.15 terminal" atmestas.** `battery_zones.critical` nuleidimas iki 0.15
+grįžimo laikui yra **no-op**: guard'as vis tiek suveikia ties 0.40, o nuleidimas
+tik praplečia CRITICAL zoną iki `[0.15, 0.40)`. Grįžimą valdo šakos pašalinimas,
+ne slenksčio vertė — todėl jokio 0.15.
+
+**B2 — TERMINAL floor sweep (matavimas, pasirinktas floor 0.10).** Po demotion'o
+lieka klausimas, koks TERMINAL failsafe floor (`battery_zones.critical`) netrukdo
+map'ui. Sweep'o rezultatas (1 km²):
+- floor **0.20**: statinis trupmeninis net'as **perima ~47% grįžimų** iš willing
+  distance-aware map'o (14 `terminal_battery` vs 16 `rth_energy`);
+- floor **0.10**: override'as dingsta — `terminal_battery → 0`, map vienas valdo
+  kiekvieną grįžimą, arrival-reserve min 0.087;
+- **0.10 ≡ 0.05** 1 km² byte-identiškai (žemiau ~0.12 map visada grįžta pirmas),
+  tad floor'o vertė yra **scale-axis klausimas**, ne 1 km² klausimas;
+- swap'ai kvantuoti ties 5, ir floor jų **nepajudina** — raportuojamas negatyvas.
+
+**Pasirinktas Stage-5 arm 4 floor: 0.10** — palieka nepriklausomą ~5 pp backstop'ą
+virš `reserve_frac`. Taikoma **in-config** tam eksperimentui, NE keičiant
+`default.yaml`.
+
+Reason attribution (`state_history.reason_out`, `state_history.py:25`) su map ON
+tada rodo **`rth_energy` dominuojant**, o `critical_battery` nukrinta į 0 — tai pat
+matuojamas A/B observable (§11).
 
 ---
 
@@ -423,7 +466,7 @@ Flag-off runs turi būti **byte-identiški** pre-change.
 | S2 decide + arming | 7a + 7b už flago | `should_return` per map == analitinis; arm bound (virš arm niekada negrąžina); flag-off byte-identity | A/B decide veikia; senas 5 s kelias išlieka |
 | S3 Return routing | 7c parent-pointer grįžimas | grįžimo kelias aplenkia kliūtį (S_OBS nekyla); flag-off == tiesi styga | boxing fix grįžime |
 | S4 Resume routing | 7d atbulinis map | resume aplenkia kliūtį; `transit_free_space` nepriklausomas | livelock resume fix |
-| S5 Feasibility | 7e skip-and-flag + `skipped_legs` | E_home=∞ leg → flagged, ne drop; results.json laukas | apskaita eksplicitiška |
+| S5 Skip-on-stall | 7e runtime skip-on-stall + `skipped_legs` (`safety.stall_skip`, reikalauja `stall_detector`) | stall budget hit → `skip_stuck_leg` → `MISSION_PARTIAL`; flag-off `skipped_legs` tuščias (byte-identity) | apskaita eksplicitiška, ne tylus drop |
 
 Kiekviena stadija: pilnas `pytest` žalias; nauji testai naujam elgesiui;
 flag-off byte-identity fixture (hash nepakitęs). Battery-zone demotion (§9)
@@ -435,28 +478,39 @@ flag-off byte-identity fixture (hash nepakitęs). Battery-zone demotion (§9)
 
 **Tikslas:** ar dinaminė energy-map RTH pralenkia statinį slenkstį, paired seeds.
 
-- **Baseline ranka:** static-RTH — senasis 5 s laiko kelias + battery-zone nets
-  aktyvūs. **PATIKSLINTA:** literatūros baseline yra faktinis **static CRITICAL 20%**
-  (§1.1), NE 40% (nominal nėra guard'as). Dokumentuoti kaip „static 20% net".
-- **Treatment ranka:** energy-map RTH (map flag ON, demotion §9).
-- **Paired seeds:** ta pati `RngFactory` abiem rankom → `rng.stream(name, rep)`
+**Keturios rankos** (task C1; ne trys) ant tapačių seed'ų:
+1. **static-40% (map OFF)** — literatūros baseline: senasis 5 s laiko kelias +
+   aktyvūs battery-zone nets. **PATIKSLINTA:** faktinis statinis net'as suveikia
+   ties **`nominal = 0.40`** (CRITICAL guard'as, `state_machine.py:113`,
+   `run_regime_calculator.py:48-52`), NE 20% — 0.20 yra tik TERMINAL pradžia.
+   Dokumentuoti kaip „static 40% net", niekada „static 20%".
+2. **route-only** — map maršrutizuoja grįžimą/resume (7c+7d), bet decide lieka
+   statinis; CRITICAL guard'as nepaliestas.
+3. **decide+route (CRITICAL intact)** — map sprendžia IR maršrutizuoja
+   (7a+7b+7c+7d), bet `zone_demotion` OFF → statinis 0.40 net'as dar preemptina.
+4. **decide+route + `zone_demotion`** — pilnas efektas: CRITICAL šaka pašalinta
+   (§9), map vienas valdo grįžimą; TERMINAL floor 0.10 (in-config).
+
+- **Paired seeds:** ta pati `RngFactory` visoms rankom → `rng.stream(name, rep)`
   tapati (`rng.py:47-54`); fixed-N (ne CI stopping), kad pairing išliktų tikslus.
 - **Grid:** L-shape × area tiers {1,2,4,8,16 km²} (§3) × obstacle count
   (`obstacle_density_per_km2`, default 8/km², `config/default.yaml` env).
 
 **Laukiami observables:**
 
-| Metrika | Baseline (static 20%) | Treatment (map) |
-|---|---|---|
-| Sortie depth | ~60% | ↑ (gilesni sortie) |
-| Demand median (swaps) | ~8 | ↓ |
-| Success ceiling | ~92.8% | ↑ (boxing fix) |
-| `rth_energy` transition count | ~0 | dominuoja |
-| `critical_battery` count | dauguma | ~0 |
+| Metrika | 1. static-40% | 2. route-only | 3. decide+route (CRITICAL intact) | 4. +zone_demotion |
+|---|---|---|---|---|
+| Naudingas sortie langas | ~60% (1.0→0.40) | ~60% (CRITICAL intact) | ~60% (CRITICAL intact) | ~80% (1.0→0.20) |
+| Demand median (swaps) | ~8 | ↓ | ↓ | ↓ |
+| Success ceiling | ~92.8% | ↑ (boxing fix) | ↑ | ↑ |
+| `rth_energy` count | ~0 | yra | yra | **dominuoja** |
+| `critical_battery` count | dauguma | dauguma | dauguma | **~0** |
 
-(Baseline skaičiai — **AUTORIAUS DIAGNOZĖ** STUDY-01; treatment kryptys —
-hipotezės, patikrinamos realiu paleidimu.) `rth_energy`/`critical_battery`
-skaičiai iš `state_history.reason_out` (`state_history.py:25`) /
+(Arm 1 skaičiai — **AUTORIAUS DIAGNOZĖ** STUDY-01; kitų rankų kryptys —
+hipotezės, patikrinamos realiu paleidimu. Naudingas langas: statinis net'as
+kerta ties 0.40 → ~60% (1.0→0.40); tik `zone_demotion` atveria iki ~80%
+(1.0→0.20).) `rth_energy`/`critical_battery` skaičiai iš
+`state_history.reason_out` (`state_history.py:25`) /
 `smdp_estimator.n_transitions` (`smdp_estimator.py:49`).
 
 ---
@@ -489,8 +543,8 @@ skaičiai iš `state_history.reason_out` (`state_history.py:25`) /
 | Cap 360 kJ (100 Wh × 3600) | `config/default.yaml` fleet; `config.py:29, 365` |
 | Reference cruise 18.333 J/m (220 W / 12 m/s) | `config/default.yaml` platforms.MULTIROTOR; `energy_model.py:106-118` |
 | `reserve=0.05·cap=18 kJ` (skaič. `rth_calculator.py:80`), `check_interval_s=5 s` | `config/default.yaml` rth; `config.py:196-198` |
-| Zones high/nominal/critical = 0.75/0.40/0.20; nominal = reporting bin | `config.py:155-159`; `battery.py:42-50` |
-| Guard tvarka: rth_energy→critical(0.20)→terminal | `state_machine.py:82-101` (`:95-96`, `:97-98`, `:99-100`) |
+| Zones high/nominal/critical = 0.75/0.40/0.20; `critical_battery` guard suveikia ties nominal=0.40 (CRITICAL juosta [0.20,0.40)), NE vien reporting bin | `config.py:155-159`; `battery.py:44-50`; `run_regime_calculator.py:48-52` |
+| Guard tvarka: rth_energy→critical_battery (<0.40)→terminal (<0.20) | `state_machine.py:109-116` (`:111-112`, `:113-114`, `:115-116`) |
 | `should_return = level < e_next + return + reserve`; ×1.5 fudge | `rth_calculator.py:63-82` (`:68-69`) |
 | RTH check kas 5 s, tik S2/S_FERRY | `agent.py:225-227` |
 | `lookahead` bundle (leg + connector + camera) | `agent.py:411-429` |
@@ -511,13 +565,13 @@ skaičiai iš `state_history.reason_out` (`state_history.py:25`) /
 | Grid-cost, build-laikai, yellow-penalty derivacija | **ESTIMATE** — formulės pateiktos §3–§6 |
 | STUDY-01 92.8%/36-500; FIX-B1 347–791 s/rep | **AUTORIAUS DIAGNOZĖ** (ne repo artefaktas; `docs/reports/` tuščias) |
 
-## Priedas B: siūlomas roadmap įrašas
+## Priedas B: roadmap įrašas (istorinis — jau įgyvendinta)
 
-`docs/thesis_roadmap.md` šiuo metu neturi EM-01 (ir pats pasenęs: „279/298 tests"
-vs faktinis baseline 373). Siūloma pridėti:
+Roadmap dabar gyvena `TODO.md` (`docs/thesis_roadmap.md` ištrintas). EM-01 jau
+merged — žr. `TODO.md` B1/C1 eilutes. Istorinis siūlytas įrašas (dabar realizuotas):
 
 > | EM-01 | Energy cost-to-go map: per-rep Dijkstra `E_home`+parent; obstacle-aware
 > RTH decide (battery-quantized cadence) + return/resume routing; static-RTH
-> demoted TERMINAL-only. Staged, flag'uota, byte-identity. A/B: static-20% vs
-> map. | **Code / Plan** | šis pasiūlymas | Merged; A/B verdiktas (success ceiling,
-> sortie depth, rth_energy dominance) honest read-out |
+> demoted TERMINAL-only. Staged, flag'uota, byte-identity. A/B: static-40% vs
+> map (keturios rankos). | **Code / Plan** | šis pasiūlymas | Merged; A/B verdiktas
+> (success ceiling, sortie depth, rth_energy dominance) honest read-out |
