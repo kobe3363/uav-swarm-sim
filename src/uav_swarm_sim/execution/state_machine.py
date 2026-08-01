@@ -76,25 +76,41 @@ ALLOWED: set[tuple[AgentState, AgentState]] = {
 class StateMachine:
     ALLOWED = ALLOWED
 
-    def __init__(self, zones_cfg: BatteryZonesConfig) -> None:
+    def __init__(
+        self, zones_cfg: BatteryZonesConfig, *, zone_demotion: bool = False
+    ) -> None:
         self._zones = zones_cfg
+        # EM-01 B1: when True (rth.energy_map.zone_demotion, requires decide) the
+        # static CRITICAL net is removed from _coverage_guards so the dynamic map
+        # governs the normal energy return. Default False => the guard is byte-
+        # identical to pre-B1 and every existing call site is unchanged.
+        self._zone_demotion = zone_demotion
 
     def _coverage_guards(self, s: AgentState, ctx: AgentContext) -> Transition | None:
         """Triggers that interrupt coverage from EITHER S2_MISSION or S_FERRY.
 
         The dynamic route-vs-return reserve (guideline 3.1) is the PRIMARY early-
         return trigger and pre-empts the crude battery-zone nets, so a return it
-        triggers is attributed to the live energy calculation. The battery-zone
-        guards are progressively-severe last-resort nets; CRITICAL (the higher
-        threshold) is tested before TERMINAL, so a normally-draining drone returns
-        at the CRITICAL boundary and never reaches TERMINAL while still covering.
-        (Irreversible failure is handled for all airborne states in ``step``.)
+        triggers is attributed to the live energy calculation.
+
+        Two regimes for the battery-zone nets, by ``zone_demotion`` (EM-01 B1):
+          * DEFAULT (``zone_demotion=False``): the nets are progressively-severe
+            last-resort catches. CRITICAL (the higher threshold, 0.40) is tested
+            before TERMINAL (0.20), so a normally-draining drone returns at the
+            CRITICAL boundary and never reaches TERMINAL while still covering.
+          * DEMOTED (``zone_demotion=True``, map deciding): the CRITICAL net is
+            removed, so the dynamic map (``rth_energy``) governs the normal return
+            and the usable sortie deepens to the 0.20 floor. TERMINAL remains the
+            last-resort failsafe and CAN now legitimately fire while covering
+            (on cheap near-base legs where the map's reserve sits below 0.20).
+        Guard ORDER is otherwise identical in both regimes. (Irreversible failure
+        is handled for all airborne states in ``step``.)
         """
         if ctx.threat_flag:
             return Transition(s, S.S_OBS, "obstacle_threat")
         if ctx.rth_decision:
             return Transition(s, S.S3_RTH, "rth_energy")
-        if ctx.battery_zone is BatteryZone.CRITICAL:
+        if not self._zone_demotion and ctx.battery_zone is BatteryZone.CRITICAL:
             return Transition(s, S.S3_RTH, "critical_battery")
         if ctx.battery_zone is BatteryZone.TERMINAL:
             return Transition(s, S.S3_RTH, "terminal_battery")
