@@ -295,7 +295,7 @@ class SimulationEngine:
             self.plans = {}
 
         # support objects
-        sm = StateMachine(cfg.battery_zones)
+        sm = StateMachine(cfg.battery_zones, zone_demotion=cfg.rth.energy_map.zone_demotion)
         self.bus = EventBus()
         self.history = StateHistory()
         # Phase 3 telemetry: optional, OFF by default, a read-only probe. When on,

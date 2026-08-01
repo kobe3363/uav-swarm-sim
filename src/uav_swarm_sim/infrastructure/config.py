@@ -244,6 +244,10 @@ class EnergyMapConfig:
     red_threshold: float = 0.5       # occupancy fraction at/above which a cell blocks
     decide: bool = False             # Stage 2: map-based RTH decide + arming + cadence
     route: bool = False              # Stage 3: map-routed S3 return + resume transit
+    zone_demotion: bool = False      # B1: remove the static CRITICAL RTH net so the
+                                     # map governs the normal return; requires decide.
+                                     # Optional key absent from default.yaml => hash
+                                     # and fixtures unchanged, flag-off byte-identical.
 
 
 @dataclass(frozen=True)
@@ -568,6 +572,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         red_threshold=float(emr.get("red_threshold", 0.5)),
         decide=bool(emr.get("decide", False)),
         route=bool(emr.get("route", False)),
+        zone_demotion=bool(emr.get("zone_demotion", False)),
     )
     rth = RTHConfig(
         check_interval_s=float(_require(rt, "check_interval_s", "rth")),
@@ -741,6 +746,8 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("rth.energy_map.decide requires rth.energy_map.enabled: true")
     if emc.route and not emc.enabled:
         raise ConfigError("rth.energy_map.route requires rth.energy_map.enabled: true")
+    if emc.zone_demotion and not emc.decide:
+        raise ConfigError("rth.energy_map.zone_demotion requires rth.energy_map.decide: true")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):

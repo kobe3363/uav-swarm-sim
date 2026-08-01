@@ -200,6 +200,40 @@ def test_energy_map_decide_requires_enabled(config_path):
         load_config(config_path, overrides={"rth.energy_map.decide": True})
 
 
+# --------------------------------------------------------------------------- #
+# config: EM-01 rth.energy_map.zone_demotion (B1 sub-flag)                     #
+# --------------------------------------------------------------------------- #
+def test_energy_map_zone_demotion_defaults_off_and_absent(config_path):
+    """Same optional-key rule as the other EM-01 sub-flags: zone_demotion defaults
+    False and rth.energy_map stays absent from default.yaml (hash/fixtures unchanged)."""
+    import yaml
+
+    raw = yaml.safe_load(config_path.read_text())
+    assert "energy_map" not in raw["rth"]
+    assert load_config(config_path).rth.energy_map.zone_demotion is False
+
+
+def test_energy_map_zone_demotion_override_parses(config_path):
+    cfg = load_config(config_path, overrides={
+        "rth.energy_map.enabled": True,
+        "rth.energy_map.decide": True,
+        "rth.energy_map.zone_demotion": True,
+    })
+    assert cfg.rth.energy_map.zone_demotion is True
+
+
+def test_energy_map_zone_demotion_requires_decide(config_path):
+    """B1: zone_demotion removes the static net, so the map MUST be deciding.
+    zone_demotion=True without decide=True is unsafe and must fail at load time
+    (enabled alone is not enough -- the analytic decide fires ~0x in the default
+    region, which would leave TERMINAL as the only return net)."""
+    with pytest.raises(ConfigError, match="zone_demotion"):
+        load_config(config_path, overrides={
+            "rth.energy_map.enabled": True,
+            "rth.energy_map.zone_demotion": True,
+        })
+
+
 @pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf")])
 def test_operating_margin_rejects_non_finite_and_negative(config_path, bad):
     """NaN passes a bare < 0 check; the margin feeds flyable_region buffering

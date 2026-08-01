@@ -101,5 +101,33 @@ def test_coverage_complete_returns_when_no_energy_trigger_fires(sm):
     assert tr.reason == "coverage_complete"
 
 
+@pytest.fixture
+def sm_demoted():
+    """A StateMachine with EM-01 B1 zone_demotion active (map governs the return)."""
+    return StateMachine(load_config(CONFIG_PATH).battery_zones, zone_demotion=True)
+
+
+def test_zone_demotion_skips_critical_battery_guard(sm, sm_demoted):
+    """B1: with zone_demotion active, a CRITICAL-zone battery (0.20-0.40) no longer
+    forces RTH -- the static net is removed so the dynamic map's 'rth_energy' can
+    govern the return. The SAME context on a default StateMachine still returns via
+    'critical_battery' (the pre-B1 behaviour, pinned unchanged)."""
+    ctx_kwargs = dict(battery_zone=BatteryZone.CRITICAL, rth_decision=False)
+    # demoted: the CRITICAL net is gone and nothing else interrupts -> no transition
+    assert sm_demoted.step(_ctx(**ctx_kwargs)) is None
+    # default: the CRITICAL net still fires exactly as before
+    tr = sm.step(_ctx(**ctx_kwargs))
+    assert tr.dst is S.S3_RTH
+    assert tr.reason == "critical_battery"
+
+
+def test_zone_demotion_keeps_terminal_failsafe(sm_demoted):
+    """B1: demotion removes only the CRITICAL net; the TERMINAL (<0.20) failsafe
+    still forces RTH with reason 'terminal_battery'."""
+    tr = sm_demoted.step(_ctx(battery_zone=BatteryZone.TERMINAL))
+    assert tr.dst is S.S3_RTH
+    assert tr.reason == "terminal_battery"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
