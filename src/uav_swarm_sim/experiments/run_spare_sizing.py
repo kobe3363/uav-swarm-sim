@@ -50,7 +50,9 @@ per-(k, B) regression test). Replication indices and the shared ``RngFactory``
 are the same as the grid sweep's, so results stay exactly paired with any past
 or future grid run. Each replication is appended to ``results_partial.jsonl``
 (demand schema) the moment it completes; ``--resume`` skips finished
-replications of an interrupted demand run.
+replications of an interrupted demand run. ``--jobs`` (E2) runs the batch over a
+spawn pool, byte-identical to serial (pure per-index streams; the parent stays
+the single partial-log writer); the grid path is unaffected (stays serial).
 
 Examples:
   # default range from the analytical prior, 200 paired reps per spare count
@@ -64,11 +66,23 @@ Examples:
 """
 from __future__ import annotations
 
+import os
+
+# Pin BLAS/OpenMP to one thread BEFORE numpy loads (transitively via the engine
+# import below): keeps N worker processes from oversubscribing cores with
+# N*threads at --jobs>1, AND keeps the FP reduction order identical across
+# serial/parallel so the demand-path byte-identity gate holds. setdefault leaves
+# an explicit user override intact; spawn workers re-import this module so the
+# pin also applies in each child. (Mirrors run_scale_tiers / run_shape_sweep --
+# the pin is a load-bearing cause of ENG-09 determinism, not an optimisation.)
+for _blas_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                  "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_blas_var, "1")
+
 import argparse
 import dataclasses
 import json
 import math
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +92,7 @@ from ..infrastructure.enums import AgentState, Outcome
 from ..infrastructure.rng import STREAM_LAUNCH_SAMPLING, STREAM_OBSTACLES, RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
 from ..metrics.run_output import RunContext
+from ._parallel import add_jobs_arg, resolve_jobs, run_units
 from .fleet_sizing import FleetSizingInputs, sweep as fleet_sweep
 from .spare_sizing import (
     TARGETS,
@@ -385,8 +400,30 @@ def _per_drone_swaps(history) -> dict[int, int]:
     return counts
 
 
+def _run_demand_unit(cfg_inf: Config, k: int, rng: RngFactory, algo,
+                     planner) -> DemandRecord:
+    """One replication of the unbounded batch -> DemandRecord.
+
+    Top-level and picklable so it can be the ProcessPoolExecutor target under
+    --jobs. ``cfg_inf`` already has the reserve forced to ``None`` (done once in
+    the parent). ``rng`` is the SHARED RngFactory -- an immutable int master
+    seed whose ``stream(name, k)`` is a pure function of (master_seed, name, k),
+    so handing the same factory to every unit (across the pickle boundary or
+    not) reproduces replication k byte-identically regardless of order."""
+    res = SimulationEngine(cfg_inf, rng, replication=k, algo=algo,
+                           planner=planner).run()
+    success = res.outcome is Outcome.MISSION_SUCCESS
+    return DemandRecord(
+        replication=k,
+        outcome=res.outcome.value,
+        demand=int(res.metrics.n_swaps) if success else None,
+        per_drone_swaps=_per_drone_swaps(res.history),
+    )
+
+
 def run_demand(cfg: Config, reps: int, rng: RngFactory, algo=None, planner=None,
-               progress=None, replications=None) -> list[DemandRecord]:
+               progress=None, replications=None, jobs: int = 1,
+               ) -> list[DemandRecord]:
     """One unbounded batch: run replications with ``total_reserve_batteries``
     forced to ``None`` and record each one's swap-pack demand.
 
@@ -399,6 +436,12 @@ def run_demand(cfg: Config, reps: int, rng: RngFactory, algo=None, planner=None,
     ``replications`` restricts the batch to specific indices (the --resume
     path); each index seeds only its own streams, so a subset runs exactly as
     it would inside the full batch.
+
+    ``jobs > 1`` runs the replications over a spawn ProcessPoolExecutor,
+    byte-identical to serial (pure per-index streams; the parent stays the
+    single partial-log writer via ``progress``); ``jobs <= 1`` is the serial
+    revert path. Records return in completion order; ``demand_with_partials``
+    sorts by replication, so results.json is jobs-invariant.
     """
     from ..infrastructure.enums import PlannerKind
     if planner is None:
@@ -406,21 +449,9 @@ def run_demand(cfg: Config, reps: int, rng: RngFactory, algo=None, planner=None,
 
     cfg_inf = _with_reserve(cfg, None)
     todo = list(replications) if replications is not None else list(range(1, reps + 1))
-    records: list[DemandRecord] = []
-    for k in todo:
-        res = SimulationEngine(cfg_inf, rng, replication=k, algo=algo,
-                               planner=planner).run()
-        success = res.outcome is Outcome.MISSION_SUCCESS
-        rec = DemandRecord(
-            replication=k,
-            outcome=res.outcome.value,
-            demand=int(res.metrics.n_swaps) if success else None,
-            per_drone_swaps=_per_drone_swaps(res.history),
-        )
-        records.append(rec)
-        if progress is not None:
-            progress(rec)
-    return records
+    return run_units(_run_demand_unit,
+                     [(cfg_inf, k, rng, algo, planner) for k in todo],
+                     jobs, on_result=progress)
 
 
 def _demand_record_dict(rec: DemandRecord) -> dict:
@@ -514,7 +545,7 @@ def _validated_demand_resume(resume_path, expected: dict, reps: int) -> dict[int
 
 def demand_with_partials(cfg: Config, reps: int, rng: RngFactory, partial_path,
                          resume_path=None, algo=None, planner=None,
-                         progress=None) -> list[DemandRecord]:
+                         progress=None, jobs: int = 1) -> list[DemandRecord]:
     """Crash-safe wrapper around ``run_demand`` (the demand twin of
     ``sweep_with_partials``): every completed replication is appended to
     ``partial_path``, and ``resume_path`` skips the replications a previous
@@ -541,7 +572,7 @@ def demand_with_partials(cfg: Config, reps: int, rng: RngFactory, partial_path,
 
     todo = [k for k in range(1, reps + 1) if k not in done]
     new_recs = run_demand(cfg, reps, rng, algo=algo, planner=planner,
-                          progress=_progress, replications=todo)
+                          progress=_progress, replications=todo, jobs=jobs)
     return sorted(list(done.values()) + new_recs, key=lambda r: r.replication)
 
 
@@ -913,7 +944,8 @@ def _main_demand(args, cfg: Config, prior, coverage_j) -> int:
     if args.resume:
         print(f"[resume] continuing from {args.resume}", file=sys.stderr)
     records = demand_with_partials(cfg, args.reps, rng, partial_path,
-                                   resume_path=args.resume, progress=_progress)
+                                   resume_path=args.resume, progress=_progress,
+                                   jobs=resolve_jobs(args.jobs))
 
     knees = demand_knees(records)
     # same validate target as the grid report (SpareSizingReport.build)
@@ -966,6 +998,7 @@ def main(argv=None) -> int:
                          "of --reps replications; knees at both targets are "
                          "reconstructed from the demand CDF via the equivalence "
                          "success(k,B) <=> D_k <= B (see module docstring)")
+    add_jobs_arg(ap)  # E2: parallelises the --demand-mode batch (grid path stays serial)
     args = ap.parse_args(argv)
 
     if args.demand_mode and (args.spares is not None or args.spare_range is not None):

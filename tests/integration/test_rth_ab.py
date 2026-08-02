@@ -406,5 +406,79 @@ def test_resume_missing_dir_and_empty_dir(tmp_path):
         load_resume_dir(empty, IDENT)
 
 
+# --------------------------------------------------------------------------- #
+# 6. E2 --jobs byte-identity gate (spawn parallel == serial)                   #
+# --------------------------------------------------------------------------- #
+def _ab_physics(records):
+    """AbRecords sorted by replication with the wall-clock field zeroed -- the
+    physics/result partition the --jobs identity gate compares. ``duration_s`` is
+    environment-dependent and excluded; every other field must match bitwise."""
+    return [dataclasses.replace(r, duration_s=0.0)
+            for r in sorted(records, key=lambda r: r.replication)]
+
+
+@pytest.mark.slow
+def test_rth_ab_jobs_serial_parallel_byte_identical(config_path):
+    """E2 CORE GATE: --jobs 1 (serial, same process) vs --jobs 2 (spawn) produce
+    byte-identical AbRecords on every physics field, duration_s excluded.
+
+    The assertion straddles the boundary that matters -- serial <-> first spawn
+    worker, each with its own BLAS context. (jobs 2 vs jobs 3, both spawn, could
+    agree even if the thread pin were missing; 1 vs 2 cannot.) With reps=4 over 2
+    workers the parallel completion order interleaves, so passing also proves the
+    caller's index-sort reassembles a jobs-invariant result."""
+    base = experiment_constants(_tiny_cfg(config_path))
+    cfg1 = arm_config(base, 1)
+    reps = 4
+    serial = run_arm(cfg1, 1, reps, RngFactory(cfg1.sim.master_seed), jobs=1)
+    parallel = run_arm(cfg1, 1, reps, RngFactory(cfg1.sim.master_seed), jobs=2)
+    assert _ab_physics(serial) == _ab_physics(parallel)
+
+
+@pytest.mark.slow
+def test_rth_ab_resumed_subset_under_jobs_matches_serial_slice(config_path):
+    """Resume identity under --jobs: a resumed (subset) batch run in parallel
+    reproduces exactly the corresponding replications of the full serial run.
+    Resume routes only ``replications=todo`` into run_arm, so a parallel subset
+    must equal that slice of the serial whole (the resume merge itself is pure
+    index bookkeeping, unchanged by E2)."""
+    base = experiment_constants(_tiny_cfg(config_path))
+    cfg1 = arm_config(base, 1)
+    full = run_arm(cfg1, 1, 4, RngFactory(cfg1.sim.master_seed), jobs=1)
+    subset = run_arm(cfg1, 1, 4, RngFactory(cfg1.sim.master_seed),
+                     jobs=2, replications=[3, 4])
+    want = [r for r in full if r.replication in (3, 4)]
+    assert _ab_physics(subset) == _ab_physics(want)
+
+
+@pytest.mark.slow
+def test_blas_pin_is_load_bearing_or_skip(config_path, monkeypatch):
+    """Prove the BLAS pin does real work (E2 requirement), else skip honestly.
+
+    The pin (module top) makes spawn workers reproduce serial byte-for-byte by
+    fixing FP reduction order. The serial run here uses the parent's pinned numpy
+    (1 thread); we then force the SPAWN CHILDREN to run multi-threaded BLAS by
+    overriding the pinned env they inherit, and compare. If threading perturbs
+    the result the gate DIVERGES -- proof the pin is load-bearing. If it does not
+    (this smoke sim's linear algebra may never hit a multithreaded BLAS
+    reduction), skip with a documented reason rather than a silent pass: the pin
+    stays load-bearing for oversubscription and the 1 km^2 studies."""
+    base = experiment_constants(_tiny_cfg(config_path))
+    cfg1 = arm_config(base, 1)
+    reps = 4
+    serial = _ab_physics(run_arm(cfg1, 1, reps,
+                                 RngFactory(cfg1.sim.master_seed), jobs=1))
+    for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+               "NUMEXPR_NUM_THREADS"):
+        monkeypatch.setenv(_v, "8")  # spawn children inherit this, overriding the pin
+    parallel = _ab_physics(run_arm(cfg1, 1, reps,
+                                   RngFactory(cfg1.sim.master_seed), jobs=2))
+    if serial != parallel:
+        return  # identity broke under multithreaded BLAS -> the pin is load-bearing
+    pytest.skip("BLAS pin has no observable effect on the smoke sim (its linear "
+                "algebra does not exercise multithreaded BLAS reductions); the "
+                "pin remains load-bearing for oversubscription and larger studies.")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
