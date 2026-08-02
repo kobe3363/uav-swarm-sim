@@ -45,4 +45,4 @@ jobs:
     # naudoja loginius (= 4) -> atkuria ankstesnį 4 worker'ių lygiagretumą.
     - name: Run pytest
       run: |
-        pytest -n logical --dist loadscope --durations=20 tests/
+        pytest -n logical --dist loadscope tests/
