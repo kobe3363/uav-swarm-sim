@@ -255,12 +255,19 @@ class SimulationEngine:
         # byte-identical). Uses the layer-0 map, same as launch siting and RTH.
         if cfg.coverage.transit_free_space:
             _env0, _cov = self.env, cfg.coverage
+            # E3: per-replication visibility-graph cache. The engine is built
+            # fresh per replication (and per --jobs spawn worker), so this dict is
+            # naturally per-replication/per-worker and holds no cross-replication
+            # state. The cache is byte-identical to the uncached build.
+            self._transit_graph_cache: dict = {}
             self._transit_planner = lambda a, b: route_transit(
                 a, b, self.motion, _env0, enabled=True,
                 operating_area=_cov.operating_area,
                 margin_m=_cov.operating_margin_m,
+                graph_cache=self._transit_graph_cache,
             )
         else:
+            self._transit_graph_cache = {}
             self._transit_planner = None
 
         # --- mission planning: area coverage OR target visit -------------- #

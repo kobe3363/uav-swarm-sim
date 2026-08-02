@@ -27,6 +27,7 @@ TURN cost integrated over the (possibly longer) routed length.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 
 import networkx as nx
@@ -118,6 +119,145 @@ def _shortest_polyline(a_xy, b_xy, buffered_obstacles, operating_area_poly) -> l
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         return None
     return [uniq[i] for i in idx]
+
+
+# --------------------------------------------------------------------------- #
+# E3: visibility-graph caching for route_transit.
+#
+# The only expensive part of _shortest_polyline is the O(V**2) obstacle-vertex
+# edge_ok loop (two shapely predicates per pair); it is ENDPOINT-INDEPENDENT --
+# it depends solely on (buffered_obstacles, operating_area_poly), never on a/b.
+# _build_ok_pairs memoises exactly that result (once per obstacle field), and
+# _shortest_polyline_cached splices it back into a per-(a, b) query so the built
+# graph -- nodes, edge SET, and edge INSERTION ORDER (which Dijkstra tie-breaks
+# on) -- is byte-identical to _shortest_polyline. a/b enter only as two fresh
+# nodes; the cache is consulted purely by coordinate-key pair, never by node
+# index, and only for genuine vertex-vertex pairs, so the dedup index-shift when
+# a/b coincides with an obstacle vertex is irrelevant (see route_transit and the
+# forced-collision seam test).
+# --------------------------------------------------------------------------- #
+
+
+def _round_key(p) -> tuple[float, float]:
+    return (round(p[0], 6), round(p[1], 6))
+
+
+def _pair_key(ki, kj):
+    """Order-normalised unordered key pair, so (ki, kj) and (kj, ki) collide."""
+    return (ki, kj) if ki <= kj else (kj, ki)
+
+
+def _build_ok_pairs(buffered_obstacles, operating_area_poly) -> set:
+    """The endpoint-independent O(V**2) visibility result: the SET of unordered
+    obstacle-vertex pairs (by 6-decimal coordinate key) for which ``edge_ok``
+    holds. Mirrors the ``edge_ok`` / vertex-dedup logic of ``_shortest_polyline``
+    exactly (a/b excluded). Only the True (visible) pairs are stored -- a pair
+    absent from the set is not visible -- so memory is O(visible edges), not
+    O(V**2): the two representations are byte-equivalent because the caller only
+    ever asks whether a pair is visible."""
+    nav_core = None
+    if buffered_obstacles is not None:
+        nav_core = buffered_obstacles.buffer(-_SKIN_EPS_M)
+        if nav_core.is_empty:
+            nav_core = None
+
+    def edge_ok(p, q) -> bool:
+        seg = LineString([p, q])
+        if not operating_area_poly.covers(seg):
+            return False
+        if nav_core is not None and nav_core.intersects(seg):
+            return False
+        return True
+
+    verts = _obstacle_vertices(buffered_obstacles, operating_area_poly)
+    seen: dict[tuple[float, float], int] = {}
+    vuniq: list[tuple[float, float]] = []
+    vkey: list[tuple[float, float]] = []
+    for p in verts:
+        k = _round_key(p)
+        if k not in seen:
+            seen[k] = len(vuniq)
+            vuniq.append(p)
+            vkey.append(k)
+
+    ok_pairs: set = set()
+    for i in range(len(vuniq)):
+        for j in range(i + 1, len(vuniq)):
+            if edge_ok(vuniq[i], vuniq[j]):
+                ok_pairs.add(_pair_key(vkey[i], vkey[j]))
+    return ok_pairs
+
+
+def _shortest_polyline_cached(
+    a_xy, b_xy, buffered_obstacles, operating_area_poly, ok_pairs
+) -> list[tuple[float, float]] | None:
+    """Byte-identical twin of ``_shortest_polyline`` that reuses a prebuilt
+    ``ok_pairs`` for the obstacle-vertex edges. The ONLY difference from
+    ``_shortest_polyline`` is the source of the vertex-vertex ``edge_ok`` decision
+    (cache lookup instead of a fresh shapely call); nodes, dedup, loop order,
+    weights, and Dijkstra are unchanged."""
+    nav_core = None
+    if buffered_obstacles is not None:
+        nav_core = buffered_obstacles.buffer(-_SKIN_EPS_M)
+        if nav_core.is_empty:
+            nav_core = None
+
+    def edge_ok(p, q) -> bool:
+        seg = LineString([p, q])
+        if not operating_area_poly.covers(seg):
+            return False
+        if nav_core is not None and nav_core.intersects(seg):
+            return False
+        return True
+
+    verts = _obstacle_vertices(buffered_obstacles, operating_area_poly)
+    # combined dedup -- IDENTICAL order to _shortest_polyline ([a, b] first, then
+    # verts) -- while tagging each surviving node's origin. A node is a VERTEX iff
+    # a/b did NOT claim its key first; its raw coords are then the first verts
+    # occurrence of that key, exactly what _build_ok_pairs keyed on.
+    seen: dict[tuple[float, float], int] = {}
+    uniq: list[tuple[float, float]] = []
+    is_vertex: list[bool] = []
+    for p in (a_xy, b_xy):
+        k = _round_key(p)
+        if k not in seen:
+            seen[k] = len(uniq)
+            uniq.append(p)
+            is_vertex.append(False)
+    for p in verts:
+        k = _round_key(p)
+        if k not in seen:
+            seen[k] = len(uniq)
+            uniq.append(p)
+            is_vertex.append(True)
+
+    g = nx.Graph()
+    for i, p in enumerate(uniq):
+        g.add_node(i, xy=p)
+    for i in range(len(uniq)):
+        for j in range(i + 1, len(uniq)):
+            if is_vertex[i] and is_vertex[j]:
+                ok = _pair_key(_round_key(uniq[i]), _round_key(uniq[j])) in ok_pairs
+            else:
+                ok = edge_ok(uniq[i], uniq[j])
+            if ok:
+                g.add_edge(i, j, w=math.dist(uniq[i], uniq[j]))
+
+    src = seen[_round_key(a_xy)]
+    dst = seen[_round_key(b_xy)]
+    try:
+        idx = nx.shortest_path(g, src, dst, weight="w")
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return None
+    return [uniq[i] for i in idx]
+
+
+def _obstacle_cache_key(buffered_obstacles, operating_area: str, margin_m: float):
+    """Value-based, self-defending cache key for ``ok_pairs``. ``obs.wkb`` makes
+    it independent of object identity / engine lifetime; ``operating_area`` and
+    ``margin_m`` (with the env's fixed survey area) fully determine the flyable
+    region and hence the vertex set and every ``edge_ok`` result."""
+    return (hashlib.sha1(buffered_obstacles.wkb).digest(), operating_area, margin_m)
 
 
 def _path_clear(path: Path, env, ds: float = 1.0) -> bool:
@@ -234,6 +374,7 @@ def route_transit(
     enabled: bool,
     operating_area: str = "convex_hull",
     margin_m: float = 50.0,
+    graph_cache: dict | None = None,
 ) -> Path:
     """FIX-B1: the single source of truth for an S1 TRANSIT leg's geometry --
     the CRUISE twin of ``route_connector`` (which stays connector-only and
@@ -253,6 +394,12 @@ def route_transit(
     only a blocked chord is rerouted, and every fallback returns the chord
     unchanged (a detour never makes a transit *worse*; runtime S_OBS recovery
     remains the safety net exactly as before).
+
+    ``graph_cache`` (E3): an optional per-replication dict memoising the
+    endpoint-independent O(V**2) obstacle-vertex visibility result. When ``None``
+    (default) the visibility graph is rebuilt from scratch, byte-identical to the
+    original behaviour; when supplied, the shared result is spliced into each
+    query, byte-identically (see ``_shortest_polyline_cached``).
     """
     chord = motion.plan(a, b, ManeuverType.CRUISE)
     if not enabled:
@@ -265,7 +412,15 @@ def route_transit(
         return chord  # unobstructed -> straight chord (byte-identical)
 
     region = flyable_region(env.area, obs, operating_area, margin_m)
-    polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
+    if graph_cache is None:
+        polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
+    else:
+        key = _obstacle_cache_key(obs, operating_area, margin_m)
+        ok_pairs = graph_cache.get(key)
+        if ok_pairs is None:
+            ok_pairs = _build_ok_pairs(obs, region)
+            graph_cache[key] = ok_pairs
+        polyline = _shortest_polyline_cached(a.as_xy(), b.as_xy(), obs, region, ok_pairs)
     if polyline is None or len(polyline) < 2:
         return chord  # boxed in -> fall back (never worse than today)
     routed = _chain_cruise_legs(polyline, a, b, motion)
