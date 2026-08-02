@@ -15,6 +15,14 @@ import random
 from shapely.geometry import box
 from shapely.ops import unary_union
 
+import uav_swarm_sim.planning.visibility_router as visibility_router
+from uav_swarm_sim.infrastructure.config import load_config
+from uav_swarm_sim.infrastructure.core_types import Pose
+from uav_swarm_sim.infrastructure.enums import ManeuverType
+from uav_swarm_sim.physical_model.drone_specs import build_spec
+from uav_swarm_sim.physical_model.motion_model import make_motion_model
+from uav_swarm_sim.planning.environment_map import EnvironmentMap
+from uav_swarm_sim.planning.obstacle_generator import Obstacle
 from uav_swarm_sim.planning.visibility_router import (
     _build_ok_pairs,
     _obstacle_cache_key,
@@ -98,40 +106,58 @@ def test_forced_collision_both_endpoints_on_vertices():
 
 
 def test_cache_key_discriminates_obstacle_field():
-    """The value key includes obs.wkb: same field -> same key; a different field
-    -> different key. An obstacle-omitting key would collide and return a stale
-    ok_pairs; the real key does not."""
+    """The value key contains every ``ok_pairs`` dependency, including region.
+
+    The same obstacle field may be queried through a different survey area when
+    a caller deliberately shares a cache.  That must not reuse a stale graph.
+    """
     obs, region = _field()
-    key = _obstacle_cache_key(obs, "convex_hull", 50.0)
+    key = _obstacle_cache_key(obs, region)
 
     # identical geometry rebuilt independently -> identical wkb -> identical key
     obs_same = unary_union([box(30.0, 30.0, 50.0, 55.0), box(60.0, 20.0, 78.0, 62.0)])
-    assert _obstacle_cache_key(obs_same, "convex_hull", 50.0) == key
+    assert _obstacle_cache_key(obs_same, region) == key
 
     # a different obstacle field -> different key (the discriminator)
     obs_diff = unary_union([box(31.0, 30.0, 50.0, 55.0), box(60.0, 20.0, 78.0, 62.0)])
-    assert _obstacle_cache_key(obs_diff, "convex_hull", 50.0) != key
+    assert _obstacle_cache_key(obs_diff, region) != key
 
-    # operating_area / margin are part of the key too
-    assert _obstacle_cache_key(obs, "bbox", 50.0) != key
-    assert _obstacle_cache_key(obs, "convex_hull", 25.0) != key
+    # Same obstacles, but a different survey area: region is a direct cache
+    # dependency and must discriminate even with identical mode/margin values.
+    region_diff = flyable_region(box(-25.0, 0.0, 100.0, 100.0), obs,
+                                 "convex_hull", 50.0)
+    assert _obstacle_cache_key(obs, region_diff) != key
 
 
-def test_ok_pairs_reused_for_same_field_distinct_for_different():
-    """A shared graph_cache dict: two fields with different keys build two distinct
-    ok_pairs; the same field never rebuilds (single entry)."""
-    obs, region = _field()
-    obs2 = unary_union([box(10.0, 10.0, 25.0, 40.0)])
-    region2 = flyable_region(box(0.0, 0.0, 100.0, 100.0), obs2, "convex_hull", 50.0)
+def test_route_transit_builds_once_for_repeated_field(monkeypatch, config_path):
+    """Exercise the production get-or-build path, not a hand-built dict.
 
+    Repeated blocked chords through one environment must build ``ok_pairs`` once
+    and reuse it on the second query.
+    """
+    motion = make_motion_model(build_spec(load_config(config_path)))
+    env = EnvironmentMap(
+        box(0.0, 0.0, 1000.0, 1000.0),
+        [Obstacle(id=0, cls=0, polygon=box(450.0, 400.0, 550.0, 600.0))],
+        5.0,
+    )
+    a = Pose(200.0, 500.0, 0.0)
+    b = Pose(800.0, 500.0, 0.0)
     cache: dict = {}
-    k1 = _obstacle_cache_key(obs, "convex_hull", 50.0)
-    k2 = _obstacle_cache_key(obs2, "convex_hull", 50.0)
-    cache[k1] = _build_ok_pairs(obs, region)
-    cache[k2] = _build_ok_pairs(obs2, region2)
-    assert k1 != k2
-    assert len(cache) == 2
-    assert cache[k1] is not cache[k2]
-    # a stale-key hazard: obs2's ok_pairs must NOT answer obs's vertex-vertex query.
-    # (structurally guaranteed because the keys differ; assert the guard holds.)
-    assert cache.get(k1) is not cache.get(k2)
+    calls = 0
+    real_build = visibility_router._build_ok_pairs
+
+    def _counted_build(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(visibility_router, "_build_ok_pairs", _counted_build)
+    for _ in range(2):
+        routed = visibility_router.route_transit(
+            a, b, motion, env, enabled=True, graph_cache=cache,
+        )
+        assert routed.total_length_m > motion.plan(a, b, ManeuverType.CRUISE).total_length_m
+
+    assert calls == 1
+    assert len(cache) == 1

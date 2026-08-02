@@ -252,12 +252,18 @@ def _shortest_polyline_cached(
     return [uniq[i] for i in idx]
 
 
-def _obstacle_cache_key(buffered_obstacles, operating_area: str, margin_m: float):
-    """Value-based, self-defending cache key for ``ok_pairs``. ``obs.wkb`` makes
-    it independent of object identity / engine lifetime; ``operating_area`` and
-    ``margin_m`` (with the env's fixed survey area) fully determine the flyable
-    region and hence the vertex set and every ``edge_ok`` result."""
-    return (hashlib.sha1(buffered_obstacles.wkb).digest(), operating_area, margin_m)
+def _obstacle_cache_key(buffered_obstacles, operating_area_poly):
+    """Value-based cache key for every dependency of ``ok_pairs``.
+
+    ``ok_pairs`` depends on the obstacle geometry and on the already-built
+    flyable region.  Hashing ``region.wkb`` keeps the key correct even if a
+    caller deliberately shares a cache across environments with different
+    survey areas; it is not merely an engine-lifetime assumption.
+    """
+    return (
+        hashlib.sha1(buffered_obstacles.wkb).digest(),
+        hashlib.sha1(operating_area_poly.wkb).digest(),
+    )
 
 
 def _path_clear(path: Path, env, ds: float = 1.0) -> bool:
@@ -415,7 +421,7 @@ def route_transit(
     if graph_cache is None:
         polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
     else:
-        key = _obstacle_cache_key(obs, operating_area, margin_m)
+        key = _obstacle_cache_key(obs, region)
         ok_pairs = graph_cache.get(key)
         if ok_pairs is None:
             ok_pairs = _build_ok_pairs(obs, region)
