@@ -45,8 +45,16 @@ def _auto_jobs() -> int:
 
 
 def resolve_jobs(arg: str) -> int:
-    """Map the ``--jobs`` CLI string (``"auto"`` | integer) to a worker count."""
-    return _auto_jobs() if arg == "auto" else int(arg)
+    """Map the ``--jobs`` CLI string (``"auto"`` | integer >= 1) to a worker
+    count. A non-positive count is rejected here rather than silently treated as
+    serial by ``run_units`` (which runs ``jobs <= 1`` in-process), keeping the
+    documented ``auto|1|N`` contract honest."""
+    if arg == "auto":
+        return _auto_jobs()
+    jobs = int(arg)
+    if jobs < 1:
+        raise ValueError(f"--jobs must be 'auto' or an integer >= 1, got {arg!r}")
+    return jobs
 
 
 def add_jobs_arg(ap) -> None:

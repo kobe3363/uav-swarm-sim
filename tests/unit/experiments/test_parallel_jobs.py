@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from uav_swarm_sim.experiments._parallel import (
     _auto_jobs, resolve_jobs, run_units)
 
@@ -42,6 +44,14 @@ def test_resolve_jobs_auto_and_explicit():
     assert resolve_jobs("auto") == _auto_jobs()
     assert resolve_jobs("1") == 1
     assert resolve_jobs("3") == 3
+
+
+def test_resolve_jobs_rejects_non_positive():
+    """--jobs 0 / negative must error, not silently fall through to serial in
+    run_units (which treats jobs<=1 as in-process) -- the auto|1|N contract."""
+    for bad in ("0", "-1", "-4"):
+        with pytest.raises(ValueError):
+            resolve_jobs(bad)
 
 
 def _double(x):
