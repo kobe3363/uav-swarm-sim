@@ -63,17 +63,34 @@ replication k are byte-identical across arms; the energy map itself is
 deterministic (no RNG draw). Arms run sequentially; stream purity means order
 cannot shift any draw.
 
-Serial by design -- no ``--jobs`` (parallelism is the separate E2 follow-up,
-which requires its own bitwise serial==parallel verification). Each completed
+Parallelism (E2): ``--jobs`` runs an arm's replications over a spawn
+ProcessPoolExecutor and is proven bitwise-identical to serial (each unit draws
+from the same pure factory; arm is not a stream key; the parent stays the single
+partial-log writer). ``--jobs 1`` is the serial revert path. Each completed
 replication is appended to the arm's ``results_partial.jsonl`` immediately
-(fsync'd), and ``--resume <previous run dir>`` skips finished (arm, rep) pairs
-after an exact identity check -- crash safety for the multi-day Azure run.
+(fsync'd, by the parent); under ``--jobs>1`` the partial-log LINE ORDER is
+completion-ordered (results.json is index-sorted, so it stays jobs-invariant),
+and ``--resume <previous run dir>`` skips finished (arm, rep) pairs after an
+exact identity check -- crash safety for the multi-day Azure run.
 
 Example (the author's Azure run):
   python -m uav_swarm_sim.experiments.run_rth_ab \\
       --config config/study01_demand.yaml --reps 100 --out runs
 """
 from __future__ import annotations
+
+import os
+
+# Pin BLAS/OpenMP to one thread BEFORE numpy loads (transitively via the engine
+# import below): keeps N worker processes from oversubscribing cores with
+# N*threads at --jobs>1, AND keeps the FP reduction order identical across
+# serial/parallel so the byte-identity gate holds. setdefault leaves an explicit
+# user override intact; spawn workers re-import this module so the pin also
+# applies in each child. (Mirrors run_scale_tiers / run_shape_sweep -- the pin
+# is a load-bearing cause of ENG-09 determinism, not an optimisation.)
+for _blas_var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                  "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_blas_var, "1")
 
 import argparse
 import dataclasses
@@ -89,6 +106,7 @@ from ..infrastructure.rng import RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
 from ..metrics.convergence import wilson_ci
 from ..metrics.run_output import RunContext, unique_run_name
+from ._parallel import add_jobs_arg, resolve_jobs, run_units
 from .run_spare_sizing import _append_jsonl_line, _per_drone_swaps, _with_reserve
 
 # --------------------------------------------------------------------------- #
@@ -220,40 +238,55 @@ def _return_depths(history) -> list[float]:
     return depths
 
 
+def _run_ab_unit(cfg_arm: Config, arm: int, k: int, rng: RngFactory) -> AbRecord:
+    """One (arm, replication) unit -> AbRecord. Engine construction mirrors
+    run_demand's (algo=None -> tier default, planner=DUBINS) so arm 1 is
+    byte-identical to the existing demand path on the same config -- the gate
+    test pins this.
+
+    Top-level and picklable so it can be the ProcessPoolExecutor target under
+    --jobs. ``rng`` is the SHARED RngFactory: it holds only an immutable int
+    master seed and ``stream(name, k)`` is a pure function of
+    (master_seed, name, k) with ``arm`` NOT a stream key, so handing the same
+    factory to every unit -- across the pickle boundary or not -- draws
+    byte-identically regardless of which worker runs the unit or when."""
+    eng = SimulationEngine(cfg_arm, rng, replication=k, algo=None,
+                           planner=PlannerKind.DUBINS)
+    res = eng.run()
+    success = res.outcome is Outcome.MISSION_SUCCESS
+    return AbRecord(
+        arm=arm,
+        replication=k,
+        outcome=res.outcome.value,
+        demand=int(res.metrics.n_swaps) if success else None,
+        per_drone_swaps=_per_drone_swaps(res.history),
+        reasons=_reason_counts(res.history),
+        return_depths=_return_depths(res.history),
+        total_energy_j=float(res.metrics.total_energy_j),
+        duration_s=float(res.metrics.duration_s),
+        coverage_frac=float(res.coverage_frac),
+        n_skipped_legs=len(res.skipped_legs),
+        stalled_agents=tuple(res.stalled_agents),
+        n_map_hits=int(eng.rth.n_map_hits),
+        n_map_fallbacks=int(eng.rth.n_map_fallbacks),
+        n_route_fallbacks=int(eng.rth.n_route_fallbacks),
+    )
+
+
 def run_arm(cfg_arm: Config, arm: int, reps: int, rng: RngFactory,
-            progress=None, replications=None) -> list[AbRecord]:
+            progress=None, replications=None, jobs: int = 1) -> list[AbRecord]:
     """One arm's batch: replications 1..reps (or the given subset, for resume)
-    on the SHARED factory. Engine construction mirrors run_demand's
-    (algo=None -> tier default, planner=DUBINS) so arm 1 is byte-identical to
-    the existing demand path on the same config -- the gate test pins this."""
+    on the SHARED factory.
+
+    ``jobs > 1`` runs the replications over a spawn ProcessPoolExecutor and is
+    byte-identical to serial: each unit draws from the same pure ``rng`` (arm is
+    not a stream key), and the parent stays the SINGLE writer of the partial log
+    via ``progress`` (called as each result arrives). ``jobs <= 1`` is the
+    serial revert path. Records come back in completion order; the caller sorts
+    by replication before writing results, so results.json is jobs-invariant."""
     todo = list(replications) if replications is not None else list(range(1, reps + 1))
-    records: list[AbRecord] = []
-    for k in todo:
-        eng = SimulationEngine(cfg_arm, rng, replication=k, algo=None,
-                               planner=PlannerKind.DUBINS)
-        res = eng.run()
-        success = res.outcome is Outcome.MISSION_SUCCESS
-        rec = AbRecord(
-            arm=arm,
-            replication=k,
-            outcome=res.outcome.value,
-            demand=int(res.metrics.n_swaps) if success else None,
-            per_drone_swaps=_per_drone_swaps(res.history),
-            reasons=_reason_counts(res.history),
-            return_depths=_return_depths(res.history),
-            total_energy_j=float(res.metrics.total_energy_j),
-            duration_s=float(res.metrics.duration_s),
-            coverage_frac=float(res.coverage_frac),
-            n_skipped_legs=len(res.skipped_legs),
-            stalled_agents=tuple(res.stalled_agents),
-            n_map_hits=int(eng.rth.n_map_hits),
-            n_map_fallbacks=int(eng.rth.n_map_fallbacks),
-            n_route_fallbacks=int(eng.rth.n_route_fallbacks),
-        )
-        records.append(rec)
-        if progress is not None:
-            progress(rec)
-    return records
+    return run_units(_run_ab_unit, [(cfg_arm, arm, k, rng) for k in todo],
+                     jobs, on_result=progress)
 
 
 # --------------------------------------------------------------------------- #
@@ -503,8 +536,10 @@ def main(argv=None) -> int:
                     help="previous rth-ab run directory; its completed "
                          "(arm, replication) pairs are identity-checked, "
                          "skipped, and merged into the final report")
+    add_jobs_arg(ap)
     args = ap.parse_args(argv)
     arms = sorted(set(args.arms))
+    jobs = resolve_jobs(args.jobs)
 
     base = experiment_constants(load_config(args.config))
     identity = _identity(base, args.reps)
@@ -559,9 +594,11 @@ def main(argv=None) -> int:
         for rec in resumed:
             append_ab_record(partial_path, rec, identity)
 
-        # both loop variables bound as defaults: run_arm calls the callback
-        # synchronously today, but the planned --jobs follow-up (E2) must not
-        # inherit a late-binding bug that appends every arm to the last arm's log
+        # both loop variables bound as defaults: run_arm invokes this callback in
+        # the PARENT (serially under --jobs 1, from the as_completed loop under
+        # --jobs>1 -- the parent stays the single partial-log writer), so the bind
+        # keeps E2 from inheriting a late-binding bug that would append every arm
+        # to the last arm's log
         def _progress(rec: AbRecord, _arm=arm, _path=partial_path) -> None:
             append_ab_record(_path, rec, identity)
             d = "inf" if rec.demand is None else rec.demand
@@ -575,7 +612,7 @@ def main(argv=None) -> int:
         print(f"Arm {arm} ({ARM_SLUGS[arm]}): {len(todo)} replications "
               f"({len(resumed)} resumed)...", file=sys.stderr)
         new_recs = run_arm(cfg_arm, arm, args.reps, rng,
-                           progress=_progress, replications=todo)
+                           progress=_progress, replications=todo, jobs=jobs)
         records = sorted(resumed + new_recs, key=lambda r: r.replication)
         per_arm[arm] = records
         sim.write_results(_results_dict(records, identity, flags,
