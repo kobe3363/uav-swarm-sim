@@ -1,6 +1,6 @@
 # TODO.md — Canonical Outstanding-Task List
 
-**Last updated:** 2026-08-03 · **Test baseline:** 482 green (+1 documented skip) · **Branch:** main
+**Last updated:** 2026-08-03 · **Test baseline:** 500 green (+1 documented skip) · **Branch:** main
 
 *This file is the single source of truth for WHAT is left to do. For architecture facts, environment rules, working rules, and document hierarchy, read `CLAUDE.md`.*
 
@@ -39,6 +39,7 @@ The technical debt that blocked the thesis result (A1–A3) and the last physics
 - [ ] **D1:** Fix and send supervisor package (confirm the 0.40 static return threshold everywhere; add EM-01 results, incl. the B2 "willing-map over conservative floor" finding and the "static fractional floor breaks on the scale axis" limitation).
 - [ ] **D2:** Obtain K1–K4 decisions (scale experiment scope: area tiers, n-grid ceiling, reps/CI target, clean vs shipped proportion).
 - [ ] **D3:** Rewrite `scale_sweep_v2.md` (L-shape only, growing area at fixed edge proportions & the count of fixed-size static obstacles). After D2.
+  - **D3 machinery — DELIVERED (not a D2/D3 check-off):** `experiments/run_area_obstacle_sweep.py` (branch `area-obstacle-sweep`) sweeps AREA (L-shape family regenerated per `--areas`) × obstacle COUNT (`--densities`, fixed size via `--obstacle-size-m` ⇒ `size_range=[S,S]`) × `n`, composing the S5 primitives (metric/contrast/regime semantics frozen by import). Every K1–K4 quantity is a CLI flag. Byte-identity gates green: equivalence cell reproduces `run_shape_sweep` **shipped** l_shape bitwise (incl. fixture-parity HARD STOP against the on-disk fixture), serial↔spawn identical, rep-prefix identical. This is the **runner D3 will drive** — **D2 and D3 stay open**: D2 = the K1–K4 supervisor decisions, D3 = the `scale_sweep_v2.md` rewrite (still gated on D2).
 
 ## 4. Old debts (some gate the critical path — see below)
 - [x] **E1:** NOW-03 read-out docs merge — MERGED (#48); reports `docs/reports/s5_shipped_readout.md` + `docs/reports/s5_clean_readout.md` (delivered WITHOUT a thesis verdict — preserve that boundary; both carry a provenance reconstruction note).
