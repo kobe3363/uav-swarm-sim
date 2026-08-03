@@ -7,7 +7,7 @@
 ## 1. Where the project stands
 EM-01 (energy-map dynamic RTH) Stages 1–4 are merged. A per-replication Dijkstra cost-to-go grid drives the RTH decision, the return route, and the resume transit. The obstacle-boxing livelock is resolved; the residual is accounted for via `MISSION_PARTIAL` + `skipped_legs`. Sample ceiling moved 92% → 94%.
 
-The technical debt that blocked the thesis result (A1–A3) and the last physics change (B1) are all merged. **C1 and C2 are measured**; **C3** (the shipped decomposition re-run under the new RTH) is the last thesis result, run in progress on Azure.
+The technical debt that blocked the thesis result (A1–A3) and the last physics change (B1) are all merged. **C1, C2, and C3 are all measured** — C3 (the shipped decomposition re-run under the new RTH) completed (8h15min run; read-out `docs/reports/c3_shipped_newrth_readout.md`). All three core thesis results are in; remaining work is the supervisor package (D1) and the scale experiment (D2/D3).
 
 ## 2. Critical path to the thesis result
 
@@ -33,7 +33,7 @@ The technical debt that blocked the thesis result (A1–A3) and the last physics
 
   **Harness delivered** (`run_rth_ab.py` + `tests/integration/test_rth_ab.py`, 15 tests, suite 450 → 465; PR #41 bot review addressed: preset-energy_map fail-fast, resume `--arms` warning, closure binding, gate wording, malformed-record test): four-arm construction via `dataclasses.replace`, shared-`RngFactory` pairing, crash-safe per-rep jsonl partials + `--resume`, strict predicate, three-way outcome tabulation, R1 reason-exclusivity assertion; arm-1 gate vs `run_demand`: record-level equality on all shared fields (real `run_demand` invocation) + byte-identical run signature under `run_demand`-mirrored engine construction. DONE — four-arm run complete, read-out `docs/reports/c1_stage5_ab_readout.md`. One-line result: reason-attribution inversion (critical_battery→rth_energy); energy −5.5% / makespan −12.9% / swaps −3 significant; success 95→98% NOT significant (equivalent success at lower cost); zone_demotion regresses 2 reps (real trade-off).
 - [x] **C2:** STUDY-01 re-run under the new (arm-4) RTH — **DONE** (`spares_c2_newrth`, 500 reps, `master_seed=42`; read-out `docs/reports/c2_study01_readout.md`). Config-hash + command verified arm-4 "full-map"; supersedes the pre-EM-01 STUDY-01 numbers (`runs/spares_final_demand`, `30f4209`). **95% knee = 6 (Wilson-certified); 99% is structurally unreachable** — a 1.6% residual `MISSION_INCOMPLETE` (8/500) caps `success_frac ≤ 0.984` for any spare count, so 99% is an INCOMPLETE-cause problem, not a spare problem. Demand tightly concentrated at B=5 (467/492). C1↔C2 cross-note (`docs/reports/c1_c2_cross_note.md`): reps 76 & 100 fail in BOTH experiments (same seed) — the deeper-sortie cost of `zone_demotion` is a systematic, quantified trade-off (~1.6–2% of worlds), not noise.
-- [ ] **C3:** Shipped S5 re-run with the new RTH. Config frozen `config/shape_sweep_newrth.yaml` (#49); full shipped run in progress on Azure (probe 5:47 → ~8h40 est).
+- [x] **C3:** Shipped S5 re-run with the new RTH. Config `config/shape_sweep_newrth.yaml` (#49); full shipped run DONE (9 shapes × {2,4} × 7 variants × N=100, 8h15min). Read-out `docs/reports/c3_shipped_newrth_readout.md`: `weighted≡tgc` invariant holds 126/126; TGC < classic on energy (−39.1 kJ ± 24.1, **n=4-driven**; n=2 straddles 0) + unanimous on makespan/imbalance; TGC−kmeans **modest, n=4-concentrated** separation (−12.9 kJ ± 8.6, distributed not single-cell, 7/18 per-cell — not decisive); launch-axis null reproduced. No thesis verdict (feeds D1).
 
 ## 3. Supervisor track
 - [ ] **D1:** Fix and send supervisor package (confirm the 0.40 static return threshold everywhere; add EM-01 results, incl. the B2 "willing-map over conservative floor" finding and the "static fractional floor breaks on the scale axis" limitation).
@@ -49,7 +49,7 @@ The technical debt that blocked the thesis result (A1–A3) and the last physics
 ## 5. Engineering backlog
 - Variantas C (deterministic candidate grid for launch optimizer).
 - ENG-01 turn aero penalty (must be done BEFORE any final re-runs or not at all — it re-baselines energy).
-- ENG-13 `run_scale_tiers` retrofit into `RunContext` (structural; does not consume the superseded `runs/run_scale_tiers` data).
+- ENG-13b (deep per-sim schema): retrofit `run_scale_tiers` **and** `run_shape_sweep` into `RunContext` full `plan.json`/`results.json` output (structural; does not consume the superseded `runs/run_scale_tiers` data). **NB label collision:** the "ENG-13" label was already consumed by merged #23 (`261e21f`, unique non-overwriting run dirs); THIS item is the separate, deeper per-sim-schema task, and `run_shape_sweep` has the identical gap even though the original line named only `run_scale_tiers`. Not a prerequisite for the scale runner (which uses the shallow `RunContext` dir/manifest path).
 - ADV-03 redistribution ablation-fidelity fix.
 - B7 PyVRP baseline.
 - Test-suite restructuring stages 2–3 (stage 1 already merged).
