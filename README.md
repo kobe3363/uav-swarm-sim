@@ -242,6 +242,11 @@ python -m uav_swarm_sim.experiments.run_decomposition_comparison --config config
 # Fine-grained fleet-size sweep with the empirical break-even (weighted-TGC vs k-means)
 python -m uav_swarm_sim.experiments.run_scale_tiers --n-range 2 100 4 --out runs/sweep
 
+# Scale experiment: sweep AREA x obstacle-COUNT (L-shape regenerated per --areas,
+#   fixed-size obstacles via --obstacle-size-m); every scale knob is a CLI flag.
+python -m uav_swarm_sim.experiments.run_area_obstacle_sweep \
+    --areas 1,2,4,8,16 --densities 0,8 --n 2,4,6 --reps 20 --out runs/scale
+
 # Optimal fleet size for THIS area/battery (analytical Pareto knee, no simulation)
 python -m uav_swarm_sim.experiments.run_fleet_sizing_analyzer --config config/default.yaml --n-max 20 --plot runs/fleet.png
 
@@ -463,6 +468,7 @@ Every quantitative claim maps to exactly one place, and the state/maneuver/algor
 | Shape study preflight: equal-area shape family (solidity / isoperimetric descriptors) | `experiments/generate_shapes.py` |
 | Shape study preflight: battery-limited vs fuel-surplus regime gate (`E_cover` vs pooled `n·B_usable` **and** the per-drone assignment-aware check), analytical `E_cover` verified against the engine | `experiments/run_regime_calculator.py` |
 | Shape study preflight: shape × fleet regime table (max-zone crossover, weighted-vs-unweighted work-per-battery, imbalance-vs-solidity/isoperimetric H5 signal) — the BEFORE-S_FERRY picture | `experiments/run_shape_regime_table.py` |
+| Scale experiment driver: sweep **area × obstacle-count × fleet** (L-shape family regenerated per `--areas`; obstacle count = Poisson(`--densities`·area), fixed size via `--obstacle-size-m` ⇒ `size_range=[S,S]`) — composes the S5 primitives (metric/contrast/regime semantics frozen by import); every K1–K4 quantity is a CLI flag; byte-identity gates (equivalence cell ≡ shipped l_shape incl. on-disk fixture parity, serial↔spawn, rep-prefix) | `experiments/run_area_obstacle_sweep.py` |
 
 ### Status and where the spec is ahead of the written text
 
