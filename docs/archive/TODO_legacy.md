@@ -1,3 +1,9 @@
+> **Superseded.** This file is no longer the task tracker. Active task
+> state and planning now live in the GitHub Project board **"mag"**
+> (https://github.com/users/kobe3363/projects/2). Kept here as a
+> historical record of provenance, measured results, and completed-work
+> notes that predate the migration.
+
 # TODO.md — Canonical Outstanding-Task List
 
 **Last updated:** 2026-08-03 · **Test baseline:** 500 green (+1 documented skip) · **Branch:** main
