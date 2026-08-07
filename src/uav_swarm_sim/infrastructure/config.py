@@ -776,3 +776,17 @@ def _validate(cfg: Config, raw: dict) -> None:
     cr = cfg.env.obstacle_ceil_range_m
     if cr is not None and not (len(cr) == 2 and cfg.env.obstacle_floor_m <= cr[0] <= cr[1]):
         raise ConfigError("env.obstacle_ceil_range_m must be [lo, hi] with floor <= lo <= hi")
+
+    # ---- obstacle shapes (allowed set) ----
+    # There was no validator: obstacle_shapes accepted any tuple[str, ...], so a
+    # typo silently fell through obstacle_generator._unit_shape to a RANDOM convex
+    # polygon instead of the intended kind. Fail loudly instead. Every shipped
+    # config uses only {circle, rectangle, polygon}, so this rejects nothing
+    # existing; "square" is the new axis-aligned fixed-square kind.
+    _valid_shapes = {"circle", "rectangle", "polygon", "square"}
+    unknown_shapes = [s for s in cfg.env.obstacle_shapes if s not in _valid_shapes]
+    if unknown_shapes:
+        raise ConfigError(
+            f"env.obstacle_shapes has unknown shape(s) {unknown_shapes}; "
+            f"allowed: {sorted(_valid_shapes)}"
+        )
