@@ -63,6 +63,13 @@ def _unit_shape(kind: str, size: float, rng: np.random.Generator) -> Polygon:
         w, h = size, size / aspect
         rect = Polygon([(-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)])
         return rotate(rect, float(rng.uniform(0, 180)), origin=(0, 0))
+    if kind == "square":
+        # Axis-aligned fixed square, side == size. Deterministic: NO aspect draw
+        # and NO rotation draw, so this branch consumes ZERO RNG draws (vs the
+        # rectangle branch's two). Placed BEFORE the generic-polygon fallthrough
+        # so a "square" config never silently degrades into a random polygon.
+        s = size
+        return Polygon([(-s / 2, -s / 2), (s / 2, -s / 2), (s / 2, s / 2), (-s / 2, s / 2)])
     # generic convex polygon (hull of random points)
     k = int(rng.integers(5, 9))
     pts = rng.uniform(-size / 2, size / 2, size=(k, 2))

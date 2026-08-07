@@ -1,0 +1,243 @@
+# =============================================================================
+# UAV Swarm Reconnaissance Simulation — DJI Matrice 4E (M4E) platform config.
+#
+# STANDALONE config (the loader reads each file whole; there is NO merge with
+# default.yaml — infrastructure/config.py:load_config). This is a full copy of
+# config/default.yaml with ONLY the M4E-specific platform/sensor/obstacle fields
+# changed; every other block is byte-for-byte default.yaml.
+#
+# Units: battery in Wh, angles in degrees where noted, else SI. The loader
+# converts Wh -> J and degrees -> radians internally.
+#
+# PROVENANCE. All HARDWARE values are the real DJI Matrice 4E spec, single
+# canonical source, live-verified 2026-08-07:
+#   https://enterprise.dji.com/matrice-4-series/specs
+# DERIVED values carry their formula. DJI does NOT publish per-maneuver power, so
+# the power table is an ASSUMPTION derived from hover power via the shipped
+# MULTIROTOR ratio model (marked below) — it is NOT datasheet power.
+# =============================================================================
+telemetry:
+  enabled: false
+  gpx_path: "runs/my_run/tracks.gpx"
+  llm_log_path: "runs/my_run/events.jsonl"
+  fix_interval_s: 30.0          # periodic GPX fix cadence (seconds)
+  origin_lat: 54.6872           # tangent-plane false origin
+  origin_lon: 25.2797
+  epoch_iso: "2026-01-01T00:00:00Z"
+
+fleet:
+  n_drones: 5                 # default = small/heuristic tier (<=15); sweep overrides per-cell
+  battery_capacity_wh: 99.5   # DJI M4E Intelligent Flight Battery — 99.5 Wh (6741 mAh, 14.76 V)
+                              #   https://enterprise.dji.com/matrice-4-series/specs (retrieved 2026-08-07)
+  drone_dims_m: [0.307, 0.3875, 0.1495]   # DJI M4E — unfolded 307.0x387.5x149.5 mm (L×W×H), excl. props
+                              #   https://enterprise.dji.com/matrice-4-series/specs (retrieved 2026-08-07)
+  total_reserve_batteries: 50     # Phase 2: finite shared pool of swap packs for the
+                                  # WHOLE fleet. When exhausted before 100% coverage the
+                                  # mission halts as MISSION_FAILED. Omit => unbounded.
+
+# Active platform for this run. Per-run the swarm is homogeneous; one of the
+# three tables below is resolved into the active PlatformConfig by the loader.
+# The M4E is a quadrotor -> MULTIROTOR (holonomic). FIXED_WING / VTOL are kept
+# verbatim from default.yaml for standalone completeness but are INACTIVE.
+platform_type: MULTIROTOR     # FIXED_WING | MULTIROTOR | VTOL
+
+platforms:
+
+  # ~2 kg electric fixed-wing. No hover. Cruise-efficient; turns and climb-out
+  # cost the most. r_min from r = v^2 / (g*tan(phi)), v=18, phi~=35deg -> ~47 m.
+  # (INACTIVE for M4E — verbatim default.yaml.)
+  FIXED_WING:
+    v_cruise: 18.0
+    v_coverage: 14.0          # slower for sensor dwell / GSD
+    v_climb: 5.0
+    v_descent: 4.0
+    r_min_m: 45.0             # minimum turn radius (Dubins); MUST be > 0 for FW
+    omega_max: 0.35           # rad/s, unused for Dubins platforms (kept for symmetry)
+    climb_angle_deg: 12.0     # sloped climb-out / approach (vertical_segments, FW branch)
+    ground_roll_energy_j: 8000.0   # launch/recovery infrastructure energy footprint
+    mass_kg: 2.0              # 2.5D vertical-energy term only (B3); never horizontal power
+    power_w:                  # grey-box instantaneous power per maneuver (W)
+      IDLE: 10.0              # electronics on, on ground
+      TAKEOFF: 300.0          # high-power launch / climb-out
+      CLIMB: 250.0            # excess power for sustained climb
+      CRUISE: 100.0           # the efficient regime FW exists for
+      COVERAGE: 115.0         # cruise + active payload, slightly slower
+      TURN: 140.0             # banked turn -> higher load factor -> induced drag
+      DESCENT: 40.0           # near-glide
+      LAND: 60.0              # powered approach
+      HOVER: 0.0              # not applicable to FW; ignored by build_spec
+
+  # DJI Matrice 4E quadrotor. Speeds are DJI spec (live-verified 2026-08-07,
+  # https://enterprise.dji.com/matrice-4-series/specs). Power is DERIVED, not
+  # datasheet — see the power_w block.
+  MULTIROTOR:
+    v_cruise: 21.0            # DJI M4E max horizontal speed 21 m/s (ferry / CRUISE legs)
+    v_coverage: 15.0          # ASSUMPTION: operational mapping-survey speed (< 21 m/s max).
+                              #   NOT a DJI-published cap — the "Pilot 2 15 m/s cap" claim is
+                              #   unverified; treated as a modelling choice, not spec.
+    v_climb: 10.0             # DJI M4E max ascent 10 m/s
+    v_descent: 8.0            # DJI M4E max descent 8 m/s
+    r_min_m: 0.0              # holonomic -> HolonomicModel, never Dubins
+    omega_max: 1.0            # rad/s in-place yaw rate
+    climb_angle_deg: 90.0     # pure vertical
+    ground_roll_energy_j: 0.0
+    mass_kg: 1.219            # DJI M4E takeoff weight 1219 g (standard props). NOTE: 1229 g is
+                              #   the LOW-NOISE-prop weight; standard props chosen to match the
+                              #   42-min standard-prop hover used to derive HOVER power below.
+    power_w:
+      # ASSUMPTION — NOT datasheet. DJI does not publish per-maneuver power.
+      # HOVER is derived from the battery + hover time; every other maneuver is
+      # the default MULTIROTOR power scaled by k = HOVER_M4E / HOVER_ref =
+      # 142.1 / 200 = 0.7105, which PRESERVES the shipped per-maneuver-to-hover
+      # ratio model unchanged (ratio in parentheses). The 'square' obstacle kind
+      # this config uses makes 0 RNG draws in _unit_shape (vs rectangle's 2) —
+      # provenance note only; irrelevant to non-square configs.
+      IDLE: 8.5               # 12   x 0.7105  (ratio 0.06)
+      TAKEOFF: 198.9          # 280  x 0.7105  (ratio 1.40)
+      CLIMB: 198.9            # 280  x 0.7105  (ratio 1.40)
+      CRUISE: 156.3           # 220  x 0.7105  (ratio 1.10)
+      COVERAGE: 149.2         # 210  x 0.7105  (ratio 1.05)
+      TURN: 149.2             # 210  x 0.7105  (ratio 1.05)
+      DESCENT: 99.5           # 140  x 0.7105  (ratio 0.70)
+      LAND: 106.6             # 150  x 0.7105  (ratio 0.75)
+      HOVER: 142.1            # DERIVED anchor: 99.5 Wh x 3600 / (42 min x 60 s) = 142.1 W
+                              #   (M4E standard-prop max hover time 42 min, DJI spec)
+
+  # Hybrid VTOL: fixed-wing cruise efficiency + multirotor vertical phases.
+  # (INACTIVE for M4E — verbatim default.yaml.)
+  VTOL:
+    v_cruise: 16.0
+    v_coverage: 12.0
+    v_climb: 3.0
+    v_descent: 2.5
+    r_min_m: 55.0             # heavier -> larger min radius than FW
+    omega_max: 0.4
+    climb_angle_deg: 90.0     # vertical takeoff/landing (1-D segments, §2.5)
+    ground_roll_energy_j: 0.0
+    mass_kg: 2.5              # heavier hybrid airframe; vertical-energy term only (B3)
+    power_w:
+      IDLE: 12.0
+      TAKEOFF: 400.0          # vertical, multirotor mode, heavier airframe
+      CLIMB: 380.0
+      CRUISE: 130.0           # fixed-wing mode + VTOL hardware penalty
+      COVERAGE: 145.0
+      TURN: 170.0
+      DESCENT: 200.0          # powered vertical descent
+      LAND: 210.0
+      HOVER: 300.0            # transition / station-keeping
+
+sensor:
+  swath_width_m: 132.0        # DERIVED: 2.5 cm GSD x 5280 px (M4E 4/3 wide cam, DJI spec) — RAW
+                              #   footprint (build_spec applies 1-overlap; do NOT pre-discount).
+  overlap_frac: 0.6           # 60% side overlap (photogrammetry) -> effective strip = 132.0 x 0.4
+                              #   = 52.8 m (matches the obstacle square side below: obstacle = 1 strip)
+  sensor_power_w: 0.0         # camera + gimbal payload draw while filming a strip, charged only in
+                              # S2_MISSION. 0 keeps this an M4E platform binding only (camera-energy
+                              # term is a separate study opt-in), not an M4E requirement.
+
+# --------------------------------------------------------------------------- #
+# Coverage connector routing (S_FERRY Step 2). Verbatim default.yaml (OFF).    #
+# --------------------------------------------------------------------------- #
+coverage:
+  ferry_free_space: false     # OFF => byte-identical; studies opt in.
+  operating_area: convex_hull # convex_hull | bbox | survey
+  operating_margin_m: 50.0    # convex-hull dilation (== one coverage swath)
+
+aero:
+  formation_drag_reduction: 0.1514   # Guo et al. 2025, homogeneous formation (15.14%)
+  downwash_radius_m: 3.0      # multirotor wake half-width (~2-3 rotor diameters)
+  downwash_length_m: 10.0     # wake extent behind/below
+  formation_spacing_m: 8.0    # inter-drone spacing in formation
+  rth_rendezvous_window_s: 30.0   # ETA window to group a return formation
+
+env:
+  geojson_path: data/areas/example_area.geojson
+  coverage_altitude_m: 91.5   # DERIVED: flight height for 2.5 cm GSD with the M4E 24 mm-equiv wide
+                              #   lens on 4/3 (5280 px), GSD = H*pixel_pitch/focal. Pairs with the
+                              #   132 m swath. (A retailer "1.2 cm@120 m" figure conflicts and is
+                              #   NOT used — see the config plan's GSD flag.)
+  obstacle_density_per_km2: 8.0
+  obstacle_size_range_m: [52.8, 52.8]    # fixed square, side = effective swath (obstacle ≡ 1 strip)
+  obstacle_shapes: [square]              # axis-aligned fixed squares (see planning/obstacle_generator
+                                         #   'square' kind: no rotation, no random aspect)
+  n_obstacle_classes: 3       # semantic classes (e.g. building/vegetation/no-fly) for GVG
+  clearance_buffer_m: 5.0     # regulatory safety buffer around obstacles (§1.4.6)
+  # 2.5D prism extrusion. Each obstacle footprint is extruded over [floor, ceil].
+  obstacle_floor_m: 0.0          # prism floor (ground)
+  obstacle_ceil_range_m: null    # null => UNBOUNDED ceiling: single-layer case stays 2D-identical.
+
+# --------------------------------------------------------------------------- #
+# 2.5D coverage stack. Verbatim default.yaml (single synthesized layer).       #
+# --------------------------------------------------------------------------- #
+layers:
+  altitudes_m: null
+  assignment_policy: single
+
+# --------------------------------------------------------------------------- #
+# Dynamic obstacles + proactive (LIDAR) avoidance. Verbatim default.yaml (OFF).#
+# --------------------------------------------------------------------------- #
+dynamic_obstacles:
+  enabled: false             # central ON/OFF switch for the whole feature
+  count: 3                   # number of dynamic obstacles (used when enabled)
+  speed_m_s: 8.0             # their constant speed (random direction each)
+  size_m: 1.5                # drone-sized; modelled as a circle of this diameter
+  passive_sense_range_m: 30.0    # detection range while passive (short, cheap)
+  active_sense_range_m: 150.0    # detection range while active (long, LIDAR)
+  active_scan_power_w: 60.0      # extra power per airborne drone while scanning
+  dynamic_hold_s: 20.0           # stay active this long after last detection
+
+mission:
+  type: coverage              # coverage | target_visit
+  n_targets: 40               # used when type=target_visit and no explicit coordinates
+  target_coordinates: []      # explicit [[x, y], ...] in metres; if non-empty, overrides n_targets
+  weight_targets_by_battery: true   # per-drone target COUNT proportional to battery (the contribution)
+
+launch:
+  candidate_sites: 8          # int N -> sample N free sites near boundary;
+                              # or a list of [x, y] for explicit candidates
+  w_distance: 0.3             # weight: mean kinematic distance to zones
+  w_energy: 0.5               # weight: formation-corrected initial+return energy
+  w_swaps: 0.2                # weight: expected battery-swap count over mission
+
+battery_zones:                # fractions of capacity (0..1); reporting bins + coarse guards
+  high: 0.75                  # HIGH    >= 75
+  nominal: 0.40               # NOMINAL >= 40
+  critical: 0.20              # CRITICAL>= 20 ; TERMINAL < 20
+
+swap:
+  service_time_s: 90.0        # battery exchange duration at the station
+  n_bays: 2                   # parallel swap bays
+
+failure:
+  hazard_rate_per_hour: 0.3   # lambda; scale runners force this to 0.0 per-cell anyway.
+
+safety:
+  min_separation_m: 10.0
+  obstacle_buffer_m: 5.0
+  predict_horizon_s: 5.0      # proactive monitoring lookahead
+  obstacle_recovery: true     # Task 2.5 Q2: skip obstructed coverage legs + boxed-in RTH (prevents S_OBS thrashing)
+
+rth:
+  check_interval_s: 5.0
+  reserve_frac: 0.05          # small epsilon margin — explicitly NOT a static 30%
+
+sim:
+  dt_s: 0.5
+  max_timesteps: 50000        # 0.5 s x 50000 = 25000 s (~6.9 h) hard ceiling
+  master_seed: 42
+
+mc:
+  n_max: 1000                 # hard replication cap
+  n_min: 30                   # minimum before convergence is evaluated
+  ci_tolerance: 0.01          # stop when 95% CI half-width of pi_time(S2) <= this
+
+# --------------------------------------------------------------------------- #
+# Visualization-only options. Verbatim default.yaml.                           #
+# --------------------------------------------------------------------------- #
+viz:
+  show_comm_range: false      # master ON/OFF for the comm-range overlay
+  comm_range_m: 250.0         # circle radius in metres (view-only; not modelled)
+  comm_range_alpha: 0.12      # circle opacity
+  comm_range_dashed: true     # true = dashed outline (less clutter); false = translucent fill
+
+tier_thresholds: [15, 50]     # <=15 heuristic ; 16-49 compare ; >=50 TGC

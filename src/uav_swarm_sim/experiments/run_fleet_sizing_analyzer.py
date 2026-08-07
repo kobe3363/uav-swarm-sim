@@ -160,7 +160,7 @@ def _save_pareto(report, path: str, knee_n) -> bool:
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Standalone fleet-sizing Pareto analyzer (no simulation).")
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/djimatrice4e.yaml")
     ap.add_argument("--n-max", type=int, default=20, help="largest fleet size to evaluate")
     ap.add_argument("--n-min", type=int, default=1)
     ap.add_argument("--knee-frac", type=float, default=0.05,

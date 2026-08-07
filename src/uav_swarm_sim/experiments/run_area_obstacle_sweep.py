@@ -483,7 +483,7 @@ def _resolve_shapes(spec: str) -> list[str]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/djimatrice4e.yaml")
     ap.add_argument("--shapes-dir", default="data/areas/shapes",
                     help="(unused for generation -- shapes are regenerated per "
                          "area into the run dir; kept for parity/tools)")

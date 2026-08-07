@@ -97,6 +97,19 @@ def test_reject_bad_tier_thresholds(config_path):
         load_config(config_path, overrides={"tier_thresholds": [50, 15]})
 
 
+def test_reject_unknown_obstacle_shape(config_path):
+    """A shape string outside {circle, rectangle, polygon, square} must fail loudly
+    instead of silently falling through _unit_shape to a random convex polygon."""
+    with pytest.raises(ConfigError, match="unknown shape"):
+        load_config(config_path, overrides={"env.obstacle_shapes": ["squre"]})  # typo
+
+
+def test_square_is_an_allowed_obstacle_shape(config_path):
+    """'square' is the new axis-aligned fixed-square kind and loads cleanly."""
+    cfg = load_config(config_path, overrides={"env.obstacle_shapes": ["square"]})
+    assert cfg.env.obstacle_shapes == ("square",)
+
+
 # --------------------------------------------------------------------------- #
 # config: provenance hash                                                      #
 # --------------------------------------------------------------------------- #
