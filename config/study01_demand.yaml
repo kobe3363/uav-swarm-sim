@@ -1,4 +1,15 @@
 # =============================================================================
+# TEST FIXTURE - FROZEN. Replayed by 6 integration tests
+# (test_energy_map_stage3 / stage4 / zone_demotion, test_stall_skip,
+# test_transit_cache_identity, test_transit_livelock) and carries the
+# test_energy_map_stage4 cross-commit golden. Also the --config default of
+# experiments/run_rth_ab.py.
+#
+# NOT experiment evidence, NOT a template for the new supervisor spec.
+# Do not edit, rename, or delete - doing so voids four bug-fix regression
+# tests. Historical context: docs/archive/PROJECT_HISTORY.md (sections 3.1, 8).
+# =============================================================================
+# =============================================================================
 # UAV Swarm Reconnaissance Simulation — default configuration
 # Single source of truth for every global input. Mirrors the dataclass schema
 # in infrastructure/config.py one-to-one.
