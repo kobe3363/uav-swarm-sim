@@ -17,10 +17,10 @@ class PlatformType(Enum):
 
 
 class AgentState(Enum):
-    """Seven-state behavioral automaton.
+    """Eight-state behavioral automaton.
 
     Base set (C. Liu et al. 2026): S0_IDLE, S1_TRANSIT, S2_MISSION, S_FAIL.
-    Author's extensions: S3_RTH, S_OBS, S_SWAP.
+    Author's extensions: S3_RTH, S_OBS, S_SWAP, S_FERRY.
     """
     S0_IDLE = "S0_IDLE"
     S1_TRANSIT = "S1_TRANSIT"

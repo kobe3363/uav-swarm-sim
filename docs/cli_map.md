@@ -22,8 +22,9 @@ Viskas gyvena `config/` kataloge.
 |---|---|
 | `config/default.yaml` | **Vienintelis tikrasis šaltinis** — 1:1 atspindi dataclass schemą, λ=0.3 (pakeltas MC), MULTIROTOR |
 | `config/djimatrice4e.yaml` | DJI Matrice 4E platforma (99.5 Wh, swath 132 m, kvadratinės kliūtys). Scale sweep'ų default |
-| `config/shape_sweep_newrth.yaml` | Shape sweep su nauju RTH (energy_map) |
-| `config/study01_demand.yaml` / `study01_demand_newrth.yaml` | STUDY-01 demand; `run_rth_ab.py` default |
+| ~~`config/shape_sweep_newrth.yaml`~~ | **IŠIMTAS** (C3 shape sweep su nauju RTH / energy_map) — `git show 493e8d2:config/shape_sweep_newrth.yaml` |
+| `config/study01_demand.yaml` | STUDY-01 demand; `run_rth_ab.py` default. **UŽŠALDYTAS TEST FIXTURE** — nekeisti, nepervadinti, netrinti |
+| ~~`config/study01_demand_newrth.yaml`~~ | **IŠIMTAS** (C2 užšaldyta arm-4 versija) — `git show 493e8d2:config/study01_demand_newrth.yaml` |
 | `config/scenarios/smoke.yaml` | Minimalus smoke (n=3, mc.n_max=6) — tik greitam testui |
 
 **Mechanika:** `load_config(path, overrides)` skaito **VIENĄ** YAML — nėra merge/paveldėjimo

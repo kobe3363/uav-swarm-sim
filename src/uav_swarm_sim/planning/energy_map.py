@@ -3,8 +3,11 @@
 One Dijkstra from the base cell over an occupancy-penalised 8-connected grid
 produces, for every cell, ``E_home`` -- the minimum RETURN energy (J) to reach
 the base -- plus a parent pointer (the base-ward neighbor). Pure, standalone
-computation: nothing in the mission path consumes it yet (RTH decide, return /
-resume routing are later stages of docs/proposals/energy_map_rth.md).
+computation; the mission-path consumers (RTH decide, return / resume routing)
+shipped as later stages and live in ``execution/rth_calculator.py``, each gated
+by its own flag. Design doc retired -- retrieve with
+``git show 493e8d2:docs/proposals/energy_map_rth.md`` (context:
+``docs/archive/PROJECT_HISTORY.md`` section 8).
 
 ENERGY UNIT -- CRITICAL (design doc section 6.2): every edge is costed at
 CRUISE via ``EnergyModel.distance_energy(dist, ManeuverType.CRUISE, v_cruise)``
