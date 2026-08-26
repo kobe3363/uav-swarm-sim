@@ -214,9 +214,12 @@ class SimulationEngine:
 
         # EM-01 Stage 1 (rth.energy_map, default OFF => byte-identical): build
         # the per-replication energy cost-to-go map once, now that env + base
-        # are known. Built and attached only -- NOTHING consumes it yet; the
-        # RTH decide / routing consumers are later stages of
-        # docs/proposals/energy_map_rth.md. Deterministic, no RNG draw.
+        # are known. The RTH decide / routing consumers shipped in later stages
+        # (see execution/rth_calculator.py), each gated by its own flag.
+        # Design doc retired -- retrieve with
+        # `git show 493e8d2:docs/proposals/energy_map_rth.md`
+        # (context: docs/archive/PROJECT_HISTORY.md section 8).
+        # Deterministic, no RNG draw.
         self.energy_map = None
         if cfg.rth.energy_map.enabled:
             emc = cfg.rth.energy_map

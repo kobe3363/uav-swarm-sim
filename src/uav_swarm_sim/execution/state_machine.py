@@ -1,7 +1,7 @@
-"""The seven-state behavioral automaton.
+"""The eight-state behavioral automaton.
 
 Base set (C. Liu et al.): S0_IDLE, S1_TRANSIT, S2_MISSION, S_FAIL.
-Author's extensions: S3_RTH, S_OBS, S_SWAP.
+Author's extensions: S3_RTH, S_OBS, S_SWAP, S_FERRY.
 
 Guards are evaluated top-down (first match wins). The closed loop is structural:
 S3 -> S_SWAP -> S0 is realized here. S_FAIL is terminal in the *physical*

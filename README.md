@@ -412,7 +412,7 @@ Launch-site optimisation is a separate optional comparison.
 collisions, no speed violations, no trajectory jumps and safe return of all UAVs: Dubins
 curves, aerodynamic wakes, dynamic obstacles, Markov stationary distribution.
 
-### Spec-vs-code gaps — as of commit `493e8d2`
+### Spec-vs-code gaps — as of commit `870aafc` (`src/` executable content unchanged since `493e8d2`)
 
 The code does not yet meet the target above in **five** places. Full descriptions and
 ownership live on the GitHub Project board **"mag"**; they are listed here only so the gap is
