@@ -25,17 +25,23 @@ The full text of every one of them is preserved in git and is retrievable (§8).
 
 ### 1.2 Retrieval anchor
 
-```
+```text
 493e8d29b090785ad073c5939aa473c209747b88
 493e8d2 Add comprehensive CLI and config reference map
 ```
 
-Tag name: **`pre-reset-archive`**
-
-To retrieve any retired file in full:
+To retrieve any retired file in full, use the **commit SHA** — it is immutable and always resolvable:
 
 ```bash
-git show pre-reset-archive:docs/reports/c1_stage5_ab_readout.md
+git show 493e8d2:docs/reports/c1_stage5_ab_readout.md
+```
+
+Optionally the author may create a readable alias for it (this tag is **not** created by
+the archive commits, so verify it exists before relying on it):
+
+```bash
+git tag -a pre-reset-archive 493e8d29b090785ad073c5939aa473c209747b88 -m "Full documentation set before the ARCHIVE-COMPACT-01 retirement"
+git show pre-reset-archive:docs/reports/c1_stage5_ab_readout.md   # once the tag exists
 ```
 
 Substitute any path from the index in §8. Nothing in this archive is the only copy of
@@ -249,6 +255,12 @@ by the dynamic map**, with `critical_battery=0` and `terminal_battery=0` (c1:36-
 
 Arms 2 and 3 are **byte-identical to each other** on every per-replication field, even
 though arm 3 actively consults the map (`n_map_hits` mean **321.71/rep** vs 0 in arm 2).
+**[AMBIGUOUS]** — the source asserts both halves of that sentence without reconciling
+them, and never enumerates the compared field set: `n_map_hits` demonstrably differs
+between the two arms, so “every per-replication field” cannot be literal. The natural
+reading is that map/route telemetry counters are excluded and the claim covers the
+physics and outcome fields, but the source does not say so. Quoted as written (c1:40-45,
+restated at c1:104-107); deciding the field set would be a metric-semantics call (§6.8).
 The static 0.40 net fully pre-empts the map while `zone_demotion=false`, so the contrast
 decomposes as **arm3 − arm1 = routing**, **arm4 − arm3 = decide+demotion** (c1:40-45).
 
@@ -1234,7 +1246,7 @@ two are not separable there (s5s:251-261).
 
 ## 5. Bugs found and fixed
 
-Nine. Two of them invalidated results that had already been quoted, which is why the
+Ten. Two of them invalidated results that had already been quoted, which is why the
 superseded-data rule in §6.3 exists.
 
 **5.1 — The launch-site RNG defect.** *Mechanism:* every Monte-Carlo replication re-picked
@@ -1481,10 +1493,11 @@ commit stamp.
 ## 8. Retired-artifact index
 
 Every path below was deleted in `docs: retire superseded documentation (see
-PROJECT_HISTORY)`. All are retrievable in full:
+PROJECT_HISTORY)`. All are retrievable in full by commit SHA (or by the `pre-reset-archive`
+tag, if the author has created it — see §1.2):
 
 ```bash
-git show pre-reset-archive:<path>
+git show 493e8d2:<path>
 ```
 
 Anchor SHA for every row: **`493e8d29b090785ad073c5939aa473c209747b88`** (`493e8d2`).
@@ -1525,4 +1538,4 @@ scope for this cleanup and was not edited:
 - `src/uav_swarm_sim/infrastructure/simulation_engine.py:219` → `docs/proposals/energy_map_rth.md`
 - `src/uav_swarm_sim/planning/energy_map.py:7` → `docs/proposals/energy_map_rth.md`
 
-Both resolve via `git show pre-reset-archive:docs/proposals/energy_map_rth.md`.
+Both resolve via `git show 493e8d2:docs/proposals/energy_map_rth.md`.

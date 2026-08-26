@@ -65,7 +65,7 @@ Lower layers never import higher ones. The single conductor is
 
 ### How a single mission flows through the layers
 
-```
+```text
 config/*.yaml
    │  (infrastructure.config: typed, validated, unit-normalized; config_hash)
    ▼
@@ -177,7 +177,7 @@ whenever it is not in `S2_MISSION`.
 Inside `S2_MISSION` the return triggers are evaluated in a deliberate priority order (first
 match wins):
 
-```
+```text
 obstacle threat  >  dynamic RTH (rth_energy)  >  CRITICAL battery  >  TERMINAL battery
                  >  coverage complete
 ```
@@ -274,7 +274,7 @@ Every experiment writes into one self-describing, comparable **run folder**. A r
 or more **simulations** (e.g. one per decomposition algorithm); each owns its artifacts and
 two JSON logs:
 
-```
+```text
 runs/run-2026-06-28-11-59-35/          ← a RUN  (name = the dated folder, id = a GUID)
   run.json                             ← manifest: identity, software/git commit, timing
   simulation-weighted_voronoi/         ← a SIMULATION within the run
@@ -311,7 +311,7 @@ Run everything from the repository root — config files reference the map via r
 
 ```bash
 pytest tests/integration/test_smoke.py               # fast smoke check
-pytest -n logical --dist loadscope -q                # the full suite, exactly as CI runs it
+python -m pytest -n logical --dist loadscope -q   # the full suite, exactly as CI runs it
 pytest -m "not slow"                                 # fast local dev loop
 ```
 

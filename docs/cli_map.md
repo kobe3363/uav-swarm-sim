@@ -1,7 +1,7 @@
 # uav-swarm-sim — konfigų ir CLI žemėlapis
 
 *Patikrinta prieš commit 493e8d2 (2026-08). Naujesni pakeitimai gali būti neatspindėti.*
-*Šiame dokumente minėti `config/study01_demand_newrth.yaml` ir `config/shape_sweep_newrth.yaml` yra IŠIMTI (C2/C3 užšaldytos RTH konfigūracijos) — pilnas tekstas: `git show pre-reset-archive:<kelias>`; kontekstas: `docs/archive/PROJECT_HISTORY.md` §8.*
+*Šiame dokumente minėti `config/study01_demand_newrth.yaml` ir `config/shape_sweep_newrth.yaml` yra IŠIMTI (C2/C3 užšaldytos RTH konfigūracijos) — pilnas tekstas: `git show 493e8d2:<kelias>`; kontekstas: `docs/archive/PROJECT_HISTORY.md` §8.*
 
 Nuoroda: kur laikomi konfigai, kas juose yra, ir ką galima perrašyti per CLI.
 Visi skriptai paleidžiami per `python -m uav_swarm_sim.experiments.<vardas>` iš repo
