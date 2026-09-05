@@ -1,0 +1,13 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"name": "EXP-03 1000 x 750 m survey area"},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [1000, 0], [1000, 750], [0, 750], [0, 0]]]
+      }
+    }
+  ]
+}

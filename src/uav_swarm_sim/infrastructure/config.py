@@ -158,6 +158,11 @@ class EnvConfig:
     # i.e. every layer sees every obstacle -> single-layer case is 2D-identical.
     obstacle_floor_m: float = 0.0
     obstacle_ceil_range_m: tuple[float, float] | None = None
+    obstacle_generation_mode: str = "poisson"
+    obstacle_target_count: int = 10
+    obstacle_area_fraction: float = 0.05
+    obstacle_area_fraction_tolerance: float = 0.005
+    obstacle_generation_max_attempts: int = 10_000
 
 
 @dataclass(frozen=True)
@@ -552,6 +557,11 @@ def _build(raw: dict, config_hash: str) -> Config:
         clearance_buffer_m=float(_require(e, "clearance_buffer_m", "env")),
         obstacle_floor_m=float(e.get("obstacle_floor_m", 0.0)),
         obstacle_ceil_range_m=obstacle_ceil_range,  # type: ignore[arg-type]
+        obstacle_generation_mode=str(e.get("obstacle_generation_mode", "poisson")),
+        obstacle_target_count=int(e.get("obstacle_target_count", 10)),
+        obstacle_area_fraction=float(e.get("obstacle_area_fraction", 0.05)),
+        obstacle_area_fraction_tolerance=float(e.get("obstacle_area_fraction_tolerance", 0.005)),
+        obstacle_generation_max_attempts=int(e.get("obstacle_generation_max_attempts", 10_000)),
     )
 
     # ---- layers (2.5D coverage stack) ----
@@ -896,3 +906,20 @@ def _validate(cfg: Config, raw: dict) -> None:
             f"env.obstacle_shapes has unknown shape(s) {unknown_shapes}; "
             f"allowed: {sorted(_valid_shapes)}"
         )
+
+    # ---- obstacle generation mode ----------------------------------------- #
+    if cfg.env.obstacle_generation_mode not in {"poisson", "target"}:
+        raise ConfigError("env.obstacle_generation_mode must be 'poisson' or 'target'")
+    if cfg.env.obstacle_target_count <= 0:
+        raise ConfigError("env.obstacle_target_count must be > 0")
+    frac = cfg.env.obstacle_area_fraction
+    tol = cfg.env.obstacle_area_fraction_tolerance
+    if not isfinite(frac) or not 0.0 < frac < 1.0:
+        raise ConfigError("env.obstacle_area_fraction must be finite and in (0, 1)")
+    if not isfinite(tol) or tol < 0.0 or frac - tol < 0.0 or frac + tol > 1.0:
+        raise ConfigError(
+            "env.obstacle_area_fraction_tolerance must be finite, non-negative, "
+            "and keep the absolute interval within [0, 1]"
+        )
+    if cfg.env.obstacle_generation_max_attempts <= 0:
+        raise ConfigError("env.obstacle_generation_max_attempts must be > 0")
