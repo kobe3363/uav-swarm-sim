@@ -11,6 +11,7 @@ from shapely.geometry import Polygon
 from ..infrastructure.core_types import Pose
 
 _AREA_EPS = 1e-12
+_MAX_RASTER_CELLS = 2_000_000
 
 
 class CoverageRaster:
@@ -23,24 +24,36 @@ class CoverageRaster:
         self.plannable_geometry = plannable
         self.cell_m = float(cell_m)
 
-        minx, miny, maxx, maxy = target.bounds
-        nx = max(1, math.ceil((maxx - minx) / self.cell_m))
-        ny = max(1, math.ceil((maxy - miny) / self.cell_m))
-        ix, iy = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
-        x0 = minx + ix.ravel() * self.cell_m
-        y0 = miny + iy.ravel() * self.cell_m
-        cells = shapely.box(x0, y0, x0 + self.cell_m, y0 + self.cell_m)
+        if target.is_empty:
+            empty = np.empty(0, dtype=object)
+            self._target_parts = self._target_points = empty
+            self._plannable_parts = self._plannable_points = empty
+            self._target_weights = self._plannable_weights = np.empty(0, dtype=float)
+        else:
+            minx, miny, maxx, maxy = target.bounds
+            nx = max(1, math.ceil((maxx - minx) / self.cell_m))
+            ny = max(1, math.ceil((maxy - miny) / self.cell_m))
+            n_cells = nx * ny
+            if n_cells > _MAX_RASTER_CELLS:
+                raise ValueError(
+                    f"coverage raster requires {n_cells:,} bounding-box cells; "
+                    f"limit is {_MAX_RASTER_CELLS:,}; increase coverage.raster_cell_m"
+                )
+            ix, iy = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+            x0 = minx + ix.ravel() * self.cell_m
+            y0 = miny + iy.ravel() * self.cell_m
+            cells = shapely.box(x0, y0, x0 + self.cell_m, y0 + self.cell_m)
 
-        (
-            self._target_parts,
-            self._target_points,
-            self._target_weights,
-        ) = self._mask_cells(cells, target)
-        (
-            self._plannable_parts,
-            self._plannable_points,
-            self._plannable_weights,
-        ) = self._mask_cells(cells, plannable)
+            (
+                self._target_parts,
+                self._target_points,
+                self._target_weights,
+            ) = self._mask_cells(cells, target)
+            (
+                self._plannable_parts,
+                self._plannable_points,
+                self._plannable_weights,
+            ) = self._mask_cells(cells, plannable)
         self._target_covered = np.zeros(len(self._target_weights), dtype=bool)
         self._plannable_covered = np.zeros(len(self._plannable_weights), dtype=bool)
         self._target_tree = STRtree(self._target_points)
@@ -116,7 +129,9 @@ class CoverageRaster:
             raise ValueError("camera footprint dimensions must be > 0")
         dx, dy = new_pose.x - old_pose.x, new_pose.y - old_pose.y
         distance = math.hypot(dx, dy)
-        heading = old_pose.heading if distance <= _AREA_EPS else math.atan2(dy, dx)
+        if distance <= _AREA_EPS:
+            return
+        heading = math.atan2(dy, dx)
         ux, uy = math.cos(heading), math.sin(heading)
         vx, vy = -uy, ux
         half_l = footprint_length_m / 2.0

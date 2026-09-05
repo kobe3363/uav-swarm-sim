@@ -338,7 +338,8 @@ class Agent:
                 self._photo_tracker.advance(
                     old_pose, new_pose, t, new_t - old_t, self._cov_idx
                 )
-                if self._coverage_observer is not None:
+                if (self._coverage_observer is not None
+                        and math.dist(old_pose.as_xy(), new_pose.as_xy()) > 1e-9):
                     self._coverage_observer(old_pose, new_pose)
         self._t = new_t
         if new_t >= leg.total_duration_s - 1e-9:

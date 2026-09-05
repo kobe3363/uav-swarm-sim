@@ -228,6 +228,7 @@ def test_default_config_run_byte_identical_to_pre_exp01(config_path):
     res = engine.run()
     # No camera profile reaches the spec, so every EXP-01 branch is dormant.
     assert engine.spec.photogrammetry is None
+    assert res.target_coverage_frac is None
 
     # Human-readable anchors first: a mismatch here names the drift directly.
     assert len(res.history.sojourns()) == _PRE_EXP01_N_SOJOURNS

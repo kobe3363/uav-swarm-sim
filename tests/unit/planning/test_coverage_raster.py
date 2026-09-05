@@ -86,3 +86,30 @@ def test_positive_area_empty_plan_starts_with_zero_coverage():
     assert raster.target_coverage_frac == pytest.approx(0.0)
     assert raster.plannable_coverage_frac == pytest.approx(0.0)
     assert raster.uncovered_plannable_geometry.area == pytest.approx(100.0)
+
+
+def test_empty_target_is_a_complete_zero_cell_raster():
+    empty = Polygon()
+    raster = CoverageRaster(empty, empty, 2.0)
+
+    assert raster.target_cell_count == 0
+    assert raster.plannable_cell_count == 0
+    assert raster.target_coverage_frac == pytest.approx(1.0)
+    assert raster.plannable_coverage_frac == pytest.approx(1.0)
+    assert raster.uncovered_plannable_geometry.is_empty
+
+
+def test_stationary_yaw_adds_no_continuous_sweep_coverage():
+    raster = CoverageRaster(box(0.0, 0.0, 10.0, 10.0), box(0.0, 0.0, 10.0, 10.0), 2.0)
+    pose = Pose(5.0, 5.0, 0.0)
+
+    raster.record_segment(pose, pose, 10.0, 10.0)
+
+    assert raster.target_coverage_frac == pytest.approx(0.0)
+
+
+def test_excessive_bounding_grid_is_rejected_before_allocation():
+    area = box(0.0, 0.0, 10_000.0, 10_000.0)
+
+    with pytest.raises(ValueError, match="increase coverage.raster_cell_m"):
+        CoverageRaster(area, area, 0.1)

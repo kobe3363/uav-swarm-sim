@@ -285,6 +285,10 @@ class SimulationEngine:
         self.coverage_raster = None
         if (self._mission_type is MissionType.COVERAGE
                 and cfg.coverage.raster_enabled):
+            if len(self.layers) != 1:
+                raise ValueError(
+                    "coverage.raster_enabled currently requires exactly one coverage layer"
+                )
             solution = self.spec.photogrammetry_at(self.layers.altitude(0))
             if solution is None:
                 raise ValueError(
@@ -804,10 +808,10 @@ class SimulationEngine:
                     
         return min(1.0, covered / total)
 
-    def _target_coverage_frac(self) -> float:
+    def _target_coverage_frac(self) -> float | None:
         if self.coverage_raster is not None:
             return self.coverage_raster.target_coverage_frac
-        return self._coverage_frac()
+        return None
 
     def _coverage_complete_frac(self) -> float:
         if self.coverage_raster is None:
