@@ -315,9 +315,10 @@ def test_photogrammetry_rejects_fractional_pixel_count(config_path):
         ))
 
 
-def test_photogrammetry_rejects_non_mapping(config_path):
+@pytest.mark.parametrize("bad", [True, False, 0, "", []])
+def test_photogrammetry_rejects_non_mapping(config_path, bad):
     with pytest.raises(ConfigError, match="photogrammetry must be a mapping"):
-        load_config(config_path, {"sensor.photogrammetry": True})
+        load_config(config_path, {"sensor.photogrammetry": bad})
 
 
 @pytest.mark.parametrize("bad", ["false", "true", 0, 1, None])

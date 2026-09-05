@@ -486,7 +486,9 @@ def _build(raw: dict, config_hash: str) -> Config:
 
     # ---- sensor / aero ----
     s = _require(raw, "sensor", "")
-    pg = s.get("photogrammetry", {}) or {}
+    pg = s.get("photogrammetry", {})
+    if pg is None:
+        pg = {}
     if not isinstance(pg, dict):
         raise ConfigError("sensor.photogrammetry must be a mapping")
     pg_enabled = pg.get("enabled", False)
