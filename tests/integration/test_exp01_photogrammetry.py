@@ -1,6 +1,8 @@
 """EXP-01 mission regressions: photo events observe but do not alter physics."""
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from uav_swarm_sim.infrastructure.config import load_config
@@ -145,3 +147,95 @@ def test_enabled_photogrammetry_rejects_fixed_cell_grid_planner(config_path):
     engine = SimulationEngine(cfg, RngFactory(1), planner=PlannerKind.GRID)
     with pytest.raises(ValueError, match="photogrammetry.*GRID"):
         engine._build()
+
+
+# --------------------------------------------------------------------------- #
+# Flag-off byte identity (CLAUDE.md rule 3).                                   #
+#                                                                              #
+# The tests above only prove "explicit-off == profile-absent" inside a single  #
+# binary; both arms move together if EXP-01 perturbed the legacy path. This    #
+# golden is the cross-commit half: the signature was captured on d6bd6fa, the  #
+# commit immediately preceding EXP-01, using config/default.yaml unchanged and #
+# no photogrammetry keys at all -- an explicit-off override is deliberately    #
+# NOT the baseline, because it materialises a PhotogrammetryConfig that does   #
+# not exist pre-change.                                                        #
+#                                                                              #
+# Regeneration (only if a deliberate, documented physics change lands):        #
+#   git worktree add <tmp> <pre-change commit>; run _default_cfg + _engine     #
+#   there with this same _canonical_signature_string and re-pin the hash.      #
+# --------------------------------------------------------------------------- #
+_PRE_EXP01_COMMIT = "d6bd6fa"
+_PRE_EXP01_GOLDEN_HASH = (
+    "ce9fc17176d5d55f5264f265392d55319a98ec5032e2a1360e6b8d44ea525b43"
+)
+_PRE_EXP01_N_SOJOURNS = 22
+_PRE_EXP01_DURATION_S = 266.0
+_PRE_EXP01_TOTAL_ENERGY_J = 110988.0
+
+
+def _default_cfg(config_path):
+    """config/default.yaml (untouched by EXP-01) shrunk to a tiny mission.
+
+    Mirrors test_energy_map_stage4._tiny_cfg so the two cross-commit goldens
+    describe the same reference run.
+    """
+    return load_config(str(config_path), overrides={
+        "fleet.n_drones": 2,
+        "fleet.battery_capacity_wh": 400.0,
+        "failure.hazard_rate_per_hour": 0.0,
+        "env.geojson_path": "data/areas/smoke_area.geojson",
+        "env.obstacle_density_per_km2": 4.0,
+        "sim.dt_s": 1.0,
+        "sim.max_timesteps": 20000,
+        "telemetry.enabled": False,
+    })
+
+
+def _canonical_signature_string(res) -> str:
+    """Full serialised run signature; string-based so the hash is not coupled
+    to dataclass ``__repr__`` churn."""
+    m = res.metrics
+    parts = [
+        f"total_energy_j={m.total_energy_j!r}",
+        f"duration_s={m.duration_s!r}",
+        f"workload_std_m={m.workload_std_m!r}",
+        f"n_swaps={m.n_swaps!r}",
+        "per_agent_energy_j=" + ",".join(
+            f"{k}:{v!r}" for k, v in sorted(m.per_agent_energy_j.items())),
+        "per_agent_length_m=" + ",".join(
+            f"{k}:{v!r}" for k, v in sorted(m.per_agent_length_m.items())),
+        "sojourns=" + ";".join(
+            f"{s.agent_id}|{s.state.value}|{s.t_in!r}|{s.t_out!r}|{s.reason_out}"
+            for s in res.history.sojourns()),
+        f"outcome={res.outcome.value}",
+        f"coverage_frac={res.coverage_frac!r}",
+        f"stalled_agents={getattr(res, 'stalled_agents', ())!r}",
+        f"skipped_legs={getattr(res, 'skipped_legs', ())!r}",
+    ]
+    return "\n".join(parts)
+
+
+def test_default_config_run_byte_identical_to_pre_exp01(config_path):
+    """Flag-off (photogrammetry absent) must reproduce the pre-EXP-01 run
+    exactly: summary metrics, the whole FSM sojourn trajectory, outcome,
+    coverage and the stalled/skipped sets."""
+    cfg = _default_cfg(config_path)
+    assert cfg.sensor.photogrammetry.enabled is False
+    engine = SimulationEngine(
+        cfg, RngFactory(cfg.sim.master_seed), replication=0,
+        algo=DecompositionAlgo.TGC_BASIC, planner=PlannerKind.DUBINS,
+    )
+    res = engine.run()
+    # No camera profile reaches the spec, so every EXP-01 branch is dormant.
+    assert engine.spec.photogrammetry is None
+
+    # Human-readable anchors first: a mismatch here names the drift directly.
+    assert len(res.history.sojourns()) == _PRE_EXP01_N_SOJOURNS
+    assert res.metrics.duration_s == _PRE_EXP01_DURATION_S
+    assert res.metrics.total_energy_j == _PRE_EXP01_TOTAL_ENERGY_J
+    digest = hashlib.sha256(
+        _canonical_signature_string(res).encode()
+    ).hexdigest()
+    assert digest == _PRE_EXP01_GOLDEN_HASH, (
+        f"flag-off run drifted from {_PRE_EXP01_COMMIT}"
+    )
