@@ -12,7 +12,7 @@ from shapely.ops import unary_union
 
 from uav_swarm_sim.infrastructure.config import ConfigError, load_config
 from uav_swarm_sim.planning.environment_map import EnvironmentMap
-from uav_swarm_sim.planning.obstacle_generator import generate
+from uav_swarm_sim.planning.obstacle_generator import _free_connected, generate
 
 
 def _target_env(env, **changes):
@@ -58,6 +58,18 @@ def test_target_config_defaults_off_and_parses_explicit_mode(config_path):
 def test_target_config_rejects_invalid_values(config_path, key, bad):
     with pytest.raises(ConfigError, match="obstacle_"):
         load_config(config_path, overrides={key: bad})
+
+
+def test_target_config_rejects_attempt_budget_below_count(config_path):
+    with pytest.raises(ConfigError, match="max_attempts must be >=.*target_count"):
+        load_config(
+            config_path,
+            overrides={
+                "env.obstacle_generation_mode": "target",
+                "env.obstacle_target_count": 10,
+                "env.obstacle_generation_max_attempts": 9,
+            },
+        )
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 17, 20260906])
@@ -134,6 +146,33 @@ def test_target_impossible_packing_stops_at_attempt_limit(config_path):
         generate(area, cfg, np.random.default_rng(4))
 
 
+def test_zero_area_tolerance_accepts_roundoff_only(config_path):
+    area = box(0.0, 0.0, 1000.0, 750.0)
+    cfg = _target_env(
+        load_config(config_path).env,
+        obstacle_area_fraction_tolerance=0.0,
+    )
+
+    obstacles = generate(area, cfg, np.random.default_rng(17))
+    final_fraction = unary_union([o.polygon for o in obstacles]).area / area.area
+
+    assert len(obstacles) == 10
+    assert final_fraction == pytest.approx(0.05, abs=1e-12)
+
+
+def test_target_connectivity_counts_small_isolated_pockets():
+    area = box(0.0, 0.0, 100.0, 100.0)
+    narrow_barrier = box(0.5, 0.0, 1.0, 100.0)
+
+    assert _free_connected(area, [narrow_barrier], buffer_m=0.0)
+    assert not _free_connected(
+        area,
+        [narrow_barrier],
+        buffer_m=0.0,
+        min_component_fraction=0.0,
+    )
+
+
 def test_explicit_poisson_mode_preserves_geometry_and_rng_state(config_path):
     area = box(0.0, 0.0, 400.0, 300.0)
     implicit = replace(
@@ -149,5 +188,39 @@ def test_explicit_poisson_mode_preserves_geometry_and_rng_state(config_path):
     before = generate(area, implicit, rng_implicit)
     after = generate(area, explicit, rng_explicit)
 
-    assert _geometry_signature(before) == _geometry_signature(after)
-    assert rng_implicit.bytes(64) == rng_explicit.bytes(64)
+    # Fixed golden captured from the pre-EXP-03 origin/main commit 14bb610.
+    expected = [
+        (
+            2,
+            "01030000000100000005000000C5E0657BE2685D403E687A0EB4B6464062F0B23D713461403E687A0E"
+            "B4B6464062F0B23D713461407CD0F41C686D3940C5E0657BE2685D407CD0F41C686D3940C5E0657BE268"
+            "5D403E687A0EB4B64640",
+            0.0,
+            math.inf,
+        ),
+        (
+            0,
+            "0103000000010000000500000059D66F6F1B7A7740E9DF99841346564059D66F6F1BBA7840E9DF9984"
+            "1346564059D66F6F1BBA7840E9DF99841346514059D66F6F1B7A7740E9DF99841346514059D66F6F1B7A"
+            "7740E9DF998413465640",
+            0.0,
+            math.inf,
+        ),
+        (
+            1,
+            "0103000000010000000500000065BC16AB583E6D4013D266D961D1704065BC16AB58BE6F4013D266D9"
+            "61D1704065BC16AB58BE6F4026A4CDB2C3226F4065BC16AB583E6D4026A4CDB2C3226F4065BC16AB583E"
+            "6D4013D266D961D17040",
+            0.0,
+            math.inf,
+        ),
+    ]
+    expected_rng_bytes = (
+        "9105c5acad3280f47786eda87027190cd49d5abcf2a919bd3c6206394868f9dd"
+        "8b870c2ca566e9c90084d3de3e969b7b403f650fcbaf8e29813c06af17eaa30a"
+    )
+
+    assert _geometry_signature(before) == expected
+    assert _geometry_signature(after) == expected
+    assert rng_implicit.bytes(64).hex() == expected_rng_bytes
+    assert rng_explicit.bytes(64).hex() == expected_rng_bytes

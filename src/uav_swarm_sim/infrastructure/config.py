@@ -923,3 +923,11 @@ def _validate(cfg: Config, raw: dict) -> None:
         )
     if cfg.env.obstacle_generation_max_attempts <= 0:
         raise ConfigError("env.obstacle_generation_max_attempts must be > 0")
+    if (
+        cfg.env.obstacle_generation_mode == "target"
+        and cfg.env.obstacle_generation_max_attempts < cfg.env.obstacle_target_count
+    ):
+        raise ConfigError(
+            "env.obstacle_generation_max_attempts must be >= "
+            "env.obstacle_target_count in target mode"
+        )

@@ -96,7 +96,12 @@ def _merge_overlaps(raw: list[tuple[int, Polygon]]) -> list[tuple[int, Polygon]]
     return merged
 
 
-def _free_connected(area: Polygon, obstacles: list[Polygon], buffer_m: float) -> bool:
+def _free_connected(
+    area: Polygon,
+    obstacles: list[Polygon],
+    buffer_m: float,
+    min_component_fraction: float = 0.01,
+) -> bool:
     if not obstacles:
         return True
     blocked = unary_union([o.buffer(buffer_m) for o in obstacles])
@@ -104,7 +109,7 @@ def _free_connected(area: Polygon, obstacles: list[Polygon], buffer_m: float) ->
     if free.is_empty:
         return False
     if isinstance(free, MultiPolygon):
-        big = [g for g in free.geoms if g.area > 0.01 * area.area]
+        big = [g for g in free.geoms if g.area > min_component_fraction * area.area]
         return len(big) <= 1
     return True
 
@@ -170,7 +175,11 @@ def _generate_target(
         final_fraction = final_geometry.area / area.area
         lower = target_fraction - tolerance
         upper = target_fraction + tolerance
-        if not lower <= final_fraction <= upper:
+        # The configured tolerance is scientific and absolute. The fixed
+        # dimensionless epsilon only absorbs arithmetic/GEOS roundoff at an
+        # inclusive boundary; it is not a relative relaxation of that band.
+        geometry_epsilon = 1e-12
+        if final_fraction < lower - geometry_epsilon or final_fraction > upper + geometry_epsilon:
             last_reason = (
                 f"final area fraction {final_fraction:.6f} outside "
                 f"[{lower:.6f}, {upper:.6f}] after clipping/union"
@@ -179,7 +188,12 @@ def _generate_target(
         if not final_geometry.is_valid:
             last_reason = "final clipped/union geometry is invalid"
             continue
-        if not _free_connected(area, polys, cfg.clearance_buffer_m):
+        if not _free_connected(
+            area,
+            polys,
+            cfg.clearance_buffer_m,
+            min_component_fraction=0.0,
+        ):
             last_reason = "clearance-buffered free space is disconnected"
             continue
 
