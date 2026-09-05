@@ -131,7 +131,7 @@ def _leg_sensor_energy(leg, em, sensor_power_w: float) -> float:
 
 
 def coverage_energy(polygon, spec, em, motion, sensor_power_w: float,
-                    env=None, coverage=None) -> dict:
+                    env=None, coverage=None, altitude_m: float | None = None) -> dict:
     """Analytical energy to sweep ``polygon`` once, built from the SAME
     boustrophedon + leg construction + P·dt integration the engine runs.
 
@@ -145,7 +145,9 @@ def coverage_energy(polygon, spec, em, motion, sensor_power_w: float,
     """
     zone = Zone(drone_id=0, regions=[], polygon=polygon,
                 entry_pose=Pose(polygon.centroid.x, polygon.centroid.y, 0.0))
-    plan = boustrophedon(zone, spec, motion, em, env=env, coverage=coverage)
+    plan = boustrophedon(
+        zone, spec, motion, em, env=env, coverage=coverage, altitude_m=altitude_m
+    )
     legs = _rebuild_coverage_legs(plan, motion)
 
     strip_j = connector_j = sensor_j = 0.0
@@ -235,7 +237,8 @@ def per_zone_energy(env, tgc, spec, em, motion, base_pose, n_drones: int,
     rows: list[dict] = []
     for did, zone in part.zones.items():
         core = coverage_energy(zone.polygon, spec, em, motion,
-                               sensor_power_w, env=env, coverage=coverage)["coverage_total_j"]
+                               sensor_power_w, env=env, coverage=coverage,
+                               altitude_m=altitude_m)["coverage_total_j"]
         transit_dist_m = math.hypot(zone.entry_pose.x - base_pose.x,
                                     zone.entry_pose.y - base_pose.y)
         tv = transit_and_vertical(em, spec, transit_dist_m, altitude_m)

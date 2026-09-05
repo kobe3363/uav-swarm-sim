@@ -29,6 +29,7 @@ from ..infrastructure.core_types import (
     CoveragePlan,
     DroneStateView,
     Path,
+    PhotoEvent,
     Pose,
     Waypoint,
 )
@@ -38,6 +39,7 @@ from ..physical_model.battery import Battery
 from ..physical_model.drone_specs import PlatformSpec
 from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import MotionModel
+from .photo_tracker import PhotoTracker
 from .rth_calculator import RthCalculator
 from .state_machine import AgentContext, StateMachine
 
@@ -75,6 +77,7 @@ class Agent:
         coverage_altitude_m: float | None = None,
         sensor_power_w: float = 0.0,
         transit_planner: Callable[[Pose, Pose], Path] | None = None,
+        photo_spacing_m: float | None = None,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -95,6 +98,9 @@ class Agent:
         # coverage.transit_free_space is on). None => the straight CRUISE chord,
         # byte-identical to the pre-fix behaviour.
         self._transit_planner = transit_planner
+        self._photo_tracker = (
+            PhotoTracker(id, photo_spacing_m) if photo_spacing_m is not None else None
+        )
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -153,6 +159,9 @@ class Agent:
     # setup                                                              #
     # ------------------------------------------------------------------ #
     def assign(self, plan: CoveragePlan, transit: Path) -> None:
+        photo_tracker = getattr(self, "_photo_tracker", None)
+        if photo_tracker is not None:
+            photo_tracker.finish_pass()
         self.plan = plan
         self._transit = transit
         self._leg_mode = getattr(plan, "leg_mode", "boustrophedon")
@@ -194,6 +203,8 @@ class Agent:
         """Re-task a live agent after redistribution: take the new coverage
         plan and re-transit toward its new zone from the current pose.
         (Simplification: in-progress coverage of the old zone is dropped.)"""
+        if self._photo_tracker is not None:
+            self._photo_tracker.finish_pass()
         self.plan = plan
         self._leg_mode = getattr(plan, "leg_mode", "boustrophedon")
         self._cov_legs = self._build_coverage_legs(plan.waypoints)
@@ -293,6 +304,20 @@ class Agent:
         if self._leg_idx >= len(self._legs):
             return
         leg = self._legs[self._leg_idx]
+        photo_on = (
+            self._photo_tracker is not None
+            # State toggles trail structural leg completion by one FSM step, so
+            # the first tick of a new strip can still carry S_FERRY.  Parity is
+            # the authoritative productive-leg discriminator.
+            and self.state in (AgentState.S2_MISSION, AgentState.S_FERRY)
+            and self._leg_mode == "boustrophedon"
+            and self._cov_idx < len(self._cov_legs)
+            and self._cov_idx % 2 == 0
+        )
+        if photo_on and not self._photo_tracker.active:
+            self._photo_tracker.start_pass(t, self.pose, self._cov_idx)
+        old_pose = self.pose
+        old_t = self._t
         man = leg.maneuver_at_time(self._t) or ManeuverType.CRUISE
         f = self.formation.power_factor(self, t, man) if self.formation else 1.0
         e = self.em.segment_energy(man, dt, f)
@@ -307,8 +332,14 @@ class Agent:
             # equals the 2D distance and the length metric stays byte-identical.
             self.flown_m += math.dist(self.pose.as_xyz(), new_pose.as_xyz())
             self.pose = new_pose
+            if photo_on:
+                self._photo_tracker.advance(
+                    old_pose, new_pose, t, new_t - old_t, self._cov_idx
+                )
         self._t = new_t
         if new_t >= leg.total_duration_s - 1e-9:
+            if photo_on:
+                self._photo_tracker.finish_pass()
             self._leg_idx += 1
             self._t = 0.0
             if self.state in (AgentState.S2_MISSION, AgentState.S_FERRY):
@@ -372,6 +403,10 @@ class Agent:
         elif dst is AgentState.S2_MISSION:
             self._set_legs(self._cov_legs[self._cov_idx:])
         elif dst is AgentState.S3_RTH:
+            if self._photo_tracker is not None:
+                # RTH ends a partial pass.  The existing resume rule re-flies
+                # this coverage leg from its start after the swap.
+                self._photo_tracker.finish_pass()
             # EM-01 Stage 3 (seam 7c): map-routed return home. getattr: test
             # stubs replace the calculator with bare objects (same rule as the
             # Stage-2 map_decide_on read); flag-off => attr False => the
@@ -413,6 +448,8 @@ class Agent:
                 self._obs_legs_saved = (self._legs, self._leg_idx, self._t)
             self._set_legs([plan])
         elif dst is AgentState.S_FAIL:
+            if self._photo_tracker is not None:
+                self._photo_tracker.finish_pass()
             self._set_legs([])
 
         self.state = dst
@@ -426,6 +463,8 @@ class Agent:
             saved_legs, saved_idx, saved_t = self._obs_legs_saved 
             if self._obs_skip_leg and dst in (AgentState.S2_MISSION, AgentState.S_FERRY):
                 # REJOIN: do NOT re-fly the obstructed coverage leg...
+                if self._photo_tracker is not None:
+                    self._photo_tracker.finish_pass()
                 self._legs = saved_legs
                 self._leg_idx = min(saved_idx + 1, len(saved_legs))
                 self._t = 0.0
@@ -487,6 +526,9 @@ class Agent:
         k = self._cov_idx
         if k >= len(self._cov_legs):
             return
+        photo_tracker = getattr(self, "_photo_tracker", None)
+        if photo_tracker is not None:
+            photo_tracker.finish_pass()
         if k % 2 == 0:
             new = min(k + 2, len(self._cov_legs))
             self._skipped_cov = self._skipped_cov + (k,)
@@ -494,6 +536,13 @@ class Agent:
         else:
             new = k + 1
         self._cov_idx = new
+
+    @property
+    def photo_events(self) -> tuple[PhotoEvent, ...]:
+        """Immutable view of captured photo events (empty in legacy mode)."""
+        if self._photo_tracker is None:
+            return ()
+        return tuple(self._photo_tracker.events)
 
     def _avoidance_plan(self) -> Path:
         # lateral sidestep then continue; effective at separating drones

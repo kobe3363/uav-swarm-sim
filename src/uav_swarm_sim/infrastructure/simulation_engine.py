@@ -173,6 +173,11 @@ class SimulationEngine:
     def _build(self):
         cfg = self.cfg
         self.spec = build_spec(cfg)
+        if self.spec.photogrammetry is not None and self.planner is PlannerKind.GRID:
+            raise ValueError(
+                "sensor.photogrammetry.enabled is not supported by the fixed-cell GRID "
+                "coverage planner; use the boustrophedon/DUBINS planner"
+            )
         self.motion = make_motion_model(self.spec)
         self.em = EnergyModel(self.spec)
         self.aero = AeroCorrection(cfg.aero, self.spec.platform)
@@ -359,7 +364,11 @@ class SimulationEngine:
                               self.formation, self.deploy_poses[i], recorder=recorder,
                               layer=i_layer, coverage_altitude_m=self.layers.altitude(i_layer),
                               sensor_power_w=cfg.sensor.sensor_power_w,
-                              transit_planner=self._transit_planner)
+                              transit_planner=self._transit_planner,
+                              photo_spacing_m=(
+                                  self.spec.coverage_photo_spacing_m(self.layers.altitude(i_layer))
+                                  if self._mission_type is MissionType.COVERAGE else None
+                              ))
                 if self._mission_type is MissionType.TARGET_VISIT:
                     plan = self.plans.get(i)
                     if plan is not None and plan.waypoints:
@@ -371,8 +380,10 @@ class SimulationEngine:
                     if zone is not None:
                         plan = (grid.coverage(zone, self.spec) if grid is not None
                                 else boustrophedon(zone, self.spec, self.motion, self.em,
-                                                   env=self.env, coverage=cfg.coverage))
-                        transit = self._plan_transit(self.deploy_poses[i], zone.entry_pose)
+                                                   env=self.env, coverage=cfg.coverage,
+                                                   altitude_m=self.layers.altitude(i_layer)))
+                        entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
+                        transit = self._plan_transit(self.deploy_poses[i], entry_pose)
                         agent.assign(plan, transit)
                         self.plans[i] = plan
                 agents.append(agent)
@@ -385,6 +396,7 @@ class SimulationEngine:
                 else WeightedTgcDecomposer(),
                 self.layer_graphs, self.motion, self.em, self.spec,
                 coverage=cfg.coverage,
+                layer_altitudes=cfg.layers.altitudes_m,
             )
         )
         self.replan_times: list[float] = []
@@ -487,7 +499,19 @@ class SimulationEngine:
         stalled = tuple(sorted(self._stall.stalled)) if self._stall is not None else ()
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
                              cfg.config_hash, self._outcome, stalled_agents=stalled,
-                             skipped_legs=self._skipped_legs())
+                             skipped_legs=self._skipped_legs(),
+                             photo_events=self._photo_events())
+
+    def _photo_events(self):
+        """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
+        events = [event for agent in self.fleet.agents.values() for event in agent.photo_events]
+        return tuple(sorted(
+            events,
+            key=lambda event: (
+                event.t_s, event.agent_id, event.coverage_leg_index,
+                event.distance_on_strip_m,
+            ),
+        ))
 
     def _plan_transit(self, a: Pose, b: Pose) -> Path:
         """An S1 transit leg: the straight CRUISE chord, unless FIX-B1
@@ -496,6 +520,12 @@ class SimulationEngine:
         if self._transit_planner is not None:
             return self._transit_planner(a, b)
         return self.motion.plan(a, b, ManeuverType.CRUISE)
+
+    def _coverage_entry_pose(self, plan: CoveragePlan, legacy_entry: Pose) -> Pose:
+        """Target the first strip when photos are enabled; preserve legacy transit."""
+        if self.spec.photogrammetry is not None and plan.waypoints:
+            return plan.waypoints[0].pose
+        return legacy_entry
 
     # ------------------------------------------------------------------ #
     def _route_events(self, t: float) -> None:
@@ -546,8 +576,10 @@ class SimulationEngine:
             zone = new_part.zones.get(a.id)
             if zone is None:
                 continue
-            transit = self._plan_transit(a.pose, zone.entry_pose)
-            a.adopt_plan(new_plans[a.id], transit)
+            plan = new_plans[a.id]
+            entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
+            transit = self._plan_transit(a.pose, entry_pose)
+            a.adopt_plan(plan, transit)
 
     def _redistribute_targets(self, active, t: float) -> None:
         import time as _time
