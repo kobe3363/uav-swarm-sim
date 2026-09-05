@@ -4,7 +4,12 @@ from __future__ import annotations
 import pytest
 
 from uav_swarm_sim.infrastructure.config import load_config
-from uav_swarm_sim.infrastructure.enums import DecompositionAlgo, PlannerKind
+from uav_swarm_sim.infrastructure.core_types import Event
+from uav_swarm_sim.infrastructure.enums import (
+    DecompositionAlgo,
+    EventType,
+    PlannerKind,
+)
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
 
@@ -85,6 +90,40 @@ def test_photo_count_and_distance_cadence_are_invariant_to_dt(config_path):
     # not change that physics; the shutter guarantee is invariant event count
     # and travelled-distance cadence for the resulting physical trajectory.
     assert _cadence_signature(fine) == _cadence_signature(coarse)
+
+
+def test_initial_transit_and_first_photo_use_first_strip_start(config_path):
+    engine, result = _run(config_path)
+    zone = engine.partition.zones[0]
+    first_strip_start = engine.plans[0].waypoints[0].pose
+
+    assert zone.entry_pose.as_xyz() != first_strip_start.as_xyz()
+    assert engine.fleet.agents[0]._transit.end_pose.as_xyz() == pytest.approx(
+        first_strip_start.as_xyz(), abs=1e-12
+    )
+    assert result.photo_events[0].pose.as_xyz() == pytest.approx(
+        first_strip_start.as_xyz(), abs=1e-12
+    )
+
+
+def test_redistribution_transit_uses_replanned_first_strip_start(config_path):
+    cfg = load_config(config_path, overrides=_overrides())
+    engine = SimulationEngine(
+        cfg, RngFactory(cfg.sim.master_seed), 0,
+        algo=DecompositionAlgo.WEIGHTED_VORONOI,
+    )
+    engine._build()
+    prior_zone = engine.partition.zones[0]
+    engine._redistribute(
+        Event(EventType.NEW_TASK, 0.0, {"polygon": prior_zone.polygon}), 0.0
+    )
+
+    zone = engine.partition.zones[0]
+    first_strip_start = engine.plans[0].waypoints[0].pose
+    assert zone.entry_pose.as_xyz() != first_strip_start.as_xyz()
+    assert engine.fleet.agents[0]._transit.end_pose.as_xyz() == pytest.approx(
+        first_strip_start.as_xyz(), abs=1e-12
+    )
 
 
 def test_disabled_profile_produces_no_events_and_legacy_swath(config_path):

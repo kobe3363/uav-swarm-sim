@@ -489,8 +489,11 @@ def _build(raw: dict, config_hash: str) -> Config:
     pg = s.get("photogrammetry", {}) or {}
     if not isinstance(pg, dict):
         raise ConfigError("sensor.photogrammetry must be a mapping")
+    pg_enabled = pg.get("enabled", False)
+    if not isinstance(pg_enabled, bool):
+        raise ConfigError("sensor.photogrammetry.enabled must be a boolean")
     photogrammetry = PhotogrammetryConfig(
-        enabled=bool(pg.get("enabled", False)),
+        enabled=pg_enabled,
         sensor_width_mm=float(pg.get("sensor_width_mm", 0.0)),
         sensor_height_mm=float(pg.get("sensor_height_mm", 0.0)),
         focal_length_mm=float(pg.get("focal_length_mm", 0.0)),

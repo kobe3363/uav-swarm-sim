@@ -382,7 +382,8 @@ class SimulationEngine:
                                 else boustrophedon(zone, self.spec, self.motion, self.em,
                                                    env=self.env, coverage=cfg.coverage,
                                                    altitude_m=self.layers.altitude(i_layer)))
-                        transit = self._plan_transit(self.deploy_poses[i], zone.entry_pose)
+                        entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
+                        transit = self._plan_transit(self.deploy_poses[i], entry_pose)
                         agent.assign(plan, transit)
                         self.plans[i] = plan
                 agents.append(agent)
@@ -520,6 +521,12 @@ class SimulationEngine:
             return self._transit_planner(a, b)
         return self.motion.plan(a, b, ManeuverType.CRUISE)
 
+    def _coverage_entry_pose(self, plan: CoveragePlan, legacy_entry: Pose) -> Pose:
+        """Target the first strip when photos are enabled; preserve legacy transit."""
+        if self.spec.photogrammetry is not None and plan.waypoints:
+            return plan.waypoints[0].pose
+        return legacy_entry
+
     # ------------------------------------------------------------------ #
     def _route_events(self, t: float) -> None:
         for e in self.bus.drain():
@@ -569,8 +576,10 @@ class SimulationEngine:
             zone = new_part.zones.get(a.id)
             if zone is None:
                 continue
-            transit = self._plan_transit(a.pose, zone.entry_pose)
-            a.adopt_plan(new_plans[a.id], transit)
+            plan = new_plans[a.id]
+            entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
+            transit = self._plan_transit(a.pose, entry_pose)
+            a.adopt_plan(plan, transit)
 
     def _redistribute_targets(self, active, t: float) -> None:
         import time as _time

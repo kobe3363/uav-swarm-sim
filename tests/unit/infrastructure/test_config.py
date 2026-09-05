@@ -320,6 +320,14 @@ def test_photogrammetry_rejects_non_mapping(config_path):
         load_config(config_path, {"sensor.photogrammetry": True})
 
 
+@pytest.mark.parametrize("bad", ["false", "true", 0, 1, None])
+def test_photogrammetry_enabled_requires_a_boolean(config_path, bad):
+    with pytest.raises(ConfigError, match="photogrammetry.enabled must be a boolean"):
+        load_config(config_path, _photogrammetry_overrides(
+            **{"sensor.photogrammetry.enabled": bad}
+        ))
+
+
 def test_shutter_boundary_is_accepted_and_faster_cadence_is_rejected(config_path):
     # At H=100 m and v=10 m/s: (100*13/12)*(1-.8)/10 = 13/6 s.
     boundary = 13.0 / 6.0
