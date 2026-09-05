@@ -78,6 +78,7 @@ class Agent:
         sensor_power_w: float = 0.0,
         transit_planner: Callable[[Pose, Pose], Path] | None = None,
         photo_spacing_m: float | None = None,
+        coverage_observer: Callable[[Pose, Pose], None] | None = None,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -101,6 +102,7 @@ class Agent:
         self._photo_tracker = (
             PhotoTracker(id, photo_spacing_m) if photo_spacing_m is not None else None
         )
+        self._coverage_observer = coverage_observer
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -336,6 +338,8 @@ class Agent:
                 self._photo_tracker.advance(
                     old_pose, new_pose, t, new_t - old_t, self._cov_idx
                 )
+                if self._coverage_observer is not None:
+                    self._coverage_observer(old_pose, new_pose)
         self._t = new_t
         if new_t >= leg.total_duration_s - 1e-9:
             if photo_on:

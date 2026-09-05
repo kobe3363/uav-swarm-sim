@@ -52,6 +52,10 @@ class EnvironmentMap:
             self.free_space: Polygon = area.difference(self._obstacles_union)
         else:
             self.free_space = area
+        self.target_space = (
+            area.difference(self._raw_union) if self._raw_union is not None else area
+        )
+        self.plannable_space = self.free_space
         # Prepared-geometry acceleration (Batch 3b): cache GEOS's internal STR
         # index on these FIXED geometries so the many point-in-polygon (covers)
         # and segment-intersection queries the SafetyMonitor and trajectory
@@ -78,6 +82,11 @@ class EnvironmentMap:
         the detour keeps the regulatory ``buffer_m`` clearance (and therefore
         cannot raise S_OBS, which triggers on the RAW union)."""
         return self._obstacles_union
+
+    @property
+    def raw_obstacles(self):
+        """Raw obstacle union used to define the survey target mask."""
+        return self._raw_union
 
     def clearance(self, p: tuple[float, float]) -> float:
         pt = Point(p)

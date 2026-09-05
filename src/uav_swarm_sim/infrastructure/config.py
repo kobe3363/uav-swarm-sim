@@ -14,6 +14,8 @@ Loader responsibilities (blueprint infrastructure/config.py):
 """
 from __future__ import annotations
 
+import math
+
 import copy
 import hashlib
 import json
@@ -134,6 +136,9 @@ class CoverageConfig:
     operating_area: str = "convex_hull"   # "convex_hull" | "bbox" | "survey"
     operating_margin_m: float = 50.0
     transit_free_space: bool = False      # FIX-B1: obstacle-aware S1 transit routing
+    raster_enabled: bool = False
+    raster_cell_m: float = 2.0
+    raster_completion_tolerance_frac: float = 0.001
 
 
 @dataclass(frozen=True)
@@ -525,7 +530,19 @@ def _build(raw: dict, config_hash: str) -> Config:
         operating_area=str(cov.get("operating_area", "convex_hull")),
         operating_margin_m=float(cov.get("operating_margin_m", 50.0)),
         transit_free_space=bool(cov.get("transit_free_space", False)),
+        raster_enabled=bool(cov.get("raster_enabled", False)),
+        raster_cell_m=float(cov.get("raster_cell_m", 2.0)),
+        raster_completion_tolerance_frac=float(
+            cov.get("raster_completion_tolerance_frac", 0.001)
+        ),
     )
+    if not math.isfinite(coverage.raster_cell_m) or coverage.raster_cell_m <= 0.0:
+        raise ConfigError("coverage.raster_cell_m must be finite and > 0")
+    if (not math.isfinite(coverage.raster_completion_tolerance_frac)
+            or not 0.0 <= coverage.raster_completion_tolerance_frac < 1.0):
+        raise ConfigError(
+            "coverage.raster_completion_tolerance_frac must be finite and in [0, 1)"
+        )
     a = _require(raw, "aero", "")
     aero = AeroConfig(
         formation_drag_reduction=float(_require(a, "formation_drag_reduction", "aero")),

@@ -349,3 +349,6 @@ class MissionResult:
     # EXP-01: actual distance-triggered shutter events.  Empty in legacy mode;
     # intentionally not serialized by the legacy result schema (EXP-11 owns it).
     photo_events: tuple[PhotoEvent, ...] = ()
+    # EXP-02: physical camera coverage of A_target (raw obstacles excluded).
+    # None only for direct legacy constructions outside SimulationEngine.
+    target_coverage_frac: float | None = None
