@@ -27,7 +27,9 @@ bounding box, and the **estimated boustrophedon strip count**. The strip estimat
 mirrors the engine's coverage planner (``planning/coverage_path``), which sweeps
 across the *minimum-rotated-rectangle* short axis at spacing ``effective_swath``:
 ``strips ~= short_side(min_rotated_rect) / effective_swath`` where
-``effective_swath = swath_width_m * (1 - overlap_frac)`` read from config.
+``effective_swath`` is read from the built platform spec, so an enabled EXP-01
+camera profile uses its altitude-derived line spacing and legacy configs retain
+``swath_width_m * (1 - overlap_frac)``.
 
 Usage
 -----
@@ -276,7 +278,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
-    effective_swath_m = cfg.sensor.swath_width_m * (1.0 - cfg.sensor.overlap_frac)
+    from ..physical_model.drone_specs import build_spec
+
+    effective_swath_m = build_spec(cfg).swath_width_m
 
     rows: list[dict] = []
     out_dir = Path(args.out_dir)
@@ -291,8 +295,8 @@ def main(argv=None) -> int:
     print(f"- Target area: {args.target_area_m2:,.0f} m²  "
           f"(= {args.target_area_m2 / 1e6:.3f} km²); all shapes normalised to this "
           "within < 1e-6 relative error.")
-    print(f"- Effective swath (config): {effective_swath_m:,.1f} m  "
-          f"(swath_width_m {cfg.sensor.swath_width_m:.0f} × (1 − overlap {cfg.sensor.overlap_frac:.2f})).")
+    mode = "photogrammetry" if cfg.sensor.photogrammetry.enabled else "legacy swath/overlap"
+    print(f"- Effective swath (config, {mode}): {effective_swath_m:,.1f} m")
     print(f"- Output: {out_dir}/  ({len(written)} files)\n")
     print(_render_table(rows, args.target_area_m2, effective_swath_m))
     print("\n_Solidity = area / convex-hull area (1.0 = convex; the H5 concavity "

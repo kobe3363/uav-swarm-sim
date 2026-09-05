@@ -312,6 +312,17 @@ class Event:
     payload: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PhotoEvent:
+    """One physical shutter trigger on a productive coverage-strip pass."""
+
+    agent_id: int
+    t_s: float
+    pose: Pose
+    coverage_leg_index: int
+    distance_on_strip_m: float
+
+
 @dataclass
 class MissionResult:
     metrics: object              # metrics.mission_metrics.MissionMetrics
@@ -335,3 +346,6 @@ class MissionResult:
     # terminal outcome to MISSION_PARTIAL and an honestly reduced
     # coverage_frac. Empty tuple always, unless the flag is on AND a skip fired.
     skipped_legs: tuple[tuple[int, int], ...] = ()
+    # EXP-01: actual distance-triggered shutter events.  Empty in legacy mode;
+    # intentionally not serialized by the legacy result schema (EXP-11 owns it).
+    photo_events: tuple[PhotoEvent, ...] = ()

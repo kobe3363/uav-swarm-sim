@@ -39,6 +39,7 @@ class Redistributor:
         em: EnergyModel,
         spec: PlatformSpec,
         coverage=None,
+        layer_altitudes: tuple[float, ...] | None = None,
     ) -> None:
         self._dec = decomposer
         self._layer_graphs = layer_graphs   # LayerGraphs: by_layer[idx] -> (env, tgc)
@@ -46,6 +47,7 @@ class Redistributor:
         self._em = em
         self._spec = spec
         self._coverage = coverage           # S_FERRY Step 2 routing config (or None)
+        self._layer_altitudes = layer_altitudes
         self.last_replan_time_s = 0.0
 
     @staticmethod
@@ -125,8 +127,13 @@ class Redistributor:
             zone = new_part_l.zones.get(a.id)
             if zone is None:
                 continue
+            altitude_m = (
+                self._layer_altitudes[layer]
+                if self._layer_altitudes is not None else None
+            )
             new_plans[a.id] = boustrophedon(zone, self._spec, self._motion, self._em,
-                                            env=env_l, coverage=self._coverage)
+                                            env=env_l, coverage=self._coverage,
+                                            altitude_m=altitude_m)
 
         self.last_replan_time_s = time.perf_counter() - t0
         return new_part, new_plans

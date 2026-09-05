@@ -134,6 +134,22 @@ sensor:
   sensor_power_w: 0.0         # camera + gimbal payload draw while filming a strip, charged only in
                               # S2_MISSION. 0 keeps this an M4E platform binding only (camera-energy
                               # term is a separate study opt-in), not an M4E requirement.
+  photogrammetry:
+    enabled: false            # EXP-01 profile is dormant here; EXP-13 enables the experiment preset.
+    # DJI-published: 4/3 CMOS, 20 MP, 84 deg FOV, 24 mm equivalent lens,
+    # 5280x3956 max image, 0.5 s minimum photo interval (20 MP JPEG).
+    # https://enterprise.dji.com/matrice-4-series/specs
+    # MODEL ASSUMPTION (not a DJI calibration): nominal active 4/3 dimensions
+    # 17.3x13.0 mm and 12.0 mm actual focal length.  This pair implies an
+    # 84.08 deg diagonal FOV, consistent with DJI's rounded 84 deg value.
+    sensor_width_mm: 17.3     # landscape long axis, cross-track
+    sensor_height_mm: 13.0    # landscape short axis, along-track
+    focal_length_mm: 12.0
+    image_width_px: 5280
+    image_height_px: 3956
+    side_overlap: 0.70
+    forward_overlap: 0.80
+    min_photo_interval_s: 0.5 # JPEG; configure 2.0 for JPEG+RAW interval capture
 
 # --------------------------------------------------------------------------- #
 # Coverage connector routing (S_FERRY Step 2). Verbatim default.yaml (OFF).    #

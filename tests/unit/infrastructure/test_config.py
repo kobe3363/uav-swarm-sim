@@ -253,3 +253,91 @@ def test_operating_margin_rejects_non_finite_and_negative(config_path, bad):
     and the Stage-2 energy-map extent, so it must die here as ConfigError."""
     with pytest.raises(ConfigError, match="operating_margin_m"):
         load_config(config_path, overrides={"coverage.operating_margin_m": bad})
+
+
+# --------------------------------------------------------------------------- #
+# config: EXP-01 optional photogrammetry camera                                #
+# --------------------------------------------------------------------------- #
+def _photogrammetry_overrides(**extra):
+    values = {
+        "sensor.photogrammetry.enabled": True,
+        "sensor.photogrammetry.sensor_width_mm": 17.3,
+        "sensor.photogrammetry.sensor_height_mm": 13.0,
+        "sensor.photogrammetry.focal_length_mm": 12.0,
+        "sensor.photogrammetry.image_width_px": 5280,
+        "sensor.photogrammetry.image_height_px": 3956,
+        "sensor.photogrammetry.side_overlap": 0.70,
+        "sensor.photogrammetry.forward_overlap": 0.80,
+        "sensor.photogrammetry.min_photo_interval_s": 0.5,
+        "platforms.MULTIROTOR.v_coverage": 10.0,
+        "env.coverage_altitude_m": 100.0,
+    }
+    values.update(extra)
+    return values
+
+
+def test_photogrammetry_defaults_off_and_absent(config_path):
+    import yaml
+
+    raw = yaml.safe_load(config_path.read_text())
+    assert "photogrammetry" not in raw["sensor"]
+    assert load_config(config_path).sensor.photogrammetry.enabled is False
+
+
+def test_photogrammetry_profile_parses(config_path):
+    pg = load_config(config_path, _photogrammetry_overrides()).sensor.photogrammetry
+    assert pg.enabled is True
+    assert (pg.sensor_width_mm, pg.sensor_height_mm, pg.focal_length_mm) == (17.3, 13.0, 12.0)
+    assert (pg.image_width_px, pg.image_height_px) == (5280, 3956)
+    assert (pg.side_overlap, pg.forward_overlap, pg.min_photo_interval_s) == (0.70, 0.80, 0.5)
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("sensor.photogrammetry.sensor_width_mm", 0.0),
+    ("sensor.photogrammetry.sensor_height_mm", -1.0),
+    ("sensor.photogrammetry.focal_length_mm", float("nan")),
+    ("sensor.photogrammetry.image_width_px", 0),
+    ("sensor.photogrammetry.image_height_px", -1),
+    ("sensor.photogrammetry.side_overlap", -0.01),
+    ("sensor.photogrammetry.side_overlap", 1.0),
+    ("sensor.photogrammetry.forward_overlap", float("inf")),
+    ("sensor.photogrammetry.min_photo_interval_s", 0.0),
+])
+def test_photogrammetry_rejects_invalid_values(config_path, key, bad):
+    with pytest.raises(ConfigError, match="photogrammetry"):
+        load_config(config_path, _photogrammetry_overrides(**{key: bad}))
+
+
+def test_photogrammetry_rejects_fractional_pixel_count(config_path):
+    with pytest.raises(ConfigError, match="image_width_px.*integer"):
+        load_config(config_path, _photogrammetry_overrides(
+            **{"sensor.photogrammetry.image_width_px": 5280.5}
+        ))
+
+
+def test_photogrammetry_rejects_non_mapping(config_path):
+    with pytest.raises(ConfigError, match="photogrammetry must be a mapping"):
+        load_config(config_path, {"sensor.photogrammetry": True})
+
+
+def test_shutter_boundary_is_accepted_and_faster_cadence_is_rejected(config_path):
+    # At H=100 m and v=10 m/s: (100*13/12)*(1-.8)/10 = 13/6 s.
+    boundary = 13.0 / 6.0
+    cfg = load_config(config_path, _photogrammetry_overrides(
+        **{"sensor.photogrammetry.min_photo_interval_s": boundary}
+    ))
+    assert cfg.sensor.photogrammetry.min_photo_interval_s == boundary
+
+    with pytest.raises(ConfigError, match="shutter infeasible"):
+        load_config(config_path, _photogrammetry_overrides(
+            **{"sensor.photogrammetry.min_photo_interval_s": boundary + 1e-6}
+        ))
+
+
+def test_shutter_validation_checks_each_coverage_layer(config_path):
+    with pytest.raises(ConfigError, match="shutter infeasible.*20 m AGL"):
+        load_config(config_path, _photogrammetry_overrides(**{
+            "layers.altitudes_m": [20.0, 100.0],
+            # 20 m gives 0.4333 s at 10 m/s, below the 0.5 s shutter limit.
+            "sensor.photogrammetry.min_photo_interval_s": 0.5,
+        }))

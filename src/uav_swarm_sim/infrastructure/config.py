@@ -70,10 +70,26 @@ class PlatformConfig:
 
 
 @dataclass(frozen=True)
+class PhotogrammetryConfig:
+    """Optional physical camera model (EXP-01), disabled for legacy configs."""
+
+    enabled: bool = False
+    sensor_width_mm: float = 0.0
+    sensor_height_mm: float = 0.0
+    focal_length_mm: float = 0.0
+    image_width_px: int = 0
+    image_height_px: int = 0
+    side_overlap: float = 0.0
+    forward_overlap: float = 0.0
+    min_photo_interval_s: float = 0.0
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     swath_width_m: float
     overlap_frac: float
     sensor_power_w: float = 0.0  # camera/gimbal payload draw while filming (W); 0 => no camera-energy term
+    photogrammetry: PhotogrammetryConfig = field(default_factory=PhotogrammetryConfig)
 
 
 @dataclass(frozen=True)
@@ -372,6 +388,13 @@ def _require(raw: dict, key: str, path: str) -> Any:
     return raw[key]
 
 
+def _pixel_count(value: Any, path: str) -> int:
+    """Parse a positive pixel count without silently truncating YAML floats."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{path} must be an integer")
+    return value
+
+
 def _deep_set(d: dict, dotted_key: str, value: Any) -> None:
     """Set d['a']['b']['c'] = value from dotted_key 'a.b.c'."""
     parts = dotted_key.split(".")
@@ -463,10 +486,31 @@ def _build(raw: dict, config_hash: str) -> Config:
 
     # ---- sensor / aero ----
     s = _require(raw, "sensor", "")
+    pg = s.get("photogrammetry", {}) or {}
+    if not isinstance(pg, dict):
+        raise ConfigError("sensor.photogrammetry must be a mapping")
+    photogrammetry = PhotogrammetryConfig(
+        enabled=bool(pg.get("enabled", False)),
+        sensor_width_mm=float(pg.get("sensor_width_mm", 0.0)),
+        sensor_height_mm=float(pg.get("sensor_height_mm", 0.0)),
+        focal_length_mm=float(pg.get("focal_length_mm", 0.0)),
+        image_width_px=(
+            _pixel_count(pg["image_width_px"], "sensor.photogrammetry.image_width_px")
+            if "image_width_px" in pg else 0
+        ),
+        image_height_px=(
+            _pixel_count(pg["image_height_px"], "sensor.photogrammetry.image_height_px")
+            if "image_height_px" in pg else 0
+        ),
+        side_overlap=float(pg.get("side_overlap", 0.0)),
+        forward_overlap=float(pg.get("forward_overlap", 0.0)),
+        min_photo_interval_s=float(pg.get("min_photo_interval_s", 0.0)),
+    )
     sensor = SensorConfig(
         swath_width_m=float(_require(s, "swath_width_m", "sensor")),
         overlap_frac=float(_require(s, "overlap_frac", "sensor")),
         sensor_power_w=float(s.get("sensor_power_w", 0.0)),
+        photogrammetry=photogrammetry,
     )
 
     # ---- coverage (S_FERRY Step 2 connector routing) ----
@@ -696,6 +740,63 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("sensor.overlap_frac must be in [0, 1)")
     if cfg.sensor.sensor_power_w < 0:
         raise ConfigError("sensor.sensor_power_w must be >= 0")
+
+    # EXP-01: a physical camera profile is optional and entirely dormant when
+    # disabled.  When enabled, reject bad optics and an infeasible commanded
+    # speed at config-load time instead of silently reducing the speed.
+    pg = cfg.sensor.photogrammetry
+    if pg.enabled:
+        positive_optics = {
+            "sensor_width_mm": pg.sensor_width_mm,
+            "sensor_height_mm": pg.sensor_height_mm,
+            "focal_length_mm": pg.focal_length_mm,
+            "min_photo_interval_s": pg.min_photo_interval_s,
+        }
+        for name, value in positive_optics.items():
+            if not isfinite(value) or value <= 0.0:
+                raise ConfigError(f"sensor.photogrammetry.{name} must be finite and > 0")
+        for name, value in {
+            "image_width_px": pg.image_width_px,
+            "image_height_px": pg.image_height_px,
+        }.items():
+            if value <= 0:
+                raise ConfigError(f"sensor.photogrammetry.{name} must be > 0")
+        for name, value in {
+            "side_overlap": pg.side_overlap,
+            "forward_overlap": pg.forward_overlap,
+        }.items():
+            if not isfinite(value) or not (0.0 <= value < 1.0):
+                raise ConfigError(f"sensor.photogrammetry.{name} must be finite and in [0, 1)")
+        if not isfinite(cfg.env.coverage_altitude_m) or cfg.env.coverage_altitude_m <= 0.0:
+            raise ConfigError("env.coverage_altitude_m must be finite and > 0 for photogrammetry")
+        if not isfinite(cfg.platform.v_coverage) or cfg.platform.v_coverage <= 0.0:
+            raise ConfigError(
+                f"platforms.{cfg.platform.type.value}.v_coverage must be finite and > 0 "
+                "for photogrammetry"
+            )
+        # The engine derives geometry independently at every coverage layer.
+        # Validate the default AGL (used by PlatformSpec consumers) and every
+        # configured layer so an invalid lower layer cannot fail mid-mission.
+        heights_m = dict.fromkeys((cfg.env.coverage_altitude_m, *cfg.layers.altitudes_m))
+        for height_m in heights_m:
+            if not isfinite(height_m) or height_m <= 0.0:
+                raise ConfigError(
+                    "photogrammetry coverage layer altitudes must be finite and > 0"
+                )
+            photo_spacing_m = (
+                height_m
+                * pg.sensor_height_mm
+                / pg.focal_length_mm
+                * (1.0 - pg.forward_overlap)
+            )
+            nominal_interval_s = photo_spacing_m / cfg.platform.v_coverage
+            if nominal_interval_s + 1e-12 < pg.min_photo_interval_s:
+                raise ConfigError(
+                    "sensor.photogrammetry shutter infeasible at commanded coverage speed "
+                    f"and {height_m:g} m AGL: nominal interval "
+                    f"{nominal_interval_s:.6g} s < minimum "
+                    f"{pg.min_photo_interval_s:.6g} s"
+                )
 
     _op_areas = {"convex_hull", "bbox", "survey"}
     if cfg.coverage.operating_area not in _op_areas:

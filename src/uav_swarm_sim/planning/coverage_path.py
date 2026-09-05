@@ -60,7 +60,7 @@ def _strip_intervals(rot_poly: Polygon, swath: float) -> list[list[tuple[float, 
 
 def boustrophedon(
     zone: Zone, spec: PlatformSpec, motion: MotionModel, em: EnergyModel,
-    env=None, coverage=None,
+    env=None, coverage=None, altitude_m: float | None = None,
 ) -> CoveragePlan:
     poly = zone.polygon
     if poly.is_empty or poly.area <= 0:
@@ -71,7 +71,9 @@ def boustrophedon(
     theta = _long_axis_angle(poly)
     cx, cy = poly.centroid.x, poly.centroid.y
     rot = rotate(poly, -math.degrees(theta), origin=(cx, cy))
-    swath = spec.swath_width_m
+    # EXP-01: the enabled nadir-camera model derives cross-track spacing from
+    # this layer's AGL.  Legacy specs return their precomputed effective swath.
+    swath = spec.coverage_line_spacing_m(altitude_m)
 
     rows = _strip_intervals(rot, swath)
 

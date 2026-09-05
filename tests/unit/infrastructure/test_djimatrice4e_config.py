@@ -57,6 +57,17 @@ def test_m4e_effective_swath_and_altitude():
     assert cfg.env.coverage_altitude_m == 91.5   # DERIVED: 2.5 cm GSD, M4E wide cam
 
 
+def test_m4e_dormant_photogrammetry_profile():
+    cfg = load_config(M4E)
+    pg = cfg.sensor.photogrammetry
+    assert pg.enabled is False                    # EXP-13 owns preset activation
+    assert (pg.sensor_width_mm, pg.sensor_height_mm) == (17.3, 13.0)  # model assumption
+    assert pg.focal_length_mm == 12.0             # model assumption, not DJI calibration
+    assert (pg.image_width_px, pg.image_height_px) == (5280, 3956)    # DJI max image
+    assert (pg.side_overlap, pg.forward_overlap) == (0.70, 0.80)
+    assert pg.min_photo_interval_s == 0.5         # DJI minimum for 20 MP JPEG
+
+
 def test_m4e_obstacles_are_fixed_squares():
     cfg = load_config(M4E)
     assert cfg.env.obstacle_shapes == ("square",)

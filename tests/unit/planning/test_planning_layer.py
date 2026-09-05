@@ -9,7 +9,7 @@ import pytest
 from shapely.geometry import Polygon
 
 from uav_swarm_sim.infrastructure.config import load_config
-from uav_swarm_sim.infrastructure.core_types import DroneStateView, Pose
+from uav_swarm_sim.infrastructure.core_types import DroneStateView, Pose, Zone
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.physical_model.drone_specs import build_spec
 from uav_swarm_sim.physical_model.energy_model import EnergyModel
@@ -224,3 +224,45 @@ def test_grid_planner_route_and_coverage(env, tgc, cfg):
     b = Pose(*env.sample_free(1, rng)[0], 0.0)
     path = gp.route(a, b)
     assert path.total_length_m >= 0
+
+
+def _camera_cfg(config_path, *, side=0.70, forward=0.80):
+    return load_config(config_path, overrides={
+        "sensor.photogrammetry.enabled": True,
+        "sensor.photogrammetry.sensor_width_mm": 17.3,
+        "sensor.photogrammetry.sensor_height_mm": 13.0,
+        "sensor.photogrammetry.focal_length_mm": 12.0,
+        "sensor.photogrammetry.image_width_px": 5280,
+        "sensor.photogrammetry.image_height_px": 3956,
+        "sensor.photogrammetry.side_overlap": side,
+        "sensor.photogrammetry.forward_overlap": forward,
+        "sensor.photogrammetry.min_photo_interval_s": 0.5,
+        "env.coverage_altitude_m": 100.0,
+        "platforms.MULTIROTOR.v_coverage": 10.0,
+    })
+
+
+def _rectangle_plan(config_path, *, side=0.70, forward=0.80):
+    camera_cfg = _camera_cfg(config_path, side=side, forward=forward)
+    camera_spec = build_spec(camera_cfg)
+    camera_motion = make_motion_model(camera_spec)
+    camera_em = EnergyModel(camera_spec)
+    poly = Polygon([(0.0, 0.0), (300.0, 0.0), (300.0, 200.0), (0.0, 200.0)])
+    zone = Zone(0, [], poly, Pose(0.0, 0.0, 0.0))
+    return boustrophedon(zone, camera_spec, camera_motion, camera_em, altitude_m=100.0)
+
+
+def test_side_overlap_changes_strip_count(config_path):
+    lower = _rectangle_plan(config_path, side=0.60)
+    higher = _rectangle_plan(config_path, side=0.70)
+    assert len(higher.waypoints) > len(lower.waypoints)
+    assert higher.length_m > lower.length_m
+
+
+def test_forward_overlap_does_not_change_coverage_path(config_path):
+    lower = _rectangle_plan(config_path, forward=0.70)
+    higher = _rectangle_plan(config_path, forward=0.80)
+    assert higher.waypoints == lower.waypoints
+    assert higher.connectors == lower.connectors
+    assert higher.length_m == lower.length_m
+    assert higher.est_energy_j == lower.est_energy_j
