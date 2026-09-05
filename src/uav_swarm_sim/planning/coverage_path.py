@@ -41,6 +41,8 @@ def _strip_intervals(rot_poly: Polygon, swath: float) -> list[list[tuple[float, 
     minx, miny, maxx, maxy = rot_poly.bounds
     rows: list[list[tuple[float, float, float]]] = []
     y = miny + swath / 2.0
+    if y > maxy:
+        y = (miny + maxy) / 2.0
     while y <= maxy:
         scan = LineString([(minx - 1.0, y), (maxx + 1.0, y)])
         inter = rot_poly.intersection(scan)
@@ -58,31 +60,19 @@ def _strip_intervals(rot_poly: Polygon, swath: float) -> list[list[tuple[float, 
     return rows
 
 
-def boustrophedon(
-    zone: Zone, spec: PlatformSpec, motion: MotionModel, em: EnergyModel,
-    env=None, coverage=None, altitude_m: float | None = None,
-) -> CoveragePlan:
-    poly = zone.polygon
-    if poly.is_empty or poly.area <= 0:
-        return CoveragePlan(zone.drone_id, [], 0.0, 0.0)
-    if not isinstance(poly, Polygon):
-        poly = max(poly.geoms, key=lambda g: g.area)
-
+def _component_strips(
+    poly: Polygon, swath: float, spec: PlatformSpec
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Return the ordered world-frame coverage strips for one component."""
     theta = _long_axis_angle(poly)
     cx, cy = poly.centroid.x, poly.centroid.y
     rot = rotate(poly, -math.degrees(theta), origin=(cx, cy))
-    # EXP-01: the enabled nadir-camera model derives cross-track spacing from
-    # this layer's AGL.  Legacy specs return their precomputed effective swath.
-    swath = spec.coverage_line_spacing_m(altitude_m)
-
     rows = _strip_intervals(rot, swath)
 
-    # tight-strip guard: interleave strip order when a simple U-turn is infeasible
     order = list(range(len(rows)))
     if spec.r_min_m > 0 and 2 * spec.r_min_m > swath:
         order = list(range(0, len(rows), 2)) + list(range(1, len(rows), 2))
 
-    # build ordered endpoints in the rotated frame, serpentine within each row
     endpoints: list[tuple[float, float]] = []
     flip = False
     for ridx in order:
@@ -92,31 +82,52 @@ def boustrophedon(
             a, b = (x0, yy), (x1, yy)
             if flip:
                 a, b = b, a
-            endpoints.append(a)
-            endpoints.append(b)
+            endpoints.extend((a, b))
         flip = not flip
 
-    # rotate endpoints back to world frame
+    ca, sa = math.cos(theta), math.sin(theta)
+
     def unrot(p):
-        ca, sa = math.cos(theta), math.sin(theta)
         dx, dy = p[0] - cx, p[1] - cy
         return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
 
     world = [unrot(p) for p in endpoints]
+    return [(world[k], world[k + 1]) for k in range(0, len(world) - 1, 2)]
+
+
+def boustrophedon(
+    zone: Zone, spec: PlatformSpec, motion: MotionModel, em: EnergyModel,
+    env=None, coverage=None, altitude_m: float | None = None,
+) -> CoveragePlan:
+    poly = zone.polygon
+    if poly.is_empty or poly.area <= 0:
+        return CoveragePlan(zone.drone_id, [], 0.0, 0.0)
+    # EXP-01: the enabled nadir-camera model derives cross-track spacing from
+    # this layer's AGL.  Legacy specs return their precomputed effective swath.
+    swath = spec.coverage_line_spacing_m(altitude_m)
+    components = (
+        [poly]
+        if isinstance(poly, Polygon)
+        else [g for g in poly.geoms if isinstance(g, Polygon) and g.area > 0.0]
+    )
+    strips = [
+        (start, end, component_index)
+        for component_index, component in enumerate(components)
+        for start, end in _component_strips(component, swath, spec)
+    ]
 
     # S_FERRY Step 2: route camera-off connectors around obstacles when enabled.
     # Default (env is None or flag off) => straight chord, byte-identical.
     ferry_on = bool(coverage is not None and getattr(coverage, "ferry_free_space", False)
                     and env is not None)
+    store_connectors = ferry_on or (len(components) > 1 and env is not None)
 
     waypoints: list[Waypoint] = []
     connectors: list[Path] = []
     length = 0.0
     energy = 0.0
     # iterate strip by strip: even index = strip start, odd = strip end
-    for k in range(0, len(world) - 1, 2):
-        s = world[k]
-        e = world[k + 1]
+    for k, (s, e, component_index) in enumerate(strips):
         heading = math.atan2(e[1] - s[1], e[0] - s[0])
         strip_len = math.dist(s, e)
         waypoints.append(Waypoint(Pose(s[0], s[1], heading), ManeuverType.COVERAGE, spec.v_coverage))
@@ -124,17 +135,17 @@ def boustrophedon(
         length += strip_len
         energy += em.distance_energy(strip_len, ManeuverType.COVERAGE, spec.v_coverage)
         # connector to next strip start
-        if k + 2 < len(world):
-            nxt = world[k + 2]
-            nh = math.atan2(world[k + 3][1] - nxt[1], world[k + 3][0] - nxt[0]) if k + 3 < len(world) else heading
+        if k + 1 < len(strips):
+            nxt, nxt_end, next_component_index = strips[k + 1]
+            nh = math.atan2(nxt_end[1] - nxt[1], nxt_end[0] - nxt[0])
             a_pose = Pose(e[0], e[1], heading)
             b_pose = Pose(nxt[0], nxt[1], nh)
-            if ferry_on:
+            if store_connectors:
                 conn = route_connector(
                     a_pose, b_pose, motion, env,
-                    enabled=True,
-                    operating_area=coverage.operating_area,
-                    margin_m=coverage.operating_margin_m,
+                    enabled=ferry_on or component_index != next_component_index,
+                    operating_area=getattr(coverage, "operating_area", "convex_hull"),
+                    margin_m=getattr(coverage, "operating_margin_m", 50.0),
                 )
                 connectors.append(conn)
             else:

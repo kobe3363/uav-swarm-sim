@@ -40,6 +40,7 @@ class Redistributor:
         spec: PlatformSpec,
         coverage=None,
         layer_altitudes: tuple[float, ...] | None = None,
+        remaining_work_provider=None,
     ) -> None:
         self._dec = decomposer
         self._layer_graphs = layer_graphs   # LayerGraphs: by_layer[idx] -> (env, tgc)
@@ -48,6 +49,7 @@ class Redistributor:
         self._spec = spec
         self._coverage = coverage           # S_FERRY Step 2 routing config (or None)
         self._layer_altitudes = layer_altitudes
+        self._remaining_work_provider = remaining_work_provider
         self.last_replan_time_s = 0.0
 
     @staticmethod
@@ -106,6 +108,8 @@ class Redistributor:
                 polys.append(np_poly)
 
         target = unary_union(polys) if polys else None
+        if target is not None and self._remaining_work_provider is not None:
+            target = target.intersection(self._remaining_work_provider())
 
         views = [a.view() for a in active_l]
         new_part_l = self._dec.decompose(tgc_l, env_l, views, target_area=target)
@@ -123,6 +127,9 @@ class Redistributor:
         new_part = Partition(partition.algo, new_zones, new_part_l.planning_time_s)
 
         new_plans: dict[int, CoveragePlan] = dict(plans)
+        if self._remaining_work_provider is not None:
+            for a in active_l:
+                new_plans[a.id] = CoveragePlan(a.id, [], 0.0, 0.0, layer=layer)
         for a in active_l:
             zone = new_part_l.zones.get(a.id)
             if zone is None:

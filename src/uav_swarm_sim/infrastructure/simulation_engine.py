@@ -23,6 +23,7 @@ from shapely.geometry import Polygon
 from .profiling import phase, record
 from ..infrastructure.config import Config
 from ..infrastructure.core_types import (
+    CoveragePlan,
     DroneStateView,
     Event,
     MissionResult,
@@ -416,6 +417,10 @@ class SimulationEngine:
                 self.layer_graphs, self.motion, self.em, self.spec,
                 coverage=cfg.coverage,
                 layer_altitudes=cfg.layers.altitudes_m,
+                remaining_work_provider=(
+                    (lambda: self.coverage_raster.uncovered_plannable_geometry)
+                    if self.coverage_raster is not None else None
+                ),
             )
         )
         self.replan_times: list[float] = []
@@ -614,6 +619,10 @@ class SimulationEngine:
         for a in active:
             zone = new_part.zones.get(a.id)
             if zone is None:
+                if self.coverage_raster is not None:
+                    plan = new_plans[a.id]
+                    transit = self.motion.plan(a.pose, a.pose, ManeuverType.CRUISE)
+                    a.adopt_plan(plan, transit)
                 continue
             plan = new_plans[a.id]
             entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
