@@ -31,6 +31,7 @@ from uav_swarm_sim.planning.environment_map import EnvironmentMap
 from uav_swarm_sim.planning.lloyd_partition import (
     EnergyWeightPolicy,
     assign_cells,
+    build_eligible_cells,
     LloydPartitioner,
     UniformWeightPolicy,
     build_eligible_cells,
@@ -391,3 +392,32 @@ def test_the_reported_energy_describes_the_zones_that_are_returned(case):
         assert report[i]["slack_j"] == pytest.approx(
             report[i]["budget_j"] - report[i]["demand_j"]
         )
+
+
+def test_the_report_is_consistent_when_there_is_no_work_at_all(case):
+    """The early returns hand back empty zones. Without a refresh the policy keeps
+    its initial state and the record goes out with demand, budget and status all
+    None while slack_j still reads 0.0 -- a report that contradicts its own
+    definition of slack."""
+    from shapely.geometry import Polygon
+
+    from uav_swarm_sim.planning.environment_map import EnvironmentMap
+
+    env = EnvironmentMap(box(0.0, 0.0, 600.0, 240.0), [], 0.0)
+    nothing = CoverageRaster(Polygon(), Polygon(), 20.0)
+    cells, drone_comp = build_eligible_cells(nothing, env, case["xy"])
+    assert cells.count == 0
+
+    policy = _policy(case, [CAPACITY_J, CAPACITY_J], SETTINGS)
+    labels, _, weights, converged, _, _, kept = LloydPartitioner(SETTINGS, policy).run(
+        cells, case["xy"], drone_comp, Pose(300.0, 0.0, 0.0)
+    )
+    assert len(labels) == 0 and kept.count == 0 and converged
+
+    report = policy.per_drone([0, 1])
+    for entry in report.values():
+        assert entry["demand_j"] == 0.0                      # no work, no demand
+        assert entry["budget_j"] is not None
+        assert entry["status"] is not None
+        assert entry["estimate_area_m2"] == 0.0
+        assert entry["slack_j"] == pytest.approx(entry["budget_j"] - entry["demand_j"])

@@ -453,6 +453,17 @@ class LloydPartitioner:
         self.settings = settings
         self.weight_policy = weight_policy
 
+    def _refresh_empty(self, n: int) -> None:
+        """Describe the empty zones the early returns hand back.
+
+        Without this the policy keeps its initial state, and the report goes out
+        with demand, budget and status all None while slack_j still reads 0.0 --
+        a record that contradicts its own definition of slack. Zero area and a
+        non-finite centroid are exactly what an empty zone is, so the estimator
+        anchors at each drone's own pose and the numbers come out consistent.
+        """
+        self.weight_policy.refresh(np.zeros(n), np.full((n, 2), np.nan))
+
     def run(
         self, cells: EligibleCells, drone_poses: np.ndarray, drone_comp: np.ndarray,
         launch_pose: Pose,
@@ -461,6 +472,7 @@ class LloydPartitioner:
         sites = initial_sites(self.settings.init_sites, drone_poses, cells, launch_pose)
         weights = self.weight_policy.initial(n)
         if cells.count == 0 or n == 0:
+            self._refresh_empty(n)
             return np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0, cells
 
         # Eligibility is component membership AND the drone being in play at all.
@@ -485,6 +497,7 @@ class LloydPartitioner:
             )
             allowed = allowed[keep]
         if cells.count == 0:
+            self._refresh_empty(n)
             return (np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0, cells)
 
         converged, shift, iterations = False, 0.0, 0
