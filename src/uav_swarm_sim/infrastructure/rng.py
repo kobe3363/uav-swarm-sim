@@ -25,6 +25,22 @@ STREAM_INITIAL_SOC = "initial_soc"
 STREAM_KMEANS_INIT = "kmeans_init"
 STREAM_TARGETS = "targets"
 STREAM_DYNOBS = "dynamic_obstacles"
+# EXP-08 (mission.repartition_enabled): draws made by an IN-FLIGHT re-partition,
+# held apart from STREAM_KMEANS_INIT on purpose.
+#
+# KMeansHeuristicDecomposer draws from its generator inside every decompose()
+# call (kmeans_heuristic.py: the k-means++ init and the empty-cluster centroid),
+# and a Generator is stateful. Re-partitioning with the run's own k-means
+# instance would therefore consume from the SAME stream the t=0 partition used,
+# which makes the replication-keyed k-means init variance -- a characteristic
+# this project deliberately keeps and reports (CLAUDE.md) -- depend on the
+# re-partition trigger schedule. Binding re-partition draws to their own stream
+# keeps STREAM_KMEANS_INIT consumed exactly once per run, at t=0.
+#
+# Paired-seed determinism is unaffected either way: ``stream`` is a pure
+# function of (master_seed, name, replication), so a new name cannot move the
+# obstacle, failure, launch, SoC or target draws.
+STREAM_REPARTITION_INIT = "repartition_init"
 
 
 def _stable_key(name: str, replication: int) -> int:
