@@ -331,3 +331,22 @@ def test_more_drones_than_cells_keeps_the_surplus_on_their_staging_pose():
     assert len(sites) == 4
     # the two unmatched drones keep their own pose; nothing crashes, no duplicates
     assert sum(1 for s in sites if tuple(s) in {tuple(p) for p in poses}) >= 2
+
+
+def test_missing_component_information_leaves_the_constraint_inert():
+    """No env (or an empty flyable space) means no connectivity information. The
+    reachability constraint must then exclude NOTHING -- labelling every point
+    unreachable would strand the entire survey instead of failing loudly."""
+    area = box(0.0, 0.0, 200.0, 100.0)
+    raster = CoverageRaster(area, area, 10.0)
+    poses = [Pose(50.0, 50.0, 0.0), Pose(150.0, 50.0, 0.0)]
+    dec = LloydCvtDecomposer(raster=raster, deploy_poses=poses,
+                             launch_pose=Pose(100.0, 0.0, 0.0), settings=SETTINGS)
+    partition = dec.decompose(None, None, [DroneStateView(i, 1.0, p)
+                                           for i, p in enumerate(poses)])
+
+    assert dec.diagnostics.cells["no_eligible_owner"] == 0
+    assert dec.diagnostics.cells["eligible"] == 200
+    assert sum(z.area_m2 for z in partition.zones.values()) == pytest.approx(
+        area.area, rel=1e-12
+    )

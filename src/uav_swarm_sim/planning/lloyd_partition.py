@@ -140,10 +140,14 @@ def _free_space_parts(env: EnvironmentMap | None) -> list[Polygon]:
 
 
 def _component_of_points(parts: list[Polygon], xy: np.ndarray) -> np.ndarray:
-    """Component id per point; -1 when the point lies in none of them."""
-    if not parts:
-        return np.full(len(xy), -1, dtype=np.int32)
-    if len(parts) == 1 or len(xy) == 0:
+    """Component id per point; -1 when the point lies in none of them.
+
+    With no component information at all -- no env, or an empty flyable space --
+    every point is labelled 0, which makes the constraint INERT. Labelling them
+    -1 instead would make it maximally exclusive and silently strand the whole
+    survey, which is the opposite of the intended failure mode.
+    """
+    if not parts or len(parts) == 1 or len(xy) == 0:
         return np.zeros(len(xy), dtype=np.int32)
     labels = np.full(len(xy), -1, dtype=np.int32)
     tree = STRtree(np.array(parts, dtype=object))
