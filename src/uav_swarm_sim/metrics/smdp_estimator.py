@@ -38,6 +38,10 @@ STATE_ORDER: list[AgentState] = [
     AgentState.S_SWAP,
     AgentState.S_OBS,
     AgentState.S_FAIL,
+    # EXP-04: appended LAST so the legacy eight indices are unchanged. Never
+    # visited in a flag-off history (its row/column stay all-zero and it is
+    # dropped from ``states`` like any other unvisited state).
+    AgentState.S_LANDED,
 ]
 
 
@@ -62,7 +66,14 @@ def estimate(
     history: StateHistory,
     close_failure_loop: bool = True,
     failure_repair_s: float = 600.0,
+    close_landed_loop: bool = True,
 ) -> SmdpEstimate:
+    """``close_landed_loop`` (EXP-04): an agent whose history ends in S_LANDED
+    (same-battery touchdown, absorbing in the physical layer) gets a synthetic
+    S_LANDED -> S0_IDLE closure at its own sojourn duration -- the drone IS
+    parked at base -- so a no-swap mission keeps an ergodic chain and a defined
+    pi / efficiency. No repair time is added (nothing was lost). Legacy
+    histories never contain S_LANDED, so the flag is inert for them."""
     by_agent: dict[int, list[Sojourn]] = defaultdict(list)
     for s in history.sojourns():
         by_agent[s.agent_id].append(s)
@@ -86,6 +97,11 @@ def estimate(
             # synthetic replacement closure: S_FAIL -> S0 at the repair duration
             N[li, idx[AgentState.S0_IDLE]] += 1
             dur[li] += failure_repair_s
+            visits[li] += 1
+        elif close_landed_loop and last.state is AgentState.S_LANDED:
+            # EXP-04 closure: landed drone is parked at base (see docstring)
+            N[li, idx[AgentState.S0_IDLE]] += 1
+            dur[li] += last.duration
             visits[li] += 1
         else:
             # legitimate terminal sojourn: account duration, drop truncated transition

@@ -70,6 +70,13 @@ class Fleet:
     def active(self) -> list[Agent]:
         return [a for aid, a in self.agents.items() if aid not in self._failed]
 
+    def workers(self) -> list[Agent]:
+        """Agents eligible for (re)tasking: active AND not retired. Identical to
+        ``active()`` whenever no agent has retired -- i.e. in every legacy run
+        (EXP-04 S_LANDED is the only way to retire). ``getattr`` keeps test
+        stubs without the EXP-04 surface working."""
+        return [a for a in self.active() if not getattr(a, "retired", False)]
+
     def airborne(self) -> list[Agent]:
         return [a for a in self.active() if a.state.is_airborne]
 

@@ -138,12 +138,15 @@ def test_terminal_state_zero_outgoing_is_graceful():
     fail = {sc.state: sc for sc in rep.per_state}[S.S_FAIL]
     assert fail.visits == 1
     assert fail.transitions_out == 0 and fail.transitions == {}
-    assert set(rep.unvisited) == {S.S_FERRY, S.S3_RTH, S.S_SWAP, S.S_OBS}
-    # zero-visit row on the full base is also graceful (pooled-call shape)
+    # S_LANDED (EXP-04) is in STATE_ORDER but never visited by a legacy history
+    assert set(rep.unvisited) == {S.S_FERRY, S.S3_RTH, S.S_SWAP, S.S_OBS, S.S_LANDED}
+    # zero-visit row on the full base is also graceful (pooled-call shape);
+    # the base grew from 8 to 9 states when EXP-04 appended S_LANDED
+    n = len(STATE_ORDER)
     full = report_from_counts(list(STATE_ORDER),
-                              np.zeros((8, 8)), np.zeros(8))
+                              np.zeros((n, n)), np.zeros(n))
     assert full.per_state == [] and full.weakest_by_visits is None
-    assert full.widest_ci is None and len(full.unvisited) == 8
+    assert full.widest_ci is None and len(full.unvisited) == n == 9
 
 
 # --------------------------------------------------------------------------- #

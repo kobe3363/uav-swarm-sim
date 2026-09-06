@@ -29,6 +29,7 @@ STATE_COLORS = {
     AgentState.S_SWAP: "#9467bd",
     AgentState.S_OBS: "#d62728",
     AgentState.S_FAIL: "#000000",
+    AgentState.S_LANDED: "#8c564b",  # EXP-04 terminal same-battery touchdown
 }
 _ZONE_CMAP = plt.get_cmap("tab20")
 

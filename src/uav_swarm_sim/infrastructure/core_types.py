@@ -352,3 +352,17 @@ class MissionResult:
     # EXP-02: physical camera coverage of A_target (raw obstacles excluded).
     # None only for direct legacy constructions outside SimulationEngine.
     target_coverage_frac: float | None = None
+    # EXP-04: explicit terminal diagnostics (additive; not serialized by the
+    # legacy result schema). ``terminal_reason`` names the condition that
+    # ended the run in BOTH modes -- the pre-existing telemetry strings
+    # ("battery_depleted", "pool_exhausted", "coverage_complete_with_gaps",
+    # "coverage_complete") plus "stall_livelock" / "max_timesteps" for the two
+    # MISSION_INCOMPLETE exits; ``airborne_at_end`` lists drones still flying
+    # when the run stopped (non-empty only on a time cap / stall halt).
+    # ``retired_agents``, ``work_releases`` (agent_id, t) and ``losses``
+    # (agent_id, t, cause) are populated only under mission.no_swap_mode.
+    terminal_reason: str | None = None
+    airborne_at_end: tuple[int, ...] = ()
+    retired_agents: tuple[int, ...] = ()
+    work_releases: tuple[tuple[int, float], ...] = ()
+    losses: tuple[tuple[int, float, str], ...] = ()

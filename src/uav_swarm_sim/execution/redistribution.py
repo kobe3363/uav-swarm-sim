@@ -76,7 +76,12 @@ class Redistributor:
             raise ValueError(f"redistribution does not handle {event.type} (swap is reversible)")
 
         t0 = time.perf_counter()
-        active = fleet.active()
+        # EXP-04: retired (S_LANDED) drones are not eligible for re-tasking and
+        # their zone is not pooled here (their uncovered work is released via
+        # UAV_RETIRED for EXP-08). Fleet.workers() == fleet.active() whenever
+        # nobody has retired, so every legacy run is byte-identical; the
+        # getattr fallback keeps fleet stubs without workers() working.
+        active = getattr(fleet, "workers", fleet.active)()
         active_ids = {a.id for a in active}
 
         # which layer this event re-partitions

@@ -20,7 +20,10 @@ flown with the camera off (S_FERRY): real flight energy, zero coverage benefit.
 Counting S_FERRY as overhead makes pi(S_FERRY) the direct "cost of the survey
 shape" -- concave/elongated shapes spend more time ferrying -- and keeps the
 score's meaning exact: only S2 is productive, everything else airborne is
-overhead. Histories that never ferry are unaffected (pi(S_FERRY)=0)."""
+overhead. Histories that never ferry are unaffected (pi(S_FERRY)=0).
+
+S_LANDED (EXP-04 no-swap touchdown) is deliberately NOT in the denominator:
+like S0_IDLE it is parked ground time, neither flight nor service overhead."""
 from __future__ import annotations
 
 import logging

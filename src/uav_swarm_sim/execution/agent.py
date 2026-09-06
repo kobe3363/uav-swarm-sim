@@ -140,6 +140,10 @@ class Agent:
         self._obs_legs_saved: tuple[list[Path], int, float] | None = None
         self._last_rth_t = -1e9
         self._swap_done = False
+        # EXP-04 (mission.no_swap_mode): set once on entering S_LANDED. Guards
+        # the single UAV_RETIRED publication and refuses any later re-tasking
+        # (adopt_plan) or swap signal. Never set in legacy runs.
+        self._retired = False
 
         # EM-01 Stage 2 (rth.energy_map.decide): per-sortie arming threshold
         # (seam 7b) + battery-quantized decide cadence (design doc section 7).
@@ -205,6 +209,11 @@ class Agent:
         """Re-task a live agent after redistribution: take the new coverage
         plan and re-transit toward its new zone from the current pose.
         (Simplification: in-progress coverage of the old zone is dropped.)"""
+        if self._retired:
+            # EXP-04: a drone that landed on its own battery never takes work
+            # again. The engine already excludes it via Fleet.workers(); this is
+            # the explicit last line of defence for any other caller.
+            return
         if self._photo_tracker is not None:
             self._photo_tracker.finish_pass()
         self.plan = plan
@@ -250,7 +259,16 @@ class Agent:
             self._threat = False
 
     def signal_swap_done(self) -> None:
+        if self._retired:
+            return  # EXP-04: no swap cycle exists for a landed drone
         self._swap_done = True
+
+    @property
+    def retired(self) -> bool:
+        """EXP-04: True once the drone has entered the terminal S_LANDED state
+        (same-battery touchdown). Read by Fleet.workers() and future EXP-08
+        reallocation to exclude the drone from any further tasking."""
+        return self._retired
 
     # ------------------------------------------------------------------ #
     # per-tick                                                           #
@@ -297,7 +315,10 @@ class Agent:
             self._apply_transition(tr, t, bus)
 
     def _tick_dynamics(self, dt: float, t: float) -> None:
-        if self.state in (AgentState.S0_IDLE, AgentState.S_SWAP, AgentState.S_FAIL):
+        # S_LANDED (EXP-04) is a powered-down ground state: zero energy, like
+        # S_SWAP / S_FAIL (the S0_IDLE hover-idle draw does not apply).
+        if self.state in (AgentState.S0_IDLE, AgentState.S_SWAP, AgentState.S_FAIL,
+                          AgentState.S_LANDED):
             if self.state is AgentState.S0_IDLE:
                 e = self.em.segment_energy(ManeuverType.IDLE, dt)
                 self.battery.drain(e)
@@ -422,6 +443,25 @@ class Agent:
             if ret is None:
                 ret = self.motion.plan(self.pose, self.base, ManeuverType.CRUISE)
             self._set_legs([ret])
+        elif dst is AgentState.S_LANDED:
+            # EXP-04 (mission.no_swap_mode): touchdown on the sortie's own
+            # battery is terminal -- no SWAP_REQUEST, no battery.reset(), no
+            # resume transit, no relaunch. The RTH leg has already been charged
+            # tick by tick down to this touchdown (physical truth). UAV_RETIRED
+            # is published exactly once; ``work_released`` tells the (future
+            # EXP-08) reallocation whether uncovered legs were still assigned.
+            if self._photo_tracker is not None:
+                self._photo_tracker.finish_pass()
+            self._set_legs([])
+            self._launch_ready = False
+            if not self._retired:
+                self._retired = True
+                bus.publish(Event(EventType.UAV_RETIRED, t, {
+                    "agent_id": self.id,
+                    "work_released": self._cov_idx < len(self._cov_legs),
+                    "cov_idx": self._cov_idx,
+                    "n_cov_legs": len(self._cov_legs),
+                }))
         elif dst is AgentState.S_SWAP:
             bus.publish(Event(EventType.SWAP_REQUEST, t, {"agent_id": self.id}))
             self._set_legs([])
