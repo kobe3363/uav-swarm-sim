@@ -21,6 +21,7 @@ from time import perf_counter
 from shapely.geometry import Polygon
 
 from .profiling import phase, record
+from .initial_soc import generate_initial_soc
 from ..infrastructure.config import Config
 from ..infrastructure.core_types import (
     CoveragePlan,
@@ -187,6 +188,9 @@ class SimulationEngine:
         with phase("build.load_area"):
             area = load_area(cfg.env.geojson_path)
         obs_rng = self.rng.stream(STREAM_OBSTACLES, self.replication)
+        self.initial_soc_by_drone = generate_initial_soc(
+            cfg.battery.initial_soc, cfg.fleet.n_drones, self.rng, self.replication
+        )
         # 2.5D: slice the extruded prisms into one 2D map per coverage layer.
         # A single layer at the coverage altitude (with unbounded prisms) is the
         # whole world and reproduces the 2D map exactly. Build per-layer GVG+TGC
@@ -217,6 +221,7 @@ class SimulationEngine:
             self.launch_pose, self.site_scores = optimize_launch(
                 cfg.launch, self.tgc, self.env, self.motion, self.em, self.aero,
                 self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
+                initial_soc_by_drone=self.initial_soc_by_drone,
             )
 
         # EM-01 Stage 1 (rth.energy_map, default OFF => byte-identical): build
@@ -305,7 +310,8 @@ class SimulationEngine:
                 cfg.coverage.raster_cell_m,
             )
         init_views = [
-            DroneStateView(i, 1.0, self.deploy_poses[i]) for i in range(cfg.fleet.n_drones)
+            DroneStateView(i, self.initial_soc_by_drone[i], self.deploy_poses[i])
+            for i in range(cfg.fleet.n_drones)
         ]
         self.assignment = {}          # drone_id -> list[(x, y)] (target mode only)
         self.layer_of: dict[int, int] = {}   # drone_id -> assigned layer index
@@ -382,7 +388,11 @@ class SimulationEngine:
         agents: list[Agent] = []
         with phase("build.coverage_plan"):
             for i in range(cfg.fleet.n_drones):
-                battery = Battery(self.spec.battery_capacity_j, cfg.battery_zones, 1.0)
+                battery = Battery(
+                    self.spec.battery_capacity_j,
+                    cfg.battery_zones,
+                    self.initial_soc_by_drone[i],
+                )
                 i_layer = self.layer_of.get(i, 0)
                 agent = Agent(i, self.spec, self.motion, self.em, battery, sm, rth,
                               self.formation, self.deploy_poses[i], recorder=recorder,
@@ -553,7 +563,8 @@ class SimulationEngine:
                              airborne_at_end=airborne_at_end,
                              retired_agents=tuple(aid for aid, _, _ in self._retirements),
                              work_releases=tuple((aid, rt) for aid, rt, rel in self._retirements if rel),
-                             losses=tuple(self._losses))
+                             losses=tuple(self._losses),
+                             initial_soc_by_drone=self.initial_soc_by_drone)
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""

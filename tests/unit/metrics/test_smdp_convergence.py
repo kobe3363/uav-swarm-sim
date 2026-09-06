@@ -217,11 +217,14 @@ def test_build_results_single_is_additive_only():
     identity = {"config_hash": "deadbeef"}
 
     old = build_results_single(result, est, identity=identity, wall_time_s=1.234)
-    # the pre-change schema, frozen: top-level and smdp key sets + spot values
+    # EXP-05 intentionally versions the output contract and adds SoC provenance;
+    # all pre-existing fields and the additive convergence behavior stay fixed.
     assert set(old) == {"schema", "kind", "mode", "identity", "status",
-                        "outcome", "smdp", "metrics", "timing"}
+                        "outcome", "smdp", "metrics", "timing",
+                        "initial_soc_by_drone"}
     assert set(old["smdp"]) == {"ergodic", "stationary_pi_time", "efficiency"}
-    assert old["schema"] == "uav-swarm-sim/results/v1"
+    assert old["schema"] == "uav-swarm-sim/results/v2"
+    assert old["initial_soc_by_drone"] == []
     assert old["status"] == "MISSION_SUCCESS"
     assert old["metrics"]["total_energy_j"] == 123.0
     assert old["timing"]["wall_time_total_s"] == 1.234

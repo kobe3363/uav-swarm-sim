@@ -117,6 +117,7 @@ def furthest_point_feasible(
     altitude_m: float = 100.0,
     reserve_frac: float = _RESERVE_FRAC,
     min_work_j: float = 0.0,
+    battery_frac: float = 1.0,
 ) -> bool:
     """True iff one drone can fly from base to a point ``furthest_dist_m`` away at
     cruise, perform ``min_work_j`` of work there, and return -- all on one usable
@@ -125,17 +126,21 @@ def furthest_point_feasible(
     Cruise is charged SOLO (no formation benefit): the long-range sortie to the
     boundary is not a formation flight, so this is the conservative, physically
     correct gate. ``min_work_j`` defaults to 0 (pure reach-and-return floor); a
-    caller may pass a coverage allowance for a stricter test.
+    caller may pass a coverage allowance for a stricter test. ``battery_frac``
+    is the actual starting fraction; ``reserve_frac`` remains an absolute
+    full-capacity floor.
     """
     if furthest_dist_m < 0:
         raise ValueError("furthest_dist_m must be >= 0")
+    if not math.isfinite(battery_frac) or not 0.0 <= battery_frac <= 1.0:
+        raise ValueError("battery_frac must be finite and in [0, 1]")
     out_and_back = 2.0 * em.distance_energy(furthest_dist_m, ManeuverType.CRUISE, spec.v_cruise)
     vertical = (
         takeoff_profile(spec, em, altitude_m).energy_j
         + landing_profile(spec, em, altitude_m).energy_j
     )
     needed = out_and_back + vertical + max(0.0, min_work_j)
-    usable = spec.battery_capacity_j * (1.0 - reserve_frac)
+    usable = spec.battery_capacity_j * max(0.0, battery_frac - reserve_frac)
     return needed <= usable
 
 
@@ -337,10 +342,17 @@ def _candidate_sites(cfg: LaunchConfig, env: EnvironmentMap, rng: np.random.Gene
 
 
 def _provisional_entries(
-    tgc: TGCGraph, env: EnvironmentMap, n_drones: int, altitude_centroid: Pose
+    tgc: TGCGraph,
+    env: EnvironmentMap,
+    n_drones: int,
+    altitude_centroid: Pose,
+    initial_soc_by_drone: tuple[float, ...],
 ) -> list[Pose]:
     drones = [
-        DroneStateView(id=i, battery_frac=1.0, pose=altitude_centroid) for i in range(n_drones)
+        DroneStateView(
+            id=i, battery_frac=initial_soc_by_drone[i], pose=altitude_centroid
+        )
+        for i in range(n_drones)
     ]
     part = WeightedTgcDecomposer().decompose(tgc, env, drones, target_area=None)
     return [z.entry_pose for z in part.zones.values()]
@@ -357,10 +369,25 @@ def optimize(
     n_drones: int,
     rng: np.random.Generator,
     altitude_m: float = 100.0,
+    *,
+    initial_soc_by_drone: tuple[float, ...] | None = None,
 ) -> tuple[Pose, list[SiteScore]]:
+    initial_soc_by_drone = (
+        (1.0,) * n_drones if initial_soc_by_drone is None else initial_soc_by_drone
+    )
+    if len(initial_soc_by_drone) != n_drones:
+        raise ValueError("initial_soc_by_drone must contain one value per drone")
+    if any(
+        not math.isfinite(value) or not 0.0 <= value <= 1.0
+        for value in initial_soc_by_drone
+    ):
+        raise ValueError("initial_soc_by_drone values must be finite and in [0, 1]")
+    min_initial_soc = min(initial_soc_by_drone)
     cx, cy = env.area.centroid.x, env.area.centroid.y
     centroid_pose = Pose(cx, cy, 0.0)
-    entries = _provisional_entries(tgc, env, n_drones, centroid_pose)
+    entries = _provisional_entries(
+        tgc, env, n_drones, centroid_pose, initial_soc_by_drone
+    )
     candidates = _candidate_sites(cfg, env, rng)
     if not candidates:
         raise RuntimeError("no feasible launch candidate sites found")
@@ -381,7 +408,9 @@ def optimize(
     for s in candidates:
         # --- Batch 6.3 Part 1.1: feasibility gate FIRST; discard if infeasible ---
         furthest_m = _furthest_free_vertex_dist(env, s)
-        if not furthest_point_feasible(em, spec, furthest_m, altitude_m):
+        if not furthest_point_feasible(
+            em, spec, furthest_m, altitude_m, battery_frac=min_initial_soc
+        ):
             continue
 
         site_pose = Pose(s[0], s[1], math.atan2(cy - s[1], cx - s[0]))
@@ -414,7 +443,7 @@ def optimize(
         )
 
     if not rows:
-        usable = spec.battery_capacity_j * (1.0 - _RESERVE_FRAC)
+        usable = spec.battery_capacity_j * max(0.0, min_initial_soc - _RESERVE_FRAC)
         raise InfeasibleMissionError(
             "No staging-periphery launch site can both reach all navigable bounds "
             f"and retain a per-sortie coverage budget (usable {usable:.0f} J at "

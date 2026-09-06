@@ -366,3 +366,5 @@ class MissionResult:
     retired_agents: tuple[int, ...] = ()
     work_releases: tuple[tuple[int, float], ...] = ()
     losses: tuple[tuple[int, float, str], ...] = ()
+    # EXP-05: actual t=0 capacity fractions, ordered by contiguous drone ID.
+    initial_soc_by_drone: tuple[float, ...] = ()

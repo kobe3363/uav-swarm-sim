@@ -186,6 +186,23 @@ class BatteryZonesConfig:
 
 
 @dataclass(frozen=True)
+class InitialSocConfig:
+    """Initial battery state of charge, expressed as a fraction of capacity."""
+
+    mode: str = "fixed"
+    value: float | None = 1.0
+    low: float | None = None
+    high: float | None = None
+    mean: float | None = None
+    std: float | None = None
+
+
+@dataclass(frozen=True)
+class BatteryConfig:
+    initial_soc: InitialSocConfig = field(default_factory=InitialSocConfig)
+
+
+@dataclass(frozen=True)
 class SwapConfig:
     service_time_s: float
     n_bays: int
@@ -393,6 +410,7 @@ class Config:
     layers: LayersConfig = field(default_factory=_single_layer_default)
     config_hash: str = field(default="")
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    battery: BatteryConfig = field(default_factory=BatteryConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -623,6 +641,58 @@ def _build(raw: dict, config_hash: str) -> Config:
         critical=float(bz.get("critical", 0.20)),
     )
 
+    # ---- initial battery state of charge ----
+    battery_raw = raw.get("battery", {})
+    if not isinstance(battery_raw, dict):
+        raise ConfigError("battery must be a mapping")
+    unexpected_battery = set(battery_raw) - {"initial_soc"}
+    if unexpected_battery:
+        raise ConfigError(
+            f"battery has unknown field(s): {', '.join(sorted(unexpected_battery))}"
+        )
+    soc_raw = battery_raw.get("initial_soc", {})
+    if not isinstance(soc_raw, dict):
+        raise ConfigError("battery.initial_soc must be a mapping")
+    mode = str(soc_raw.get("mode", "fixed"))
+    allowed_by_mode = {
+        "fixed": {"mode", "value"},
+        "uniform": {"mode", "low", "high"},
+        "truncated_normal": {"mode", "mean", "std", "low", "high"},
+    }
+    if mode not in allowed_by_mode:
+        raise ConfigError(
+            "battery.initial_soc.mode must be one of "
+            "fixed, uniform, truncated_normal"
+        )
+    unexpected_soc = set(soc_raw) - allowed_by_mode[mode]
+    if unexpected_soc:
+        raise ConfigError(
+            f"battery.initial_soc mode {mode!r} has invalid field(s): "
+            f"{', '.join(sorted(unexpected_soc))}"
+        )
+
+    def _soc_float(key: str, *, default: float | None = None) -> float | None:
+        if key not in soc_raw:
+            if default is not None:
+                return default
+            raise ConfigError(f"battery.initial_soc.{key} is required for mode {mode}")
+        if isinstance(soc_raw[key], bool):
+            raise ConfigError(f"battery.initial_soc.{key} must be numeric")
+        try:
+            return float(soc_raw[key])
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"battery.initial_soc.{key} must be numeric") from exc
+
+    initial_soc = InitialSocConfig(
+        mode=mode,
+        value=_soc_float("value", default=1.0) if mode == "fixed" else None,
+        low=_soc_float("low") if mode in {"uniform", "truncated_normal"} else None,
+        high=_soc_float("high") if mode in {"uniform", "truncated_normal"} else None,
+        mean=_soc_float("mean") if mode == "truncated_normal" else None,
+        std=_soc_float("std") if mode == "truncated_normal" else None,
+    )
+    battery = BatteryConfig(initial_soc=initial_soc)
+
     # ---- swap / failure / safety / rth / sim / mc ----
     sw = _require(raw, "swap", "")
     swap = SwapConfig(
@@ -733,6 +803,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         layers=layers,
         config_hash=config_hash,
         telemetry=telemetry,
+        battery=battery,
     )
 
 
@@ -744,6 +815,30 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError(f"fleet.n_drones must be in [1, 100], got {cfg.fleet.n_drones}")
     if cfg.fleet.battery_capacity_wh <= 0:
         raise ConfigError("fleet.battery_capacity_wh must be > 0")
+    initial_soc = cfg.battery.initial_soc
+    if initial_soc.mode == "fixed":
+        assert initial_soc.value is not None
+        if not isfinite(initial_soc.value) or not 0.0 <= initial_soc.value <= 1.0:
+            raise ConfigError("battery.initial_soc.value must be finite and in [0, 1]")
+    else:
+        assert initial_soc.low is not None and initial_soc.high is not None
+        if (
+            not isfinite(initial_soc.low)
+            or not isfinite(initial_soc.high)
+            or not 0.0 <= initial_soc.low < initial_soc.high <= 1.0
+        ):
+            raise ConfigError(
+                "battery.initial_soc bounds must be finite and satisfy "
+                "0 <= low < high <= 1"
+            )
+        if initial_soc.mode == "truncated_normal":
+            assert initial_soc.mean is not None and initial_soc.std is not None
+            if not isfinite(initial_soc.mean) or not initial_soc.low <= initial_soc.mean <= initial_soc.high:
+                raise ConfigError(
+                    "battery.initial_soc.mean must be finite and in [low, high]"
+                )
+            if not isfinite(initial_soc.std) or initial_soc.std <= 0.0:
+                raise ConfigError("battery.initial_soc.std must be finite and > 0")
     if (
         cfg.fleet.total_reserve_batteries is not None
         and cfg.fleet.total_reserve_batteries < 0

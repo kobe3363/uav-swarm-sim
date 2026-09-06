@@ -40,8 +40,8 @@ import numpy as np
 from ..infrastructure.enums import Outcome
 from .convergence import ci_half_width
 
-PLAN_SCHEMA = "uav-swarm-sim/plan/v1"
-RESULTS_SCHEMA = "uav-swarm-sim/results/v1"
+PLAN_SCHEMA = "uav-swarm-sim/plan/v2"
+RESULTS_SCHEMA = "uav-swarm-sim/results/v2"
 RUN_SCHEMA = "uav-swarm-sim/run/v1"
 
 
@@ -386,6 +386,13 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
             "efficiency_note": "pi(S2) / (pi(S3)+pi(S_OBS)+pi(S_SWAP))",
         },
         "metrics": metric_block,
+        "initial_soc_by_replication": [
+            {
+                "replication": replication,
+                "initial_soc_by_drone": list(getattr(run, "initial_soc_by_drone", ())),
+            }
+            for replication, run in enumerate(mc.runs, start=1)
+        ],
         "timing": {
             "wall_time_total_s": round(wall_time_s, 3),
             "wall_time_mean_per_run_s": round(wall_time_s / mc.n_runs, 4) if mc.n_runs else None,
@@ -440,6 +447,7 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
             "planning_time_s": m.planning_time_s,
             "per_agent_length_m": {str(k): v for k, v in m.per_agent_length_m.items()},
         },
+        "initial_soc_by_drone": list(getattr(result, "initial_soc_by_drone", ())),
         "timing": {"wall_time_total_s": round(wall_time_s, 3)},
     }
     if rth_arming is not None:
