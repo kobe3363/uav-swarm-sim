@@ -271,3 +271,60 @@ def test_the_stamp_records_the_first_supersession_only(overrides):
     engine._redistribute(Event(EventType.NEW_TASK, 5.0, {}), 5.0)
     engine._redistribute(Event(EventType.NEW_TASK, 9.0, {}), 9.0)
     assert engine.partition_diagnostics.superseded_by["t_s"] == 5.0
+
+
+# --------------------------------------------------------------------------- #
+# EXP-07b (B-1): the hoisted RthCalculator must not pollute reported metrics    #
+# --------------------------------------------------------------------------- #
+def _energy_overrides(overrides):
+    return dict(overrides, **{"planning.energy_balance.enabled": True,
+                              "rth.energy_map.enabled": True,
+                              "rth.energy_map.decide": True})
+
+
+def test_planning_time_return_queries_do_not_move_the_reported_rth_counters(overrides):
+    """n_map_hits / n_map_fallbacks / n_route_fallbacks are reported metrics
+    (experiments/run_rth_ab.py reads them off the engine). The energy partitioner
+    queries return costs hundreds of times while planning, so the decomposition is
+    wrapped in the same save/restore the t=0 diagnostics use. All THREE counters
+    must be untouched by it -- n_route_fallbacks included."""
+    _, engine = _engine(_energy_overrides(overrides), algo=DecompositionAlgo.LLOYD_ENERGY)
+
+    assert engine.rth.n_map_hits == 0
+    assert engine.rth.n_map_fallbacks == 0
+    assert engine.rth.n_route_fallbacks == 0
+    # and the partitioner really did run, so the zeros are not vacuous
+    assert engine.partition_diagnostics.decomposer_class == "LloydEnergyDecomposer"
+    assert engine.partition_diagnostics.iterations >= 1
+
+
+def test_hoisting_the_rth_calculator_leaves_legacy_runs_alone(overrides):
+    """The construction moved above the decomposition. It is side-effect free, so
+    a legacy run must be unchanged -- same zones, same counters."""
+    _, engine = _engine(_energy_overrides(overrides), algo=DecompositionAlgo.TGC_BASIC)
+    assert engine.rth is not None
+    assert (engine.rth.n_map_hits, engine.rth.n_map_fallbacks,
+            engine.rth.n_route_fallbacks) == (0, 0, 0)
+    assert engine.partition_diagnostics is None
+
+
+def test_lloyd_energy_records_its_own_identity_and_weight_policy(overrides):
+    cfg, engine = _engine(_energy_overrides(overrides), algo=DecompositionAlgo.LLOYD_ENERGY)
+    plan = build_plan(cfg, identity={}, algo=DecompositionAlgo.LLOYD_ENERGY,
+                      planner=PlannerKind.DUBINS, engine=engine)
+
+    assert plan["setup"]["decomposition_algorithm"] == "lloyd_energy"
+    assert plan["setup"]["decomposer_class"] == "LloydEnergyDecomposer"
+    assert plan["setup"]["partition_settings"]["weight_policy"] == "energy_slack"
+
+    record = engine.partition_diagnostics.to_json()
+    for entry in record["per_drone"].values():
+        assert entry["slack_j"] == pytest.approx(entry["budget_j"] - entry["demand_j"])
+        assert entry["cannot_fly"] is False
+    json.dumps(record, allow_nan=False)
+
+
+def test_lloyd_energy_requires_the_energy_balance_it_consumes(overrides):
+    with pytest.raises(ValueError, match="energy_balance.enabled"):
+        _engine(dict(overrides, **{"rth.energy_map.enabled": True}),
+                algo=DecompositionAlgo.LLOYD_ENERGY)

@@ -66,7 +66,7 @@ from ..planning.grid_planner import GridPlanner
 from ..planning.kmeans_heuristic import KMeansHeuristicDecomposer
 from ..planning.layer_planner import assign_to_layers, build_layer_graphs, decompose_layers
 from ..planning.launch_site_optimizer import optimize as optimize_launch
-from ..planning.lloyd_partition import LloydCvtDecomposer
+from ..planning.lloyd_partition import LloydCvtDecomposer, LloydEnergyDecomposer
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.target_mission import generate_targets, plan_target_mission
 from ..planning.dynamic_obstacles import DynamicObstacleField
@@ -177,6 +177,39 @@ class SimulationEngine:
                 launch_pose=self.launch_pose,
                 settings=self.cfg.planning.partition,
                 energy_map=self.energy_map,
+            )
+        if self.algo is DecompositionAlgo.LLOYD_ENERGY:
+            # EXP-07b: the same partitioner, an energy weight source. It needs
+            # return costs at planning time, which is why the RTH calculator is
+            # built above the decomposition (B-1).
+            from ..planning.energy_balance import (
+                DroneEnergyState, build_energy_balance_context,
+            )
+
+            raster = self._require_raster(DecompositionAlgo.LLOYD_ENERGY)
+            if not self.cfg.planning.energy_balance.enabled:
+                raise ValueError(
+                    "--algo lloyd_energy requires planning.energy_balance.enabled = true"
+                )
+            capacity_j = self.spec.battery_capacity_j
+            return LloydEnergyDecomposer(
+                raster=raster,
+                deploy_poses=self.deploy_poses,
+                launch_pose=self.launch_pose,
+                settings=self.cfg.planning.partition,
+                energy_map=self.energy_map,
+                energy_context=build_energy_balance_context(
+                    self.cfg, self.em, self.spec, self.motion, self.env,
+                    lambda pose, alt: self.rth.return_energy(pose, altitude_m=alt),
+                    emap=self.energy_map, graph_cache=self._transit_graph_cache,
+                ),
+                drone_states=[
+                    DroneEnergyState(i, self.deploy_poses[i],
+                                     self.initial_soc_by_drone[i] * capacity_j, False)
+                    for i in range(self.cfg.fleet.n_drones)
+                ],
+                altitude_m=self.layers.altitude(0),
+                capacity_j=capacity_j,
             )
         # no explicit algo: pick by scale tier
         from ..execution.algorithm_selector import select
@@ -325,6 +358,17 @@ class SimulationEngine:
             self._transit_graph_cache = {}
             self._transit_planner = None
 
+        # EXP-07b (B-1): hoisted above the decomposition so planning can reach
+        # return_energy. Side-effect free, so every other run is unaffected.
+        self.rth = RthCalculator(
+            self.em, self.motion, self.spec, cfg.rth, self.launch_pose,
+            cfg.env.coverage_altitude_m, self.env,
+            # EM-01 Stage 2: None when enabled is off; with enabled=True but
+            # decide=False the calculator consumes nothing (Stage-1 gate test
+            # stays green) -- the decide sub-flag is checked inside.
+            energy_map=self.energy_map,
+        )
+
         # --- mission planning: area coverage OR target visit -------------- #
         self._mission_type = cfg.mission.type
         self._weight_targets = cfg.mission.weight_targets_by_battery
@@ -365,17 +409,34 @@ class SimulationEngine:
                     self.spec, self.em, weight_by_battery=self._weight_targets,
                 )
         else:
-            self.decomposer = self._make_decomposer(self.motion)
-            # Level 1: assign drones to layers (single-layer => all on layer 0).
-            # Level 2: the reused decomposer runs per layer over its sliced map.
-            layer_assignment = assign_to_layers(
-                init_views, self.layers, cfg.layers.assignment_policy
-            )
-            self.layer_of = {d.id: idx for idx, ds in layer_assignment.items() for d in ds}
-            with phase("build.decompose"):
-                self.partition = decompose_layers(
-                    self.layer_graphs, layer_assignment, self.decomposer
+            # EXP-07b (B-1): the energy-weighted partitioner needs return costs at
+            # PLANNING time, so the RTH calculator is constructed here rather than
+            # after the decomposition. Its __init__ is pure -- attribute
+            # assignment plus the landing_profile builder, its own empty cache and
+            # zeroed counters; it draws no RNG stream and does not mutate the
+            # energy map -- so moving it changes nothing for any other run.
+            #
+            # n_map_hits / n_map_fallbacks / n_route_fallbacks ARE reported
+            # metrics (experiments/run_rth_ab.py), and the partitioner can query
+            # return energy hundreds of times, so the whole decomposition is
+            # wrapped in the same save/restore the t=0 diagnostics use below.
+            counters = (self.rth.n_map_hits, self.rth.n_map_fallbacks,
+                        self.rth.n_route_fallbacks)
+            try:
+                self.decomposer = self._make_decomposer(self.motion)
+                # Level 1: assign drones to layers (single-layer => all on layer 0).
+                # Level 2: the reused decomposer runs per layer over its sliced map.
+                layer_assignment = assign_to_layers(
+                    init_views, self.layers, cfg.layers.assignment_policy
                 )
+                self.layer_of = {d.id: idx for idx, ds in layer_assignment.items() for d in ds}
+                with phase("build.decompose"):
+                    self.partition = decompose_layers(
+                        self.layer_graphs, layer_assignment, self.decomposer
+                    )
+            finally:
+                (self.rth.n_map_hits, self.rth.n_map_fallbacks,
+                 self.rth.n_route_fallbacks) = counters
             self.plans = {}
         # EXP-07: the grid partitioners record how the partition was reached
         # (convergence, dropped cells, per-drone weights/areas). Absent -- and
@@ -416,15 +477,7 @@ class SimulationEngine:
             self._dynfield = None
         self.formation = FormationManager(self.aero, cfg.aero, self.spec.platform)
         self.failure = FailureModel(cfg.failure, self.rng.stream(STREAM_FAILURES, self.replication))
-        rth = RthCalculator(
-            self.em, self.motion, self.spec, cfg.rth, self.launch_pose,
-            cfg.env.coverage_altitude_m, self.env,
-            # EM-01 Stage 2: None when enabled is off; with enabled=True but
-            # decide=False the calculator consumes nothing (Stage-1 gate test
-            # stays green) -- the decide sub-flag is checked inside.
-            energy_map=self.energy_map,
-        )
-        self.rth = rth
+        rth = self.rth          # EXP-07b: built before the decomposition (see _build)
 
         grid = GridPlanner(self.env, cell_m=50.0) if self.planner is PlannerKind.GRID else None
 
