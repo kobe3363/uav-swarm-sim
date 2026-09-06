@@ -23,6 +23,7 @@ from shapely.geometry import Polygon
 from .profiling import phase, record
 from ..infrastructure.config import Config
 from ..infrastructure.core_types import (
+    CoveragePlan,
     DroneStateView,
     Event,
     MissionResult,
@@ -56,6 +57,7 @@ from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import make_motion_model
 from ..planning.classic_voronoi import ClassicVoronoiDecomposer
 from ..planning.coverage_path import boustrophedon
+from ..planning.coverage_raster import CoverageRaster
 from ..planning.energy_map import battery_tied_cell_m, build_energy_map
 from ..planning.environment_map import LayerStack
 from ..planning.geojson_parser import load_area
@@ -281,6 +283,23 @@ class SimulationEngine:
         # --- mission planning: area coverage OR target visit -------------- #
         self._mission_type = cfg.mission.type
         self._weight_targets = cfg.mission.weight_targets_by_battery
+        self.coverage_raster = None
+        if (self._mission_type is MissionType.COVERAGE
+                and cfg.coverage.raster_enabled):
+            if len(self.layers) != 1:
+                raise ValueError(
+                    "coverage.raster_enabled currently requires exactly one coverage layer"
+                )
+            solution = self.spec.photogrammetry_at(self.layers.altitude(0))
+            if solution is None:
+                raise ValueError(
+                    "coverage.raster_enabled requires sensor.photogrammetry.enabled"
+                )
+            self.coverage_raster = CoverageRaster(
+                self.env.target_space,
+                self.env.plannable_space,
+                cfg.coverage.raster_cell_m,
+            )
         init_views = [
             DroneStateView(i, 1.0, self.deploy_poses[i]) for i in range(cfg.fleet.n_drones)
         ]
@@ -368,7 +387,8 @@ class SimulationEngine:
                               photo_spacing_m=(
                                   self.spec.coverage_photo_spacing_m(self.layers.altitude(i_layer))
                                   if self._mission_type is MissionType.COVERAGE else None
-                              ))
+                              ),
+                              coverage_observer=self._coverage_observer(i_layer))
                 if self._mission_type is MissionType.TARGET_VISIT:
                     plan = self.plans.get(i)
                     if plan is not None and plan.waypoints:
@@ -397,6 +417,10 @@ class SimulationEngine:
                 self.layer_graphs, self.motion, self.em, self.spec,
                 coverage=cfg.coverage,
                 layer_altitudes=cfg.layers.altitudes_m,
+                remaining_work_provider=(
+                    (lambda: self.coverage_raster.uncovered_plannable_geometry)
+                    if self.coverage_raster is not None else None
+                ),
             )
         )
         self.replan_times: list[float] = []
@@ -495,12 +519,19 @@ class SimulationEngine:
                 replan_times_s=tuple(self.replan_times),
                 coverage_frac=coverage_frac,
             )
-        aborted = (not complete) or (len(self.fleet.active()) == 0 and coverage_frac < 0.999)
+        aborted = (
+            (not complete)
+            or (
+                len(self.fleet.active()) == 0
+                and coverage_frac < self._coverage_complete_frac()
+            )
+        )
         stalled = tuple(sorted(self._stall.stalled)) if self._stall is not None else ()
         return MissionResult(metrics, self.history, self.partition, aborted, coverage_frac,
                              cfg.config_hash, self._outcome, stalled_agents=stalled,
                              skipped_legs=self._skipped_legs(),
-                             photo_events=self._photo_events())
+                             photo_events=self._photo_events(),
+                             target_coverage_frac=self._target_coverage_frac())
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
@@ -520,6 +551,19 @@ class SimulationEngine:
         if self._transit_planner is not None:
             return self._transit_planner(a, b)
         return self.motion.plan(a, b, ManeuverType.CRUISE)
+
+    def _coverage_observer(self, layer: int):
+        if self.coverage_raster is None:
+            return None
+        solution = self.spec.photogrammetry_at(self.layers.altitude(layer))
+        if solution is None:
+            return None
+        return lambda old, new: self.coverage_raster.record_segment(
+            old,
+            new,
+            solution.footprint_width_m,
+            solution.footprint_length_m,
+        )
 
     def _coverage_entry_pose(self, plan: CoveragePlan, legacy_entry: Pose) -> Pose:
         """Target the first strip when photos are enabled; preserve legacy transit."""
@@ -575,6 +619,10 @@ class SimulationEngine:
         for a in active:
             zone = new_part.zones.get(a.id)
             if zone is None:
+                if self.coverage_raster is not None:
+                    plan = new_plans[a.id]
+                    transit = self.motion.plan(a.pose, a.pose, ManeuverType.CRUISE)
+                    a.adopt_plan(plan, transit)
                 continue
             plan = new_plans[a.id]
             entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
@@ -678,7 +726,7 @@ class SimulationEngine:
         statistics) are naturally excluded and never halt the run.
         """
         cov = self._coverage_frac()
-        coverage_complete = cov >= _COVERAGE_COMPLETE_FRAC
+        coverage_complete = cov >= self._coverage_complete_frac()
 
         # ---- Condition 1: MISSION_FAILED (fail-fast) ----------------------- #
         # (a) any AIRBORNE drone whose battery has reached 0 -> forced S_FAIL.
@@ -742,6 +790,9 @@ class SimulationEngine:
                 else:
                     visited += min(len(tgts), 1 + a._cov_idx)
             return min(1.0, visited / total)
+
+        if self.coverage_raster is not None:
+            return self.coverage_raster.plannable_coverage_frac
             
         # AREA COVERAGE
         total = self.partition.total_area_m2
@@ -765,3 +816,13 @@ class SimulationEngine:
                     covered += zone.area_m2
                     
         return min(1.0, covered / total)
+
+    def _target_coverage_frac(self) -> float | None:
+        if self.coverage_raster is not None:
+            return self.coverage_raster.target_coverage_frac
+        return None
+
+    def _coverage_complete_frac(self) -> float:
+        if self.coverage_raster is None:
+            return _COVERAGE_COMPLETE_FRAC
+        return 1.0 - self.cfg.coverage.raster_completion_tolerance_frac

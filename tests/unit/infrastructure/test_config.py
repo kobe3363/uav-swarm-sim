@@ -21,6 +21,33 @@ def test_default_loads_and_is_frozen(config_path):
         cfg.fleet.n_drones = 5  # frozen dataclass
 
 
+def test_coverage_raster_defaults_off_and_overrides_parse(config_path):
+    default = load_config(config_path).coverage
+    assert default.raster_enabled is False
+    assert default.raster_cell_m == pytest.approx(2.0)
+    assert default.raster_completion_tolerance_frac == pytest.approx(0.001)
+
+    configured = load_config(config_path, overrides={
+        "coverage.raster_enabled": True,
+        "coverage.raster_cell_m": 5.0,
+        "coverage.raster_completion_tolerance_frac": 0.01,
+    }).coverage
+    assert configured.raster_enabled is True
+    assert configured.raster_cell_m == pytest.approx(5.0)
+    assert configured.raster_completion_tolerance_frac == pytest.approx(0.01)
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("coverage.raster_cell_m", 0.0),
+    ("coverage.raster_cell_m", float("nan")),
+    ("coverage.raster_completion_tolerance_frac", -0.01),
+    ("coverage.raster_completion_tolerance_frac", 1.0),
+])
+def test_coverage_raster_rejects_invalid_values(config_path, key, bad):
+    with pytest.raises(ConfigError, match="coverage.raster"):
+        load_config(config_path, overrides={key: bad})
+
+
 def test_wh_to_joules_conversion(config_path):
     cfg = load_config(config_path)
     assert cfg.fleet.battery_capacity_j == pytest.approx(cfg.fleet.battery_capacity_wh * 3600.0)
