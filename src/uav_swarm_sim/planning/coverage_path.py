@@ -107,16 +107,19 @@ def boustrophedon(
     # EXP-01: the enabled nadir-camera model derives cross-track spacing from
     # this layer's AGL.  Legacy specs return their precomputed effective swath.
     swath = spec.coverage_line_spacing_m(altitude_m)
-    components = (
-        [poly]
-        if isinstance(poly, Polygon)
-        else [g for g in poly.geoms if isinstance(g, Polygon) and g.area > 0.0]
-    )
+    raster_on = bool(coverage is not None and getattr(coverage, "raster_enabled", False))
+    if isinstance(poly, Polygon):
+        components = [poly]
+    elif raster_on:
+        components = [g for g in poly.geoms if isinstance(g, Polygon) and g.area > 0.0]
+    else:
+        # Flag-off identity: preserve the legacy largest-component behavior.
+        components = [max(poly.geoms, key=lambda g: g.area)]
     strips = [
         (start, end, component_index)
         for component_index, component in enumerate(components)
         for start, end in _component_strips(
-            component, swath, spec, ensure_one=not isinstance(poly, Polygon)
+            component, swath, spec, ensure_one=raster_on and not isinstance(poly, Polygon)
         )
     ]
 

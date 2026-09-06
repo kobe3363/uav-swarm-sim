@@ -1,6 +1,8 @@
 """EXP-02 plans every disjoint zone component with camera-off connectors."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from shapely.geometry import MultiPolygon, Point, box
 
@@ -33,11 +35,16 @@ def test_boustrophedon_plans_all_components_and_routes_the_gap(config_path, monk
     legacy_single = coverage_path.boustrophedon(
         Zone(0, [], left, Pose(0.0, 0.0, 0.0)), spec, motion, energy
     )
-    plan = coverage_path.boustrophedon(
+    legacy_multi = coverage_path.boustrophedon(
         zone, spec, motion, energy, env=object(), coverage=cfg.coverage
+    )
+    raster_coverage = replace(cfg.coverage, raster_enabled=True)
+    plan = coverage_path.boustrophedon(
+        zone, spec, motion, energy, env=object(), coverage=raster_coverage
     )
 
     assert legacy_single.waypoints == []
+    assert legacy_multi.waypoints == legacy_single.waypoints
     assert len(plan.waypoints) == 4
     assert left.covers(Point(plan.waypoints[0].pose.as_xy()))
     assert left.covers(Point(plan.waypoints[1].pose.as_xy()))
@@ -65,7 +72,7 @@ def test_disjoint_components_are_credited_only_after_each_strip_is_flown(config_
         motion,
         energy,
         env=EnvironmentMap(area, [], cfg.env.clearance_buffer_m),
-        coverage=cfg.coverage,
+        coverage=replace(cfg.coverage, raster_enabled=True),
     )
     raster = CoverageRaster(area, area, 10.0)
 
