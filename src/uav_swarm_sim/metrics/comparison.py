@@ -47,7 +47,8 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
         # single source of truth for the history -> SingleRunResult reduction
         with phase("smdp_reduce"):
             return single_run_from_history(result.history, metrics=m, outcome=result.outcome,
-                                           aborted=result.aborted)
+                                           aborted=result.aborted,
+                                           initial_soc_by_drone=result.initial_soc_by_drone)
     return run_once
 
 

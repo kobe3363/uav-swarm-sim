@@ -21,6 +21,7 @@ import numpy as np
 STREAM_OBSTACLES = "obstacles"
 STREAM_FAILURES = "failures"
 STREAM_LAUNCH_SAMPLING = "launch_sampling"
+STREAM_INITIAL_SOC = "initial_soc"
 STREAM_KMEANS_INIT = "kmeans_init"
 STREAM_TARGETS = "targets"
 STREAM_DYNOBS = "dynamic_obstacles"
