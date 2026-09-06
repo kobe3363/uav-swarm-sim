@@ -30,10 +30,14 @@ def test_boustrophedon_plans_all_components_and_routes_the_gap(config_path, monk
         return motion_model.plan(a, b, ManeuverType.TURN)
 
     monkeypatch.setattr(coverage_path, "route_connector", route)
+    legacy_single = coverage_path.boustrophedon(
+        Zone(0, [], left, Pose(0.0, 0.0, 0.0)), spec, motion, energy
+    )
     plan = coverage_path.boustrophedon(
         zone, spec, motion, energy, env=object(), coverage=cfg.coverage
     )
 
+    assert legacy_single.waypoints == []
     assert len(plan.waypoints) == 4
     assert left.covers(Point(plan.waypoints[0].pose.as_xy()))
     assert left.covers(Point(plan.waypoints[1].pose.as_xy()))

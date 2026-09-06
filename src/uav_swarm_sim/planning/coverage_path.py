@@ -37,11 +37,13 @@ def _long_axis_angle(poly: Polygon) -> float:
     return math.atan2(y1 - y0, x1 - x0)
 
 
-def _strip_intervals(rot_poly: Polygon, swath: float) -> list[list[tuple[float, float, float]]]:
+def _strip_intervals(
+    rot_poly: Polygon, swath: float, *, ensure_one: bool = False
+) -> list[list[tuple[float, float, float]]]:
     minx, miny, maxx, maxy = rot_poly.bounds
     rows: list[list[tuple[float, float, float]]] = []
     y = miny + swath / 2.0
-    if y > maxy:
+    if ensure_one and y > maxy:
         y = (miny + maxy) / 2.0
     while y <= maxy:
         scan = LineString([(minx - 1.0, y), (maxx + 1.0, y)])
@@ -61,13 +63,13 @@ def _strip_intervals(rot_poly: Polygon, swath: float) -> list[list[tuple[float, 
 
 
 def _component_strips(
-    poly: Polygon, swath: float, spec: PlatformSpec
+    poly: Polygon, swath: float, spec: PlatformSpec, *, ensure_one: bool = False
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
     """Return the ordered world-frame coverage strips for one component."""
     theta = _long_axis_angle(poly)
     cx, cy = poly.centroid.x, poly.centroid.y
     rot = rotate(poly, -math.degrees(theta), origin=(cx, cy))
-    rows = _strip_intervals(rot, swath)
+    rows = _strip_intervals(rot, swath, ensure_one=ensure_one)
 
     order = list(range(len(rows)))
     if spec.r_min_m > 0 and 2 * spec.r_min_m > swath:
@@ -113,7 +115,9 @@ def boustrophedon(
     strips = [
         (start, end, component_index)
         for component_index, component in enumerate(components)
-        for start, end in _component_strips(component, swath, spec)
+        for start, end in _component_strips(
+            component, swath, spec, ensure_one=not isinstance(poly, Polygon)
+        )
     ]
 
     # S_FERRY Step 2: route camera-off connectors around obstacles when enabled.
