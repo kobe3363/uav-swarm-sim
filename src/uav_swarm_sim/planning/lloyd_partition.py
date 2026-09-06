@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import shapely
@@ -356,9 +356,16 @@ def assign_cells(
 
     ``sites``/``weights`` are ordered by ascending drone id and ``np.argmin``
     returns the first minimum, so a tie breaks toward the LOWEST drone id.
-    ``allowed`` is the (n_cells, n_drones) reachability mask; a disallowed pair
-    is pushed to +inf and can never win, because ``build_eligible_cells``
-    guarantees every surviving cell at least one allowed drone.
+    ``allowed`` is the (n_cells, n_drones) eligibility mask; a disallowed pair is
+    pushed to +inf and can never win.
+
+    Every row MUST contain at least one finite cost. ``np.argmin`` on an
+    all-infinite row silently returns index 0 -- handing the cell to whichever
+    drone happens to be first, quite possibly one that is not even allowed to
+    own it. That is exactly the silent nearest-drone assignment the eligible-cell
+    contract forbids, so it is asserted here rather than trusted: the caller is
+    responsible for routing such cells to the ``no_eligible_owner`` count before
+    they ever reach this function.
     """
     n_cells = len(centroids_xy)
     labels = np.empty(n_cells, dtype=np.int64)
@@ -367,6 +374,10 @@ def assign_cells(
         block = centroids_xy[start:stop]
         cost = ((block[:, None, :] - sites[None, :, :]) ** 2).sum(axis=2) - weights[None, :]
         cost[~allowed[start:stop]] = np.inf
+        assert np.isfinite(cost).any(axis=1).all(), (
+            "a cell reached assignment with no finite cost; argmin would hand it "
+            "to drone index 0 silently -- route it to no_eligible_owner instead"
+        )
         labels[start:stop] = np.argmin(cost, axis=1)
     return labels
 
@@ -414,6 +425,18 @@ class UniformWeightPolicy:
     def per_drone(self, drone_ids: list[int]) -> dict:
         return {}
 
+    def excluded(self, n: int) -> np.ndarray:
+        """Drones that may own no cell at all. None, for uniform weights.
+
+        This is the structural way to say "this drone is out": it removes the
+        drone from the eligibility mask, so no row can end up with every cost
+        infinite. Encoding the same thing as a -inf weight would work at the
+        assignment step but leak into the mean, the balance target and the clamp,
+        and would create exactly the all-infinite rows the assertion above
+        forbids.
+        """
+        return np.zeros(n, dtype=bool)
+
 
 class LloydPartitioner:
     """The shared code path. The identity lives entirely in ``weight_policy``."""
@@ -425,15 +448,36 @@ class LloydPartitioner:
     def run(
         self, cells: EligibleCells, drone_poses: np.ndarray, drone_comp: np.ndarray,
         launch_pose: Pose,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, float]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, float, EligibleCells]:
         n = len(drone_poses)
         sites = initial_sites(self.settings.init_sites, drone_poses, cells, launch_pose)
         weights = self.weight_policy.initial(n)
         if cells.count == 0 or n == 0:
-            return np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0
+            return np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0, cells
 
-        allowed = cells.component[:, None] == drone_comp[None, :]
-        assert allowed.any(axis=1).all(), "build_eligible_cells must drop unowned cells"
+        # Eligibility is component membership AND the drone being in play at all.
+        # Folding both in here is what keeps every row's cost finite somewhere.
+        allowed = (cells.component[:, None] == drone_comp[None, :]) & (
+            ~self.weight_policy.excluded(n)
+        )[None, :]
+        orphaned = ~allowed.any(axis=1)
+        if orphaned.any():
+            # No drone that can fly can reach this cell. Nobody will cover it --
+            # count it and drop it, exactly as build_eligible_cells does for the
+            # cells no drone shares a component with. Never hand it to the
+            # nearest, and never leave it with a drone that is out of play.
+            keep = ~orphaned
+            cells = replace(
+                cells,
+                geometries=cells.geometries[keep],
+                centroids_xy=cells.centroids_xy[keep],
+                areas_m2=cells.areas_m2[keep],
+                component=cells.component[keep],
+                n_no_eligible_owner=cells.n_no_eligible_owner + int(orphaned.sum()),
+            )
+            allowed = allowed[keep]
+        if cells.count == 0:
+            return (np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0, cells)
 
         converged, shift, iterations = False, 0.0, 0
         for iterations in range(1, self.settings.max_iterations + 1):
@@ -451,7 +495,7 @@ class LloydPartitioner:
         # returned sites and weights. The last partition is USED either way: a
         # non-convergence is REPORTED, never repaired by another algorithm.
         labels = assign_cells(cells.centroids_xy, sites, weights, allowed)
-        return labels, sites, weights, converged, iterations, shift
+        return labels, sites, weights, converged, iterations, shift, cells
 
 
 # --------------------------------------------------------------------------- #
@@ -508,7 +552,7 @@ class _LloydDecomposer(Decomposer):
 
         cells, drone_comp = build_eligible_cells(self._raster, env, poses, self._energy_map)
         policy = self._weight_policy()
-        labels, sites, weights, converged, iterations, shift = LloydPartitioner(
+        labels, sites, weights, converged, iterations, shift, cells = LloydPartitioner(
             self._settings, policy
         ).run(cells, poses, drone_comp, self._launch_pose)
 
