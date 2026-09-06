@@ -303,6 +303,8 @@ class CoveragePlan:
     # populated (routing enabled), it is the SINGLE source both the executor and
     # the analytical E_cover consume, so their connector cost stays in lock-step.
     connectors: list[Path] = field(default_factory=list)
+    strips_energy_j: float = 0.0
+    connectors_energy_j: float = 0.0
 
 
 @dataclass(frozen=True)

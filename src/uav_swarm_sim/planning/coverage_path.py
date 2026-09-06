@@ -133,6 +133,8 @@ def boustrophedon(
     connectors: list[Path] = []
     length = 0.0
     energy = 0.0
+    strips_energy = 0.0
+    connectors_energy = 0.0
     # iterate strip by strip: even index = strip start, odd = strip end
     for k, (s, e, component_index) in enumerate(strips):
         heading = math.atan2(e[1] - s[1], e[0] - s[0])
@@ -140,7 +142,9 @@ def boustrophedon(
         waypoints.append(Waypoint(Pose(s[0], s[1], heading), ManeuverType.COVERAGE, spec.v_coverage))
         waypoints.append(Waypoint(Pose(e[0], e[1], heading), ManeuverType.COVERAGE, spec.v_coverage))
         length += strip_len
-        energy += em.distance_energy(strip_len, ManeuverType.COVERAGE, spec.v_coverage)
+        strip_energy = em.distance_energy(strip_len, ManeuverType.COVERAGE, spec.v_coverage)
+        energy += strip_energy
+        strips_energy += strip_energy
         # connector to next strip start
         if k + 1 < len(strips):
             nxt, nxt_end, next_component_index = strips[k + 1]
@@ -158,6 +162,9 @@ def boustrophedon(
             else:
                 conn = motion.plan(a_pose, b_pose, ManeuverType.TURN)
             length += conn.total_length_m
-            energy += em.path_energy(conn)
+            connector_energy = em.path_energy(conn)
+            energy += connector_energy
+            connectors_energy += connector_energy
 
-    return CoveragePlan(zone.drone_id, waypoints, length, energy, connectors=connectors)
+    return CoveragePlan(zone.drone_id, waypoints, length, energy, connectors=connectors,
+                        strips_energy_j=strips_energy, connectors_energy_j=connectors_energy)

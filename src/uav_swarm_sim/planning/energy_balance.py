@@ -35,6 +35,7 @@ from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import MotionModel
 from ..physical_model.vertical_segments import takeoff_profile
 from .coverage_raster import CoverageRaster
+from .coverage_path import boustrophedon
 from .energy_map import EnergyMap
 from .environment_map import EnvironmentMap
 from .launch_site_optimizer import _coverage_geometry
@@ -220,4 +221,34 @@ def estimate_fast(ctx, drone, zone, raster: CoverageRaster | None) -> ZoneEnergy
         ctx.em.distance_energy(turn_distance, ManeuverType.TURN, ctx.spec.v_cruise),
         ctx.em.sensor_energy(strip_length / ctx.spec.v_coverage, ctx.sensor_power_w),
         _ferry(ctx, drone, anchor),
+    )
+
+
+def estimate_path(ctx, drone, zone, raster: CoverageRaster | None) -> ZoneEnergyEstimate:
+    """Authoritative sweep with executor-equivalent connectors and first target."""
+    assert ctx.spec.photogrammetry is not None, (
+        "estimate_path requires photogrammetry: energy_balance.enabled -> "
+        "coverage.raster_enabled -> sensor.photogrammetry.enabled"
+    )
+    alt = _inputs(ctx, drone, zone)
+    geometry = remaining_work_geometry(zone.polygon, raster)
+    plan = boustrophedon(
+        Zone(drone.drone_id, [], geometry, zone.entry_pose, zone.layer),
+        ctx.spec, ctx.motion, ctx.em, ctx.env, ctx.coverage, alt,
+    )
+    _finite(strips_energy_j=plan.strips_energy_j,
+            connectors_energy_j=plan.connectors_energy_j, est_energy_j=plan.est_energy_j)
+    assert math.isclose(plan.strips_energy_j + plan.connectors_energy_j,
+                        plan.est_energy_j, rel_tol=0.0, abs_tol=1e-6)
+    anchor = plan.waypoints[0].pose if plan.waypoints else zone.entry_pose
+    exit_pose = plan.waypoints[-1].pose if plan.waypoints else zone.entry_pose
+    strip_length = sum(math.dist(start.pose.as_xy(), end.pose.as_xy())
+                       for start, end in zip(plan.waypoints[::2], plan.waypoints[1::2]))
+    ferry_path = _ferry(ctx, drone, anchor)
+    return _estimate(
+        ctx, drone, "path", alt, geometry.area, float(len(plan.waypoints) // 2),
+        anchor, exit_pose, ctx.em.path_energy(ferry_path),
+        plan.strips_energy_j, plan.connectors_energy_j,
+        ctx.em.sensor_energy(strip_length / ctx.spec.v_coverage, ctx.sensor_power_w),
+        ferry_path,
     )
