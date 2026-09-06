@@ -401,6 +401,12 @@ class TelemetryConfig:
 @dataclass(frozen=True)
 class EnergyBalanceConfig:
     enabled: bool = False
+    # EXP-07b: let a caller supply the remaining-work area instead of having
+    # ``remaining_work_geometry`` rebuild it. Default OFF => the existing path is
+    # byte-identical. On, it removes both a union_all over every uncovered cell
+    # per estimate AND a double discretisation (the partitioner-assigned area and
+    # the recomputed area are otherwise two numbers for the same zone).
+    area_override_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -415,6 +421,13 @@ class PartitionConfig:
     init_sites: str = "deploy_poses"     # see _INIT_SITE_POLICIES
     max_iterations: int = 50
     site_tolerance_m: float = 1.0        # convergence: max site shift per sweep
+    # EXP-07b (LLOYD_ENERGY only). The weight law balances energy SLACK
+    # (budget - demand, in joules), not the demand/budget ratio: budget_j is a
+    # function of the candidate ZONE, so the ratio has a pole at budget -> 0 on
+    # every iteration (author decision 2026-09-06, amending D-2).
+    weight_step: float = 0.5             # eta: damping, NOT tuned against outcomes
+    weight_clamp_factor: float = 4.0     # |w| <= factor * mean zone area; stability only
+    slack_tolerance_j: float | None = None   # None => 0.005 * battery_capacity_j
 
 
 @dataclass(frozen=True)
@@ -852,7 +865,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         balance_raw = {}
     if not isinstance(balance_raw, dict):
         raise ConfigError("planning.energy_balance must be a mapping")
-    unexpected = set(balance_raw) - {"enabled"}
+    unexpected = set(balance_raw) - {"enabled", "area_override_enabled"}
     if unexpected:
         raise ConfigError(
             f"planning.energy_balance has unknown field(s): {', '.join(sorted(unexpected))}"
@@ -860,6 +873,9 @@ def _build(raw: dict, config_hash: str) -> Config:
     balance_enabled = balance_raw.get("enabled", False)
     if not isinstance(balance_enabled, bool):
         raise ConfigError("planning.energy_balance.enabled must be a boolean")
+    area_override = balance_raw.get("area_override_enabled", False)
+    if not isinstance(area_override, bool):
+        raise ConfigError("planning.energy_balance.area_override_enabled must be a boolean")
 
     partition_raw = planning_raw.get("partition", {})
     if partition_raw is None:
@@ -869,6 +885,7 @@ def _build(raw: dict, config_hash: str) -> Config:
     partition_defaults = PartitionConfig()
     unexpected = set(partition_raw) - {
         "init_sites", "max_iterations", "site_tolerance_m",
+        "weight_step", "weight_clamp_factor", "slack_tolerance_j",
     }
     if unexpected:
         raise ConfigError(
@@ -884,12 +901,26 @@ def _build(raw: dict, config_hash: str) -> Config:
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError("planning.partition.site_tolerance_m must be numeric") from exc
+    def _number(key, default):
+        try:
+            value = partition_raw.get(key, default)
+            return None if value is None else float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"planning.partition.{key} must be numeric") from exc
+
     partition = PartitionConfig(
         init_sites=init_sites,
         max_iterations=int(max_iterations_raw),
         site_tolerance_m=site_tolerance_m,
+        weight_step=_number("weight_step", partition_defaults.weight_step),
+        weight_clamp_factor=_number("weight_clamp_factor",
+                                    partition_defaults.weight_clamp_factor),
+        slack_tolerance_j=_number("slack_tolerance_j", partition_defaults.slack_tolerance_j),
     )
-    planning = PlanningConfig(EnergyBalanceConfig(enabled=balance_enabled), partition)
+    planning = PlanningConfig(
+        EnergyBalanceConfig(enabled=balance_enabled, area_override_enabled=area_override),
+        partition,
+    )
 
     return Config(
         fleet=fleet, platform=platform, sensor=sensor, coverage=coverage, aero=aero, env=env,
@@ -921,6 +952,14 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("planning.partition.max_iterations must be >= 1")
     if not isfinite(part.site_tolerance_m) or part.site_tolerance_m <= 0.0:
         raise ConfigError("planning.partition.site_tolerance_m must be finite and > 0")
+    if not isfinite(part.weight_step) or part.weight_step <= 0.0:
+        raise ConfigError("planning.partition.weight_step must be finite and > 0")
+    if not isfinite(part.weight_clamp_factor) or part.weight_clamp_factor <= 0.0:
+        raise ConfigError("planning.partition.weight_clamp_factor must be finite and > 0")
+    if part.slack_tolerance_j is not None and (
+        not isfinite(part.slack_tolerance_j) or part.slack_tolerance_j <= 0.0
+    ):
+        raise ConfigError("planning.partition.slack_tolerance_j must be finite and > 0")
     if cfg.planning.energy_balance.enabled:
         if not (cfg.coverage.raster_enabled and cfg.sensor.photogrammetry.enabled):
             raise ConfigError(

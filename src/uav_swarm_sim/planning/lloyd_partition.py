@@ -569,3 +569,170 @@ class LloydCvtDecomposer(_LloydDecomposer):
 
     def _weight_policy(self):
         return UniformWeightPolicy()
+
+
+# --------------------------------------------------------------------------- #
+# EXP-07b: the energy weight source                                            #
+# --------------------------------------------------------------------------- #
+class EnergyWeightPolicy:
+    """LLOYD_ENERGY: an additive power diagram that equalises energy SLACK.
+
+    Weight law, per iteration::
+
+        slack_i = budget_i - demand_i                            [J, signed]
+        w_i    += weight_step * (slack_i - mean(slack)) / rho    [m^2]
+
+    ``rho`` is the marginal coverage energy density from
+    ``energy_balance.coverage_energy_density_j_per_m2``, so ``slack / rho`` is
+    literally "the area this drone's spare energy can cover" -- the J -> m^2
+    scale is DERIVED from the energy model, not chosen by hand.
+
+    Sign check: a larger ``w_i`` wins more cells -> more demand -> LESS slack, so
+    a drone with spare energy (``slack_i > mean``) takes a positive step and picks
+    up more area. That is the opposite sign to a demand/budget law, which is the
+    sanity check that slack is a remainder while a ratio is a load.
+
+    Why slack and not ``demand / budget`` (author decision 2026-09-06, amending
+    D-2): ``budget_j`` is a function of the CANDIDATE ZONE, not of the drone --
+    ``energy_balance._budget`` subtracts ferry and RTH, both taken from the
+    anchor/exit pose -- so it is recomputed here on EVERY iteration, and a ratio
+    would have a pole wherever a candidate zone drives the budget through zero.
+    ``_estimate`` returns ``budget_j`` and ``demand_j`` whatever the status, so
+    slack stays defined exactly where ``demand_budget_ratio`` is None. The ratio
+    is still computed and reported; it just does not drive the law.
+
+    ``weight_step`` damps a fixed point that is NOT contractive (the zone feeds
+    back into the budget through the anchor). In a power diagram a weight shift d
+    moves each bisector by d / (2 * spacing), so dA/dw is about
+    perimeter / (2 * spacing), which is about 2 for a compact zone: a full step
+    overshoots roughly twofold, and that is where 0.5 comes from. It is fixed
+    from that argument, reported, and NOT tuned against outcomes. The clamp is
+    numerical stability only -- also not a semantic dial -- and a drone that
+    reaches it is reported as ``clamped``.
+    """
+    name = "energy_slack"
+
+    def __init__(self, ctx, states, altitude_m: float, settings: PartitionConfig,
+                 capacity_j: float, fallback_poses) -> None:
+        from .energy_balance import coverage_energy_density_j_per_m2
+
+        self._ctx = ctx
+        self._states = list(states)              # DroneEnergyState, drone-id order
+        self._alt = altitude_m
+        self._settings = settings
+        self._fallbacks = list(fallback_poses)
+        self.rho_j_per_m2 = coverage_energy_density_j_per_m2(ctx, altitude_m)
+        self.slack_tolerance_j = (
+            settings.slack_tolerance_j if settings.slack_tolerance_j is not None
+            else 0.005 * capacity_j
+        )
+        self._clamp = math.inf                   # resolved on the first update
+        self._estimates: list = []
+        self._slack = np.zeros(len(self._states))
+        self._clamped = np.zeros(len(self._states), dtype=bool)
+
+    def initial(self, n: int) -> np.ndarray:
+        return np.zeros(n, dtype=float)
+
+    def _estimate_all(self, area: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+        from .energy_balance import estimate_fast_from_area
+
+        estimates, slack = [], np.zeros(len(self._states))
+        for i, state in enumerate(self._states):
+            centroid = centroids[i]
+            finite = bool(np.isfinite(centroid).all())
+            estimates.append(estimate_fast_from_area(
+                self._ctx, state, alt=self._alt, area_m2=float(area[i]),
+                centroid_xy=(float(centroid[0]), float(centroid[1])) if finite else (0.0, 0.0),
+                fallback_pose=self._fallbacks[i],
+            ))
+            slack[i] = estimates[-1].budget_j - estimates[-1].demand_j
+        self._estimates = estimates
+        self._slack = slack
+        return slack
+
+    def update(self, weights: np.ndarray, counts, area, centroids, sites) -> np.ndarray:
+        slack = self._estimate_all(area, centroids)
+        if math.isinf(self._clamp):
+            mean_zone_area = float(area.sum()) / max(1, len(area))
+            self._clamp = self._settings.weight_clamp_factor * max(mean_zone_area, 1.0)
+        step = self._settings.weight_step * (slack - slack.mean()) / self.rho_j_per_m2
+        updated = weights + step
+        updated -= updated.mean()        # the partition is invariant to a shift
+        self._clamped = np.abs(updated) > self._clamp
+        return np.clip(updated, -self._clamp, self._clamp)
+
+    def balanced(self) -> bool:
+        if not self._estimates:
+            return False
+        return bool(np.max(np.abs(self._slack - self._slack.mean())) <= self.slack_tolerance_j)
+
+    def cannot_fly(self) -> list[int]:
+        """Drones that cannot fly AT ALL: negative slack even with an EMPTY zone
+        (no coverage, no ferry), i.e. takeoff plus the return plus the reserve
+        already exceed what they carry.
+
+        Only this means the drone cannot fly. An in-flight negative slack is a
+        transient of the current candidate zone, so this is evaluated after the
+        loop has settled, never as an entry condition.
+        """
+        from .energy_balance import estimate_fast_from_area
+
+        grounded = []
+        for i, state in enumerate(self._states):
+            empty = estimate_fast_from_area(
+                self._ctx, state, alt=self._alt, area_m2=0.0, centroid_xy=(0.0, 0.0),
+                fallback_pose=self._fallbacks[i],
+            )
+            if empty.budget_j - empty.demand_j < 0.0:
+                grounded.append(state.drone_id)
+        return grounded
+
+    def per_drone(self, drone_ids: list[int]) -> dict:
+        grounded = set(self.cannot_fly())
+        out = {}
+        for position, drone_id in enumerate(drone_ids):
+            estimate = self._estimates[position] if self._estimates else None
+            out[drone_id] = {
+                "demand_j": float(estimate.demand_j) if estimate else None,
+                "budget_j": float(estimate.budget_j) if estimate else None,
+                "slack_j": float(self._slack[position]),
+                "ratio": (float(estimate.demand_budget_ratio)
+                          if estimate is not None
+                          and estimate.demand_budget_ratio is not None else None),
+                "status": estimate.status.value if estimate else None,
+                "clamped": bool(self._clamped[position]),
+                "cannot_fly": drone_id in grounded,
+            }
+        return out
+
+
+class LloydEnergyDecomposer(_LloydDecomposer):
+    """``lloyd_energy`` -- the additive power diagram (EXP-07b).
+
+    Differs from ``LloydCvtDecomposer`` in the weight source and NOTHING else:
+    initial sites, tie-breaking, the eligible-cell set, the centroid update, the
+    conservation asserts and the convergence logic are literally the same code.
+    Pinning the weights uniform therefore reproduces the CVT partition bit for
+    bit.
+
+    The converse does NOT hold: equal initial SoC does not imply equal energy
+    weights, because predicted demand varies with zone geometry (ferry, RTH,
+    remaining area). Equal batteries do not make this arm equal to CVT.
+    """
+    name = DecompositionAlgo.LLOYD_ENERGY
+
+    def __init__(self, *, energy_context, drone_states, altitude_m: float,
+                 capacity_j: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._energy_context = energy_context
+        self._drone_states = list(drone_states)
+        self._altitude_m = altitude_m
+        self._capacity_j = capacity_j
+
+    def _weight_policy(self):
+        return EnergyWeightPolicy(
+            self._energy_context, self._drone_states, self._altitude_m,
+            self._settings, self._capacity_j,
+            [self._deploy_poses[s.drone_id] for s in self._drone_states],
+        )
