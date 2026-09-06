@@ -8,6 +8,7 @@ from uav_swarm_sim.infrastructure.enums import DecompositionAlgo
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
 import uav_swarm_sim.infrastructure.simulation_engine as engine_module
+from uav_swarm_sim.planning.launch_site_optimizer import InfeasibleMissionError
 
 
 def _cfg(config_path, **extra):
@@ -59,17 +60,25 @@ def test_same_vector_reaches_planner_views_and_physical_batteries(config_path, m
         },
     )
     real_view = engine_module.DroneStateView
+    real_optimize_launch = engine_module.optimize_launch
     planning_soc = {}
+    launch_soc = []
 
     def capture_view(drone_id, battery_frac, pose, layer=0):
         planning_soc[drone_id] = battery_frac
         return real_view(drone_id, battery_frac, pose, layer)
 
+    def capture_optimize_launch(*args, **kwargs):
+        launch_soc.extend(kwargs["initial_soc_by_drone"])
+        return real_optimize_launch(*args, **kwargs)
+
     monkeypatch.setattr(engine_module, "DroneStateView", capture_view)
+    monkeypatch.setattr(engine_module, "optimize_launch", capture_optimize_launch)
     eng = _engine(cfg)
     eng._build()
 
     expected = eng.initial_soc_by_drone
+    assert tuple(launch_soc) == pytest.approx(expected, abs=0.0)
     assert tuple(planning_soc[i] for i in range(3)) == pytest.approx(expected, abs=0.0)
     physical = tuple(eng.fleet.agents[i].battery.frac for i in range(3))
     assert physical == pytest.approx(expected, abs=1e-15)
@@ -124,3 +133,12 @@ def test_another_fixed_value_is_used_by_all_batteries(config_path):
     assert tuple(eng.fleet.agents[i].battery.frac for i in range(3)) == pytest.approx(
         (0.63, 0.63, 0.63), abs=1e-15
     )
+
+
+def test_zero_initial_soc_is_valid_config_but_cannot_launch(config_path):
+    cfg = _cfg(
+        config_path,
+        **{"battery.initial_soc.mode": "fixed", "battery.initial_soc.value": 0.0},
+    )
+    with pytest.raises(InfeasibleMissionError, match="usable 0 J"):
+        _engine(cfg)._build()

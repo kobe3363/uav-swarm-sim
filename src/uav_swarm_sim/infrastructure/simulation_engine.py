@@ -188,6 +188,9 @@ class SimulationEngine:
         with phase("build.load_area"):
             area = load_area(cfg.env.geojson_path)
         obs_rng = self.rng.stream(STREAM_OBSTACLES, self.replication)
+        self.initial_soc_by_drone = generate_initial_soc(
+            cfg.battery.initial_soc, cfg.fleet.n_drones, self.rng, self.replication
+        )
         # 2.5D: slice the extruded prisms into one 2D map per coverage layer.
         # A single layer at the coverage altitude (with unbounded prisms) is the
         # whole world and reproduces the 2D map exactly. Build per-layer GVG+TGC
@@ -218,6 +221,7 @@ class SimulationEngine:
             self.launch_pose, self.site_scores = optimize_launch(
                 cfg.launch, self.tgc, self.env, self.motion, self.em, self.aero,
                 self.spec, cfg.fleet.n_drones, launch_rng, cfg.env.coverage_altitude_m,
+                initial_soc_by_drone=self.initial_soc_by_drone,
             )
 
         # EM-01 Stage 1 (rth.energy_map, default OFF => byte-identical): build
@@ -305,9 +309,6 @@ class SimulationEngine:
                 self.env.plannable_space,
                 cfg.coverage.raster_cell_m,
             )
-        self.initial_soc_by_drone = generate_initial_soc(
-            cfg.battery.initial_soc, cfg.fleet.n_drones, self.rng, self.replication
-        )
         init_views = [
             DroneStateView(i, self.initial_soc_by_drone[i], self.deploy_poses[i])
             for i in range(cfg.fleet.n_drones)
