@@ -43,7 +43,7 @@ def _strip_intervals(
     minx, miny, maxx, maxy = rot_poly.bounds
     rows: list[list[tuple[float, float, float]]] = []
     y = miny + swath / 2.0
-    if ensure_one and y > maxy:
+    if ensure_one and y >= maxy:
         y = (miny + maxy) / 2.0
     while y <= maxy:
         scan = LineString([(minx - 1.0, y), (maxx + 1.0, y)])
@@ -119,7 +119,7 @@ def boustrophedon(
         (start, end, component_index)
         for component_index, component in enumerate(components)
         for start, end in _component_strips(
-            component, swath, spec, ensure_one=raster_on and not isinstance(poly, Polygon)
+            component, swath, spec, ensure_one=raster_on
         )
     ]
 

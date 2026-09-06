@@ -57,7 +57,7 @@ def test_redistribution_intersects_pooled_zones_with_uncovered_work():
     )
 
     _new_partition, plans = redistributor.handle(
-        Event(EventType.NEW_TASK, 0.0, {"polygon": whole}),
+        Event(EventType.FAILURE, 0.0, {"agent_id": 1}),
         _Fleet(),
         partition,
         {0: old_plan},
@@ -68,3 +68,30 @@ def test_redistribution_intersects_pooled_zones_with_uncovered_work():
     assert plans[0].waypoints == []
     assert plans[0].length_m == 0.0
     assert raster.plannable_coverage_frac == pytest.approx(0.5)
+
+
+def test_new_task_is_not_clipped_to_initial_raster_work():
+    whole = box(0.0, 0.0, 100.0, 20.0)
+    added = box(200.0, 0.0, 300.0, 20.0)
+    raster = CoverageRaster(whole, whole, 10.0)
+    zone = Zone(0, [], whole, Pose(0.0, 0.0, 0.0))
+    partition = Partition(DecompositionAlgo.WEIGHTED_VORONOI, {0: zone}, 0.0)
+    decomposer = _CapturingDecomposer()
+    redistributor = Redistributor(
+        decomposer,
+        SimpleNamespace(by_layer={0: (object(), object())}),
+        motion=object(),
+        em=object(),
+        spec=object(),
+        remaining_work_provider=lambda: raster.uncovered_plannable_geometry,
+    )
+
+    redistributor.handle(
+        Event(EventType.NEW_TASK, 0.0, {"polygon": added}),
+        _Fleet(),
+        partition,
+        {0: CoveragePlan(0, [], 1.0, 1.0)},
+        0.0,
+    )
+
+    assert decomposer.target.equals(whole.union(added))

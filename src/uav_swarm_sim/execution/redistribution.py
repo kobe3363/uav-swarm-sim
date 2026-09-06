@@ -108,7 +108,11 @@ class Redistributor:
                 polys.append(np_poly)
 
         target = unary_union(polys) if polys else None
-        if target is not None and self._remaining_work_provider is not None:
+        if (
+            event.type is EventType.FAILURE
+            and target is not None
+            and self._remaining_work_provider is not None
+        ):
             target = target.intersection(self._remaining_work_provider())
 
         views = [a.view() for a in active_l]

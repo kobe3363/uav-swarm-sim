@@ -17,6 +17,33 @@ from uav_swarm_sim.planning.coverage_raster import CoverageRaster
 from uav_swarm_sim.planning.environment_map import EnvironmentMap
 
 
+def test_ensure_one_moves_boundary_scanline_inside_component():
+    rows = coverage_path._strip_intervals(
+        box(0.0, 0.0, 100.0, 25.0), 50.0, ensure_one=True
+    )
+
+    assert len(rows) == 1
+    assert rows[0][0] == pytest.approx((0.0, 100.0, 12.5))
+
+
+def test_raster_mode_plans_a_thin_single_polygon(config_path):
+    cfg = load_config(config_path)
+    spec = build_spec(cfg)
+    area = box(0.0, 0.0, 100.0, 10.0)
+
+    plan = coverage_path.boustrophedon(
+        Zone(0, [], area, Pose(0.0, 0.0, 0.0)),
+        spec,
+        make_motion_model(spec),
+        EnergyModel(spec),
+        coverage=replace(cfg.coverage, raster_enabled=True),
+    )
+
+    assert len(plan.waypoints) == 2
+    assert plan.waypoints[0].pose.y == pytest.approx(5.0)
+    assert plan.waypoints[1].pose.y == pytest.approx(5.0)
+
+
 def test_boustrophedon_plans_all_components_and_routes_the_gap(config_path, monkeypatch):
     cfg = load_config(config_path)
     spec = build_spec(cfg)

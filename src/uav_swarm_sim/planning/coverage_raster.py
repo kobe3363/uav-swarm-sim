@@ -125,8 +125,13 @@ class CoverageRaster:
         footprint_length_m: float,
     ) -> None:
         """Credit one actually travelled camera-on segment's continuous footprint."""
-        if footprint_width_m <= 0.0 or footprint_length_m <= 0.0:
-            raise ValueError("camera footprint dimensions must be > 0")
+        if (
+            not math.isfinite(footprint_width_m)
+            or not math.isfinite(footprint_length_m)
+            or footprint_width_m <= 0.0
+            or footprint_length_m <= 0.0
+        ):
+            raise ValueError("camera footprint dimensions must be finite and > 0")
         dx, dy = new_pose.x - old_pose.x, new_pose.y - old_pose.y
         distance = math.hypot(dx, dy)
         if distance <= _AREA_EPS:

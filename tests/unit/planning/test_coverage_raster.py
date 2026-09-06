@@ -113,3 +113,28 @@ def test_excessive_bounding_grid_is_rejected_before_allocation():
 
     with pytest.raises(ValueError, match="increase coverage.raster_cell_m"):
         CoverageRaster(area, area, 0.1)
+
+
+@pytest.mark.parametrize(
+    ("footprint_width_m", "footprint_length_m"),
+    [
+        (math.nan, 10.0),
+        (math.inf, 10.0),
+        (-math.inf, 10.0),
+        (10.0, math.nan),
+        (10.0, math.inf),
+        (10.0, -math.inf),
+    ],
+)
+def test_non_finite_footprint_dimensions_are_rejected(
+    footprint_width_m, footprint_length_m
+):
+    raster = CoverageRaster(box(0.0, 0.0, 10.0, 10.0), box(0.0, 0.0, 10.0, 10.0), 2.0)
+
+    with pytest.raises(ValueError, match="finite and > 0"):
+        raster.record_segment(
+            Pose(0.0, 5.0, 0.0),
+            Pose(10.0, 5.0, 0.0),
+            footprint_width_m,
+            footprint_length_m,
+        )
