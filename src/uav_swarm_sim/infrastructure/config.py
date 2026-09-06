@@ -388,6 +388,16 @@ class TelemetryConfig:
 
 
 @dataclass(frozen=True)
+class EnergyBalanceConfig:
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class PlanningConfig:
+    energy_balance: EnergyBalanceConfig = field(default_factory=EnergyBalanceConfig)
+
+
+@dataclass(frozen=True)
 class Config:
     fleet: FleetConfig
     platform: PlatformConfig
@@ -411,6 +421,7 @@ class Config:
     config_hash: str = field(default="")
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
+    planning: PlanningConfig = field(default_factory=PlanningConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -796,6 +807,29 @@ def _build(raw: dict, config_hash: str) -> Config:
         epoch_iso=str(tl.get("epoch_iso", "2026-01-01T00:00:00Z")),
     )
 
+    planning_raw = raw.get("planning", {})
+    if planning_raw is None:
+        planning_raw = {}
+    if not isinstance(planning_raw, dict):
+        raise ConfigError("planning must be a mapping")
+    unexpected = set(planning_raw) - {"energy_balance"}
+    if unexpected:
+        raise ConfigError(f"planning has unknown field(s): {', '.join(sorted(unexpected))}")
+    balance_raw = planning_raw.get("energy_balance", {})
+    if balance_raw is None:
+        balance_raw = {}
+    if not isinstance(balance_raw, dict):
+        raise ConfigError("planning.energy_balance must be a mapping")
+    unexpected = set(balance_raw) - {"enabled"}
+    if unexpected:
+        raise ConfigError(
+            f"planning.energy_balance has unknown field(s): {', '.join(sorted(unexpected))}"
+        )
+    balance_enabled = balance_raw.get("enabled", False)
+    if not isinstance(balance_enabled, bool):
+        raise ConfigError("planning.energy_balance.enabled must be a boolean")
+    planning = PlanningConfig(EnergyBalanceConfig(enabled=balance_enabled))
+
     return Config(
         fleet=fleet, platform=platform, sensor=sensor, coverage=coverage, aero=aero, env=env,
         launch=launch, battery_zones=battery_zones, swap=swap, failure=failure,
@@ -804,6 +838,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         config_hash=config_hash,
         telemetry=telemetry,
         battery=battery,
+        planning=planning,
     )
 
 
@@ -811,6 +846,14 @@ def _build(raw: dict, config_hash: str) -> Config:
 # Validation                                                                   #
 # --------------------------------------------------------------------------- #
 def _validate(cfg: Config, raw: dict) -> None:
+    if cfg.planning.energy_balance.enabled:
+        if not (cfg.coverage.raster_enabled and cfg.sensor.photogrammetry.enabled):
+            raise ConfigError(
+                "planning.energy_balance.enabled requires coverage.raster_enabled = true "
+                "which requires sensor.photogrammetry.enabled = true"
+            )
+        if cfg.mission.type is not MissionType.COVERAGE:
+            raise ConfigError("planning.energy_balance.enabled requires mission.type = coverage")
     if not (1 <= cfg.fleet.n_drones <= 100):
         raise ConfigError(f"fleet.n_drones must be in [1, 100], got {cfg.fleet.n_drones}")
     if cfg.fleet.battery_capacity_wh <= 0:
