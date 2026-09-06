@@ -655,12 +655,19 @@ class EnergyWeightPolicy:
         return float(empty.budget_j - empty.demand_j)
 
     def initial(self, n: int) -> np.ndarray:
-        weights = np.zeros(n, dtype=float)
-        # -inf makes ``d^2 - w`` evaluate to +inf for this drone on EVERY cell, so
-        # the shared assign_cells never selects it and its work migrates to the
-        # others by the existing mechanism. No outer loop, no core change.
-        weights[self._grounded] = -np.inf
-        return weights
+        return np.zeros(n, dtype=float)
+
+    def excluded(self, n: int) -> np.ndarray:
+        """Grounded drones are out of play, expressed as ELIGIBILITY.
+
+        The alternative -- a -inf weight -- assigns the same way but is a value in
+        an arithmetic that also takes a mean, a balance target and a clamp, and it
+        manufactures rows whose costs are all infinite. Saying it in the
+        eligibility mask instead keeps every weight finite by construction, so
+        none of that can arise, and the core routes any cell left with no eligible
+        owner into ``no_eligible_owner`` rather than to whoever comes first.
+        """
+        return self._grounded.copy()
 
     def _estimate_all(self, area: np.ndarray, centroids: np.ndarray) -> np.ndarray:
         from .energy_balance import estimate_fast_from_area
@@ -684,8 +691,8 @@ class EnergyWeightPolicy:
         if math.isinf(self._clamp):
             mean_zone_area = float(area.sum()) / max(1, len(area))
             self._clamp = self._settings.weight_clamp_factor * max(mean_zone_area, 1.0)
-        # Grounded drones are held out of the arithmetic entirely: their -inf
-        # weight would poison the mean, and they are not competing for work.
+        # Grounded drones are held out of the arithmetic: they are not competing
+        # for work, so they must not pull the mean or the balance target.
         active = ~self._grounded
         updated = np.zeros_like(weights)
         if active.any():
@@ -695,15 +702,10 @@ class EnergyWeightPolicy:
             )
             updated[active] -= updated[active].mean()   # invariant to a shift
         self._clamped = active & (np.abs(updated) > self._clamp)
-        # Clip the ACTIVE entries only. Clipping the whole vector would happen to
-        # work today -- the grounded entries still hold 0.0 here, and the -inf is
-        # written below -- but that is an ordering accident: move the sentinel
-        # write one line up and the clamp would silently turn it finite, and a
-        # drone that cannot fly would start winning cells again. The sentinel is
-        # not a participating value, so it never enters the arithmetic at all.
-        updated[active] = np.clip(updated[active], -self._clamp, self._clamp)
-        updated[self._grounded] = -np.inf
-        return updated
+        # Every weight stays finite: a grounded drone is out via ``excluded``, so
+        # there is no sentinel to keep out of the mean, the balance target or the
+        # clamp, and no way to produce a row with no finite cost.
+        return np.clip(updated, -self._clamp, self._clamp)
 
     def balanced(self) -> bool:
         if not self._estimates:
@@ -720,11 +722,12 @@ class EnergyWeightPolicy:
         carry. Resolved once in ``__init__`` -- see the note there for why this
         cannot depend on the partition, and therefore why it needs no re-check.
 
-        A drone in this state receives NO cells (its weight is held at -inf), so
-        its work migrates to the others rather than being quietly stranded in a
-        zone nobody will fly. That distinction matters: leaving the cells with it
-        would be an unaccounted coverage loss, which the raster is the single
-        source of truth against (D-8).
+        A drone in this state is taken out of play (``excluded``), so its work
+        migrates to the others rather than being quietly stranded in a zone nobody
+        will fly. Where no other drone can reach it, the core counts it as
+        ``no_eligible_owner``: genuinely uncoverable, and said out loud. Either
+        way it is accounted for, which is what the raster exists to guarantee
+        (D-8).
         """
         if self.all_grounded:
             return [state.drone_id for state in self._states]

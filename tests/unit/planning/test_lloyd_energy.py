@@ -132,7 +132,7 @@ def test_equal_soc_does_not_imply_equal_energy_weights(case):
     geometry -- ferry and RTH are taken from the anchor -- so two drones with the
     same level_j still see different slack and the weights separate."""
     policy = _policy(case, [CAPACITY_J, CAPACITY_J], SETTINGS)
-    _, _, weights, _, _, _ = _run(case, policy, SETTINGS)
+    _, _, weights, _, _, _, _ = _run(case, policy, SETTINGS)
     assert len({round(float(w), 9) for w in weights}) > 1
     slacks = {round(float(s), 6) for s in policy._slack}
     assert len(slacks) > 1
@@ -171,7 +171,7 @@ def test_the_weight_step_has_units_of_area(case):
 def test_a_smaller_battery_takes_a_smaller_zone(case):
     """Direction only -- no magnitude is asserted, so the check cannot be tuned
     to flatter the energy arm."""
-    labels, _, _, _, _, _ = _run(
+    labels, *_ = _run(
         case, _policy(case, [CAPACITY_J, 0.45 * CAPACITY_J], SETTINGS), SETTINGS
     )
     areas = np.bincount(labels, weights=case["cells"].areas_m2, minlength=2)
@@ -252,46 +252,50 @@ def _three_drone_case(case, levels):
 
 
 def test_a_grounded_drone_never_poisons_the_loop_arithmetic(case):
-    """The -inf sentinel must stay OUT of the mean, out of s_bar and out of the
-    clamp. If it leaked into any of them the weights would go nan (mean of -inf)
-    or the sentinel would become finite (clamped) and the grounded drone would
-    start winning cells again -- both silent failures.
+    """A grounded drone must stay out of the mean and out of the balance target,
+    and every weight must stay finite -- grounding is an ELIGIBILITY statement,
+    not a weight. A -inf sentinel would assign correctly but would poison the
+    mean, could be silently clipped back to a finite value, and would create rows
+    with no finite cost at all.
 
-    The CVT arm cannot catch this: it has no weights at all.
+    The CVT arm cannot catch any of this: it has no weights.
     """
     policy, settings, xy = _three_drone_case(
         case, [CAPACITY_J, 0.55 * CAPACITY_J, 0.02 * CAPACITY_J]
     )
     assert policy.cannot_fly() == [2]
     assert not policy.all_grounded
+    assert policy.excluded(3).tolist() == [False, False, True]
 
-    labels, sites, weights, converged, iterations, _ = LloydPartitioner(
+    labels, sites, weights, converged, iterations, _, kept = LloydPartitioner(
         settings, policy
     ).run(case["cells"], xy, np.zeros(3, dtype=np.int32), Pose(300.0, 0.0, 0.0))
 
     assert iterations >= 2, "the interaction only shows up across iterations"
-    live = weights[:2]
-    assert np.isfinite(live).all() and not np.isnan(live).any()   # no nan leak
-    assert weights[2] == -np.inf                                  # sentinel intact
-    assert np.isfinite(policy._slack[:2]).all()                   # s_bar finite
-    assert np.abs(live).max() <= policy._clamp + 1e-9             # clamp still binds
+    assert np.isfinite(weights).all(), "no sentinel may leak into the weights"
+    assert not np.isnan(weights).any()
+    assert np.isfinite(policy._slack[:2]).all()               # balance target finite
+    assert np.abs(weights[:2]).max() <= policy._clamp + 1e-9  # clamp still binds
     # the grounded drone owns nothing, and every cell still has exactly one owner
     counts = np.bincount(labels, minlength=3)
     assert counts[2] == 0
-    assert counts.sum() == case["cells"].count
-    areas = np.bincount(labels, weights=case["cells"].areas_m2, minlength=3)
-    assert float(areas.sum()) == pytest.approx(case["cells"].total_area_m2, rel=1e-12)
+    assert counts.sum() == kept.count
+    areas = np.bincount(labels, weights=kept.areas_m2, minlength=3)
+    assert float(areas.sum()) == pytest.approx(kept.total_area_m2, rel=1e-12)
     assert areas[2] == 0.0
+    # one component, two live drones -> nothing became uncoverable
+    assert kept.count == case["cells"].count
+    assert kept.n_no_eligible_owner == case["cells"].n_no_eligible_owner
 
 
 def test_the_grounded_drone_owns_nothing_in_every_iteration_not_just_the_first(case):
-    """Re-running the assignment with the weights from each iteration must keep
-    the grounded drone empty throughout -- a sentinel that decayed after the
-    first sweep would leave work with a drone that cannot fly."""
+    """Re-running the assignment with each iteration's weights must keep the
+    grounded drone empty throughout. Because it is out via the eligibility mask
+    rather than via a weight, no amount of weight drift can bring it back."""
     policy, settings, xy = _three_drone_case(
         case, [CAPACITY_J, 0.55 * CAPACITY_J, 0.02 * CAPACITY_J]
     )
-    allowed = np.ones((case["cells"].count, 3), dtype=bool)
+    allowed = np.ones((case["cells"].count, 3), dtype=bool) & (~policy.excluded(3))[None, :]
     weights = policy.initial(3)
     area = np.full(3, case["cells"].total_area_m2 / 3.0)
     centroids = xy.astype(float)
@@ -300,24 +304,54 @@ def test_the_grounded_drone_owns_nothing_in_every_iteration_not_just_the_first(c
         labels = assign_cells(case["cells"].centroids_xy, xy, weights, allowed)
         assert np.bincount(labels, minlength=3)[2] == 0, f"sweep {sweep}"
         weights = policy.update(weights, None, area, centroids, xy)
-        assert weights[2] == -np.inf, f"sweep {sweep}"
-        assert np.isfinite(weights[:2]).all(), f"sweep {sweep}"
+        assert np.isfinite(weights).all(), f"sweep {sweep}"
 
 
 def test_when_nobody_can_fly_nothing_is_grounded_and_the_fact_is_reported(case):
-    """Grounding everyone would make every cost +inf, and argmin would hand the
-    whole survey to the lowest id in silence. Ground no one and say so instead."""
+    """Excluding everyone would leave every cell with no eligible owner, and the
+    core would count the entire survey as uncoverable. Report the fact instead
+    and let the partition stand, so the output says who cannot fly rather than
+    silently emptying the mission."""
     policy, settings, xy = _three_drone_case(
         case, [0.02 * CAPACITY_J, 0.02 * CAPACITY_J, 0.02 * CAPACITY_J]
     )
     assert policy.all_grounded is True
     assert policy.cannot_fly() == [0, 1, 2]
+    assert not policy.excluded(3).any()          # nobody is taken out of play
 
-    weights = policy.initial(3)
-    assert np.isfinite(weights).all()          # no sentinel at all
-    labels, _, weights, _, _, _ = LloydPartitioner(settings, policy).run(
+    labels, _, weights, _, _, _, kept = LloydPartitioner(settings, policy).run(
         case["cells"], xy, np.zeros(3, dtype=np.int32), Pose(300.0, 0.0, 0.0)
     )
-    assert np.isfinite(weights).all() and not np.isnan(weights).any()
-    assert np.bincount(labels, minlength=3).sum() == case["cells"].count
+    assert np.isfinite(weights).all()
+    assert kept.count == case["cells"].count
+    assert kept.n_no_eligible_owner == case["cells"].n_no_eligible_owner
+    assert np.bincount(labels, minlength=3).sum() == kept.count
     assert all(d["cannot_fly"] for d in policy.per_drone([0, 1, 2]).values())
+
+
+def test_a_grounded_drone_alone_in_its_component_leaves_uncoverable_work(case):
+    """The semantics the author fixed: such a drone IS taken out of play, and its
+    region is counted as uncoverable. Keeping it in play to hold those cells
+    would leave work with a drone that will never fly it -- the same unaccounted
+    coverage loss in another shape. Nobody will cover them, and it is said."""
+    poses = [Pose(100.0, 120.0, 0.0), Pose(500.0, 120.0, 0.0)]
+    xy = np.array([[p.x, p.y] for p in poses])
+    states = [DroneEnergyState(0, poses[0], CAPACITY_J, False),
+              DroneEnergyState(1, poses[1], 0.02 * CAPACITY_J, False)]
+    policy = EnergyWeightPolicy(case["ctx"], states, ALT, SETTINGS, CAPACITY_J, poses)
+    assert policy.excluded(2).tolist() == [False, True]
+
+    cells = case["cells"]
+    drone_comp = np.array([0, 1], dtype=np.int32)          # one drone per component
+    component = np.where(cells.centroids_xy[:, 0] < 300.0, 0, 1).astype(np.int32)
+    split = replace(cells, component=component)
+
+    labels, _, _, _, _, _, kept = LloydPartitioner(SETTINGS, policy).run(
+        split, xy, drone_comp, Pose(300.0, 0.0, 0.0)
+    )
+    orphans = int((component == 1).sum())
+    assert orphans > 0
+    assert kept.n_no_eligible_owner == cells.n_no_eligible_owner + orphans
+    assert kept.count == cells.count - orphans
+    assert (labels == 1).sum() == 0                        # nothing left with it
+    assert kept.centroids_xy[:, 0].max() < 300.0           # and nothing crossed over
