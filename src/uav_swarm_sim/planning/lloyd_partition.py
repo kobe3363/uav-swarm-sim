@@ -16,12 +16,20 @@ battery percentage, not a ratio, and not a normalised share.
 
 Which point is which
 --------------------
-``CoverageRaster`` stores ``shapely.point_on_surface`` per cell, NOT an area
-centroid (see ``coverage_raster._mask_cells``); on a cell clipped by the
-plannable boundary the two genuinely differ. Lloyd's fixed point IS the
-area-weighted centroid, so BOTH the assignment and the centroid update here use
-``shapely.centroid`` of the clipped cell, computed in this module and tested in
-this module. The raster's surface points are never used for partition arithmetic.
+Each cell carries TWO points and they answer different questions.
+
+*Area centroid* (``shapely.centroid``, computed here) is the cell's MASS
+position. Lloyd's fixed point is the area-weighted centroid, so the assignment
+and the centroid update use it. It is the right answer even when it falls
+outside its own cell -- the centroid of a union is ``sum(a*c)/sum(a)`` however
+the individual centroids lie.
+
+*Surface point* (``shapely.point_on_surface``, from the raster) is guaranteed to
+be INSIDE the cell. Every MEMBERSHIP question -- which free-space component is
+this cell in, is its return cost defined -- uses it, because a clipped cell can
+be concave (an obstacle notching one edge) and then its area centroid sits in the
+obstacle. Asking "where is this cell?" with a point that is not in it drops
+flyable work.
 
 Determinism
 -----------
@@ -174,19 +182,24 @@ def _drone_components(parts: list[Polygon], poses: np.ndarray) -> np.ndarray:
     return labels
 
 
-def _rth_reachable_mask(energy_map, xy: np.ndarray) -> tuple[np.ndarray, int]:
+def _rth_reachable_mask(energy_map, inside_xy: np.ndarray) -> tuple[np.ndarray, int]:
     """Cells whose return cost is defined.
 
     Mirrors the EXP-06 test exactly (``energy_balance._estimate``): a cell
     OUTSIDE the grid is not judged, a cell inside it must have a finite
     ``e_home``. With no map built, nothing is filtered.
+
+    ``inside_xy`` must be points KNOWN to lie in their cells (the raster's
+    surface points), not area centroids: a concave clipped cell's centroid can
+    sit in the obstacle, whose ``e_home`` is non-finite, which would drop
+    perfectly flyable work.
     """
-    keep = np.ones(len(xy), dtype=bool)
-    if energy_map is None or len(xy) == 0:
+    keep = np.ones(len(inside_xy), dtype=bool)
+    if energy_map is None or len(inside_xy) == 0:
         return keep, 0
     frame = energy_map.frame
-    i = np.floor((xy[:, 0] - frame.origin_x) / frame.cell_m).astype(np.int64)
-    j = np.floor((xy[:, 1] - frame.origin_y) / frame.cell_m).astype(np.int64)
+    i = np.floor((inside_xy[:, 0] - frame.origin_x) / frame.cell_m).astype(np.int64)
+    j = np.floor((inside_xy[:, 1] - frame.origin_y) / frame.cell_m).astype(np.int64)
     inside = (i >= 0) & (i < frame.nx) & (j >= 0) & (j < frame.ny)
     if inside.any():
         keep[inside] = np.isfinite(np.asarray(energy_map.e_home)[i[inside], j[inside]])
@@ -216,14 +229,19 @@ def build_eligible_cells(
             drone_comp,
         )
 
-    # The raster hands out point_on_surface; Lloyd needs the AREA centroid.
+    # Two points per cell, each for its own question (see the module docstring):
+    # the AREA centroid carries the mass, the raster's surface point is the one
+    # guaranteed to lie inside the cell and so answers "where is this cell?".
     centroid = shapely.centroid(geoms)
     xy = np.column_stack((shapely.get_x(centroid), shapely.get_y(centroid)))
+    inside = np.column_stack(
+        (shapely.get_x(cells.surface_points), shapely.get_y(cells.surface_points))
+    )
 
-    keep, n_rth = _rth_reachable_mask(energy_map, xy)
-    geoms, xy, areas = geoms[keep], xy[keep], cells.areas_m2[keep]
+    keep, n_rth = _rth_reachable_mask(energy_map, inside)
+    geoms, xy, inside, areas = geoms[keep], xy[keep], inside[keep], cells.areas_m2[keep]
 
-    cell_comp = _component_of_points(parts, xy)
+    cell_comp = _component_of_points(parts, inside)
     reachable_components = np.unique(drone_comp[drone_comp >= 0])
     owned = np.isin(cell_comp, reachable_components)
     n_orphan = int((~owned).sum())

@@ -64,9 +64,9 @@ from ..planning.environment_map import LayerStack
 from ..planning.geojson_parser import load_area
 from ..planning.grid_planner import GridPlanner
 from ..planning.kmeans_heuristic import KMeansHeuristicDecomposer
-from ..planning.lloyd_partition import LloydCvtDecomposer
 from ..planning.layer_planner import assign_to_layers, build_layer_graphs, decompose_layers
 from ..planning.launch_site_optimizer import optimize as optimize_launch
+from ..planning.lloyd_partition import LloydCvtDecomposer
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.target_mission import generate_targets, plan_target_mission
 from ..planning.dynamic_obstacles import DynamicObstacleField

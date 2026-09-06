@@ -7,9 +7,11 @@ pinned, the derivation is written out in the test.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import shapely
 from shapely.geometry import MultiPolygon, Polygon, box
 
 from uav_swarm_sim.execution.fleet import deploy_ring_poses
@@ -350,3 +352,83 @@ def test_missing_component_information_leaves_the_constraint_inert():
     assert sum(z.area_m2 for z in partition.zones.values()) == pytest.approx(
         area.area, rel=1e-12
     )
+
+
+# --------------------------------------------------------------------------- #
+# F (cont). the two points answer different questions                          #
+# --------------------------------------------------------------------------- #
+NOTCH = box(43.0, 40.0, 47.0, 46.0)   # bites into the bottom edge of cell (40,40)-(50,50)
+
+
+def _notched_cells(extra_obstacles=(), energy_map=None, drone_xy=((5.0, 5.0),)):
+    area = box(0.0, 0.0, 100.0, 100.0)
+    obstacles = [_obstacle(NOTCH)] + [_obstacle(g) for g in extra_obstacles]
+    env = EnvironmentMap(area, obstacles, 0.0)
+    raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
+    return build_eligible_cells(raster, env, np.array(drone_xy, dtype=float),
+                                energy_map=energy_map)
+
+
+def test_a_notched_cell_really_does_put_its_area_centroid_in_the_obstacle():
+    """The premise of the three tests below, pinned so they cannot rot silently.
+
+    The clipped cell (40,40)-(50,50) minus the notch is concave. Its area
+    centroid (45.0, 45.63) lies INSIDE the notch -- i.e. outside both the cell
+    and the flyable space -- while point_on_surface (41.5, 43.0) is in the cell.
+    """
+    area = box(0.0, 0.0, 100.0, 100.0)
+    env = EnvironmentMap(area, [_obstacle(NOTCH)], 0.0)
+    raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
+    raw = raster.uncovered_plannable_cells()
+
+    outside = np.flatnonzero(~shapely.covers(raw.geometries, shapely.centroid(raw.geometries)))
+    assert outside.tolist() == [44]
+    centroid = shapely.centroid(raw.geometries[44])
+    assert (centroid.x, centroid.y) == pytest.approx((45.0, 45.631579), abs=1e-6)
+    assert NOTCH.covers(centroid)
+    surface = raw.surface_points[44]
+    assert (surface.x, surface.y) == pytest.approx((41.5, 43.0), abs=1e-6)
+    assert raw.geometries[44].covers(surface) and not NOTCH.covers(surface)
+
+
+def test_the_rth_filter_judges_a_cell_by_a_point_that_is_actually_in_it():
+    """(a) An energy map that marks the notch unreachable must not take the cell
+    with it: the cell is flyable, only its area centroid is not."""
+    frame = SimpleNamespace(origin_x=0.0, origin_y=0.0, cell_m=1.0, nx=100, ny=100)
+    e_home = np.full((100, 100), 10.0)
+    e_home[43:47, 40:46] = math.inf                 # exactly the notch footprint
+    energy_map = SimpleNamespace(frame=frame, e_home=e_home)
+
+    cells, _ = _notched_cells(energy_map=energy_map)
+    assert cells.n_rth_unreachable == 0
+    assert cells.count == 100
+    # the surviving set still contains the notched cell, at its full clipped area
+    assert float(cells.areas_m2.sum()) == pytest.approx(100 * 100 - NOTCH.area, rel=1e-12)
+    assert 76.0 in cells.areas_m2.tolist()
+
+
+def test_the_component_label_of_a_notched_cell_comes_from_inside_it():
+    """(b) With the flyable space genuinely split, the notched cell must still be
+    labelled with the component it sits in -- not -1, which would orphan it."""
+    wall = box(70.0, 0.0, 74.0, 100.0)              # splits left from right
+    cells, drone_comp = _notched_cells(extra_obstacles=[wall],
+                                       drone_xy=((5.0, 5.0), (90.0, 90.0)))
+    assert set(drone_comp.tolist()) == {0, 1}       # one drone per chamber
+    assert cells.n_no_eligible_owner == 0
+    assert (cells.component >= 0).all()
+    # the notched cell is present and sits in the left-hand component
+    notched = np.flatnonzero(np.isclose(cells.areas_m2, 76.0))
+    assert len(notched) == 1
+    assert cells.component[notched[0]] == drone_comp[0]
+
+
+def test_mass_arithmetic_still_uses_the_area_centroid_not_the_surface_point():
+    """(c) The membership fix must not leak into the Lloyd arithmetic: the cell's
+    MASS position stays the area centroid, which is the CVT fixed point even when
+    it lies outside its own cell."""
+    cells, _ = _notched_cells()
+    notched = np.flatnonzero(np.isclose(cells.areas_m2, 76.0))
+    assert len(notched) == 1
+    x, y = cells.centroids_xy[notched[0]]
+    assert (x, y) == pytest.approx((45.0, 45.631579), abs=1e-6)     # area centroid
+    assert (x, y) != pytest.approx((41.5, 43.0), abs=1e-6)          # NOT the surface point
