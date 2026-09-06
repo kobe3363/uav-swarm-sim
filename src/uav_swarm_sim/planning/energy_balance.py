@@ -200,27 +200,76 @@ def _estimate(ctx, drone, method, alt, area, n_strips, anchor, exit_pose,
     )
 
 
-def estimate_fast(ctx, drone, zone, raster: CoverageRaster | None) -> ZoneEnergyEstimate:
-    """Square-footprint work approximation, anchored at the remaining centroid."""
-    alt = _inputs(ctx, drone, zone)
-    geometry = remaining_work_geometry(zone.polygon, raster)
-    area = geometry.area
+def coverage_energy_density_j_per_m2(ctx, altitude_m: float) -> float:
+    """Marginal coverage cost, J per m^2 of remaining work.
+
+    Derived by evaluating the SAME executor-mirroring calls this module already
+    uses, at A = 1 m^2. Both terms are strictly linear in A, so the evaluation is
+    exact rather than a fit::
+
+        strip_length(A) = A / swath
+        E_strips(A)     = P_COVERAGE * A / (v_coverage * swath)
+        E_camera(A)     = P_sensor   * A / (v_coverage * swath)
+        rho             = (P_COVERAGE + P_sensor) / (v_coverage * swath)
+
+    Unit discipline (CLAUDE.md rule 4): the next-bundle term is COVERAGE plus the
+    camera; E_home uses CRUISE and is not part of this. The turn/connector term is
+    O(sqrt(A)), i.e. NOT linear in area, and is deliberately excluded from a
+    MARGINAL density -- the exact demand still comes from the estimators below.
+
+    EXP-07b uses ``1 / rho`` as the J -> m^2 scale in its weight law, so that
+    constant is derived from the energy model rather than chosen by hand.
+    """
+    swath = ctx.spec.coverage_line_spacing_m(altitude_m)
+    per_m2 = 1.0 / swath
+    return (
+        ctx.em.distance_energy(per_m2, ManeuverType.COVERAGE, ctx.spec.v_coverage)
+        + ctx.em.sensor_energy(per_m2 / ctx.spec.v_coverage, ctx.sensor_power_w)
+    )
+
+
+def estimate_fast_from_area(
+    ctx, drone, *, alt: float, area_m2: float, centroid_xy, fallback_pose: Pose
+) -> ZoneEnergyEstimate:
+    """The fast estimate's arithmetic, given the remaining area and its centroid.
+
+    Extracted so a caller that ALREADY knows the remaining area -- the EXP-07
+    grid partitioner, which owns the cells it summed -- can skip rebuilding the
+    work geometry. That matters twice over: ``remaining_work_geometry`` rebuilds
+    a union over every uncovered cell on each call, and recomputing the area from
+    geometry would give a second, slightly different number for the same zone.
+
+    ``estimate_fast`` below is this function plus the geometry step, so the two
+    paths are the same arithmetic on the same inputs.
+    """
     swath = ctx.spec.coverage_line_spacing_m(alt)
-    strip_length, _, turn_distance = _coverage_geometry(area, swath)
-    if area:
-        center = geometry.centroid
-        anchor = Pose(center.x, center.y,
-                      math.atan2(center.y - drone.pose.y, center.x - drone.pose.x))
+    strip_length, _, turn_distance = _coverage_geometry(area_m2, swath)
+    if area_m2:
+        cx, cy = centroid_xy
+        anchor = Pose(cx, cy, math.atan2(cy - drone.pose.y, cx - drone.pose.x))
     else:
-        anchor = zone.entry_pose
+        anchor = fallback_pose
     return _estimate(
-        ctx, drone, "fast", alt, area, math.sqrt(area) / swath, anchor, anchor,
+        ctx, drone, "fast", alt, area_m2, math.sqrt(area_m2) / swath, anchor, anchor,
         ctx.em.distance_energy(math.dist(drone.pose.as_xy(), anchor.as_xy()),
                                ManeuverType.CRUISE, ctx.spec.v_cruise),
         ctx.em.distance_energy(strip_length, ManeuverType.COVERAGE, ctx.spec.v_coverage),
         ctx.em.distance_energy(turn_distance, ManeuverType.TURN, ctx.spec.v_cruise),
         ctx.em.sensor_energy(strip_length / ctx.spec.v_coverage, ctx.sensor_power_w),
         _ferry(ctx, drone, anchor),
+    )
+
+
+def estimate_fast(ctx, drone, zone, raster: CoverageRaster | None) -> ZoneEnergyEstimate:
+    """Square-footprint work approximation, anchored at the remaining centroid."""
+    alt = _inputs(ctx, drone, zone)
+    geometry = remaining_work_geometry(zone.polygon, raster)
+    area = geometry.area
+    centroid = geometry.centroid if area else None
+    return estimate_fast_from_area(
+        ctx, drone, alt=alt, area_m2=area,
+        centroid_xy=(centroid.x, centroid.y) if area else (0.0, 0.0),
+        fallback_pose=zone.entry_pose,
     )
 
 

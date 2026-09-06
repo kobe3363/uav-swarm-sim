@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import shapely
@@ -356,9 +356,16 @@ def assign_cells(
 
     ``sites``/``weights`` are ordered by ascending drone id and ``np.argmin``
     returns the first minimum, so a tie breaks toward the LOWEST drone id.
-    ``allowed`` is the (n_cells, n_drones) reachability mask; a disallowed pair
-    is pushed to +inf and can never win, because ``build_eligible_cells``
-    guarantees every surviving cell at least one allowed drone.
+    ``allowed`` is the (n_cells, n_drones) eligibility mask; a disallowed pair is
+    pushed to +inf and can never win.
+
+    Every row MUST contain at least one finite cost. ``np.argmin`` on an
+    all-infinite row silently returns index 0 -- handing the cell to whichever
+    drone happens to be first, quite possibly one that is not even allowed to
+    own it. That is exactly the silent nearest-drone assignment the eligible-cell
+    contract forbids, so it is asserted here rather than trusted: the caller is
+    responsible for routing such cells to the ``no_eligible_owner`` count before
+    they ever reach this function.
     """
     n_cells = len(centroids_xy)
     labels = np.empty(n_cells, dtype=np.int64)
@@ -367,6 +374,15 @@ def assign_cells(
         block = centroids_xy[start:stop]
         cost = ((block[:, None, :] - sites[None, :, :]) ** 2).sum(axis=2) - weights[None, :]
         cost[~allowed[start:stop]] = np.inf
+        if not np.isfinite(cost).any(axis=1).all():
+            # Deliberately not an `assert`: `python -O` strips those, and this
+            # guard is the last thing standing between a starved row and a silent
+            # hand-off to drone index 0. Verified: under -O the assert form
+            # returned [0, 0] for a row nobody could own.
+            raise AssertionError(
+                "a cell reached assignment with no finite cost; argmin would hand "
+                "it to drone index 0 silently -- route it to no_eligible_owner"
+            )
         labels[start:stop] = np.argmin(cost, axis=1)
     return labels
 
@@ -414,6 +430,21 @@ class UniformWeightPolicy:
     def per_drone(self, drone_ids: list[int]) -> dict:
         return {}
 
+    def refresh(self, area: np.ndarray, centroids: np.ndarray) -> None:
+        """Re-read the final zones without changing the weights. No-op here."""
+
+    def excluded(self, n: int) -> np.ndarray:
+        """Drones that may own no cell at all. None, for uniform weights.
+
+        This is the structural way to say "this drone is out": it removes the
+        drone from the eligibility mask, so no row can end up with every cost
+        infinite. Encoding the same thing as a -inf weight would work at the
+        assignment step but leak into the mean, the balance target and the clamp,
+        and would create exactly the all-infinite rows the assertion above
+        forbids.
+        """
+        return np.zeros(n, dtype=bool)
+
 
 class LloydPartitioner:
     """The shared code path. The identity lives entirely in ``weight_policy``."""
@@ -422,18 +453,52 @@ class LloydPartitioner:
         self.settings = settings
         self.weight_policy = weight_policy
 
+    def _refresh_empty(self, n: int) -> None:
+        """Describe the empty zones the early returns hand back.
+
+        Without this the policy keeps its initial state, and the report goes out
+        with demand, budget and status all None while slack_j still reads 0.0 --
+        a record that contradicts its own definition of slack. Zero area and a
+        non-finite centroid are exactly what an empty zone is, so the estimator
+        anchors at each drone's own pose and the numbers come out consistent.
+        """
+        self.weight_policy.refresh(np.zeros(n), np.full((n, 2), np.nan))
+
     def run(
         self, cells: EligibleCells, drone_poses: np.ndarray, drone_comp: np.ndarray,
         launch_pose: Pose,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, float]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, float, EligibleCells]:
         n = len(drone_poses)
         sites = initial_sites(self.settings.init_sites, drone_poses, cells, launch_pose)
         weights = self.weight_policy.initial(n)
         if cells.count == 0 or n == 0:
-            return np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0
+            self._refresh_empty(n)
+            return np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0, cells
 
-        allowed = cells.component[:, None] == drone_comp[None, :]
-        assert allowed.any(axis=1).all(), "build_eligible_cells must drop unowned cells"
+        # Eligibility is component membership AND the drone being in play at all.
+        # Folding both in here is what keeps every row's cost finite somewhere.
+        allowed = (cells.component[:, None] == drone_comp[None, :]) & (
+            ~self.weight_policy.excluded(n)
+        )[None, :]
+        orphaned = ~allowed.any(axis=1)
+        if orphaned.any():
+            # No drone that can fly can reach this cell. Nobody will cover it --
+            # count it and drop it, exactly as build_eligible_cells does for the
+            # cells no drone shares a component with. Never hand it to the
+            # nearest, and never leave it with a drone that is out of play.
+            keep = ~orphaned
+            cells = replace(
+                cells,
+                geometries=cells.geometries[keep],
+                centroids_xy=cells.centroids_xy[keep],
+                areas_m2=cells.areas_m2[keep],
+                component=cells.component[keep],
+                n_no_eligible_owner=cells.n_no_eligible_owner + int(orphaned.sum()),
+            )
+            allowed = allowed[keep]
+        if cells.count == 0:
+            self._refresh_empty(n)
+            return (np.empty(0, dtype=np.int64), sites, weights, True, 0, 0.0, cells)
 
         converged, shift, iterations = False, 0.0, 0
         for iterations in range(1, self.settings.max_iterations + 1):
@@ -451,7 +516,13 @@ class LloydPartitioner:
         # returned sites and weights. The last partition is USED either way: a
         # non-convergence is REPORTED, never repaired by another algorithm.
         labels = assign_cells(cells.centroids_xy, sites, weights, allowed)
-        return labels, sites, weights, converged, iterations, shift
+        # The weight policy recorded its energy figures for the LAST IN-LOOP
+        # assignment, which the update above then moved away from. Re-read the
+        # final zones -- read-only, no further weight update -- so the reported
+        # demand, budget and slack describe the zones actually returned.
+        _, final_area, final_centroids = aggregate(labels, cells, n)
+        self.weight_policy.refresh(final_area, final_centroids)
+        return labels, sites, weights, converged, iterations, shift, cells
 
 
 # --------------------------------------------------------------------------- #
@@ -508,7 +579,7 @@ class _LloydDecomposer(Decomposer):
 
         cells, drone_comp = build_eligible_cells(self._raster, env, poses, self._energy_map)
         policy = self._weight_policy()
-        labels, sites, weights, converged, iterations, shift = LloydPartitioner(
+        labels, sites, weights, converged, iterations, shift, cells = LloydPartitioner(
             self._settings, policy
         ).run(cells, poses, drone_comp, self._launch_pose)
 
@@ -516,11 +587,17 @@ class _LloydDecomposer(Decomposer):
 
         # Conservation: every eligible cell has exactly one owner and no area is
         # lost. Nothing is dropped for being empty or disconnected.
-        assert int(counts.sum()) == cells.count, "cell count not conserved"
+        # Same reasoning as the assignment guard: these are the "nothing was
+        # silently dropped" guarantee, so they must not vanish under -O either.
         total = cells.total_area_m2
-        assert math.isclose(float(area.sum()), total, rel_tol=_AREA_REL_TOL, abs_tol=1e-9), (
-            "cell area not conserved"
-        )
+        if int(counts.sum()) != cells.count:
+            raise AssertionError(
+                f"cell count not conserved: {int(counts.sum())} owned of {cells.count}"
+            )
+        if not math.isclose(float(area.sum()), total, rel_tol=_AREA_REL_TOL, abs_tol=1e-9):
+            raise AssertionError(
+                f"cell area not conserved: {float(area.sum())!r} owned of {total!r}"
+            )
 
         zones: dict[int, Zone] = {}
         for position, drone in enumerate(ordered):
@@ -569,3 +646,235 @@ class LloydCvtDecomposer(_LloydDecomposer):
 
     def _weight_policy(self):
         return UniformWeightPolicy()
+
+
+# --------------------------------------------------------------------------- #
+# EXP-07b: the energy weight source                                            #
+# --------------------------------------------------------------------------- #
+class EnergyWeightPolicy:
+    """LLOYD_ENERGY: an additive power diagram that equalises energy SLACK.
+
+    Weight law, per iteration::
+
+        slack_i = budget_i - demand_i                            [J, signed]
+        w_i    += weight_step * (slack_i - mean(slack)) / rho    [m^2]
+
+    ``rho`` is the marginal coverage energy density from
+    ``energy_balance.coverage_energy_density_j_per_m2``, so ``slack / rho`` is
+    literally "the area this drone's spare energy can cover" -- the J -> m^2
+    scale is DERIVED from the energy model, not chosen by hand.
+
+    Sign check: a larger ``w_i`` wins more cells -> more demand -> LESS slack, so
+    a drone with spare energy (``slack_i > mean``) takes a positive step and picks
+    up more area. That is the opposite sign to a demand/budget law, which is the
+    sanity check that slack is a remainder while a ratio is a load.
+
+    Why slack and not ``demand / budget`` (author decision 2026-09-06, amending
+    D-2): ``budget_j`` is a function of the CANDIDATE ZONE, not of the drone --
+    ``energy_balance._budget`` subtracts ferry and RTH, both taken from the
+    anchor/exit pose -- so it is recomputed here on EVERY iteration, and a ratio
+    would have a pole wherever a candidate zone drives the budget through zero.
+    ``_estimate`` returns ``budget_j`` and ``demand_j`` whatever the status, so
+    slack stays defined exactly where ``demand_budget_ratio`` is None. The ratio
+    is still computed and reported; it just does not drive the law.
+
+    ``weight_step`` damps a fixed point that is NOT contractive (the zone feeds
+    back into the budget through the anchor). In a power diagram a weight shift d
+    moves each bisector by d / (2 * spacing), so dA/dw is about
+    perimeter / (2 * spacing), which is about 2 for a compact zone: a full step
+    overshoots roughly twofold, and that is where 0.5 comes from. It is fixed
+    from that argument, reported, and NOT tuned against outcomes. The clamp is
+    numerical stability only -- also not a semantic dial -- and a drone that
+    reaches it is reported as ``clamped``.
+    """
+    name = "energy_slack"
+
+    def __init__(self, ctx, states, altitude_m: float, settings: PartitionConfig,
+                 capacity_j: float, fallback_poses) -> None:
+        from .energy_balance import coverage_energy_density_j_per_m2
+
+        self._ctx = ctx
+        self._states = list(states)              # DroneEnergyState, drone-id order
+        self._alt = altitude_m
+        self._settings = settings
+        self._fallbacks = list(fallback_poses)
+        self.rho_j_per_m2 = coverage_energy_density_j_per_m2(ctx, altitude_m)
+        # rho is the divisor that turns joules into square metres. A platform with
+        # zero coverage power and no camera makes it 0.0, which would send NaN
+        # weights into the partition loop and quietly wreck the assignment; a
+        # non-finite power coefficient does the same. Refuse to scale by it.
+        if not math.isfinite(self.rho_j_per_m2) or self.rho_j_per_m2 <= 0.0:
+            raise ValueError(
+                "coverage energy density must be finite and > 0 to scale J -> m^2; "
+                f"got {self.rho_j_per_m2!r} from P_COVERAGE + sensor_power_w over "
+                "v_coverage * swath"
+            )
+        self.slack_tolerance_j = (
+            settings.slack_tolerance_j if settings.slack_tolerance_j is not None
+            else 0.005 * capacity_j
+        )
+        self._clamp = math.inf                   # resolved on the first update
+        self._estimates: list = []
+        self._slack = np.zeros(len(self._states))
+        self._clamped = np.zeros(len(self._states), dtype=bool)
+        # Grounded drones are known BEFORE the loop: with an empty zone the
+        # anchor is the drone's own pose (energy_balance.py:250 -> fallback_pose,
+        # which is that drone's staging pose), so ferry is zero, demand is zero
+        # and slack == budget depends only on the drone's pose and level -- not
+        # on the partition. There is therefore nothing to re-check afterwards.
+        self._grounded = np.array([self._empty_zone_slack(i) < 0.0
+                                   for i in range(len(self._states))], dtype=bool)
+        # If NOBODY can fly, grounding everyone would silently hand every cell to
+        # the lowest id (every cost becomes +inf and argmin returns the first).
+        # Ground no one instead: the partition is then meaningless but honest,
+        # and ``all_grounded`` plus per-drone ``cannot_fly`` say so outright.
+        self.all_grounded = bool(self._grounded.all()) and len(self._states) > 0
+        if self.all_grounded:
+            self._grounded = np.zeros(len(self._states), dtype=bool)
+
+    def _empty_zone_slack(self, i: int) -> float:
+        from .energy_balance import estimate_fast_from_area
+
+        empty = estimate_fast_from_area(
+            self._ctx, self._states[i], alt=self._alt, area_m2=0.0,
+            centroid_xy=(0.0, 0.0), fallback_pose=self._fallbacks[i],
+        )
+        return float(empty.budget_j - empty.demand_j)
+
+    def initial(self, n: int) -> np.ndarray:
+        return np.zeros(n, dtype=float)
+
+    def excluded(self, n: int) -> np.ndarray:
+        """Grounded drones are out of play, expressed as ELIGIBILITY.
+
+        The alternative -- a -inf weight -- assigns the same way but is a value in
+        an arithmetic that also takes a mean, a balance target and a clamp, and it
+        manufactures rows whose costs are all infinite. Saying it in the
+        eligibility mask instead keeps every weight finite by construction, so
+        none of that can arise, and the core routes any cell left with no eligible
+        owner into ``no_eligible_owner`` rather than to whoever comes first.
+        """
+        return self._grounded.copy()
+
+    def _estimate_all(self, area: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+        from .energy_balance import estimate_fast_from_area
+
+        estimates, slack = [], np.zeros(len(self._states))
+        for i, state in enumerate(self._states):
+            centroid = centroids[i]
+            finite = bool(np.isfinite(centroid).all())
+            estimates.append(estimate_fast_from_area(
+                self._ctx, state, alt=self._alt, area_m2=float(area[i]),
+                centroid_xy=(float(centroid[0]), float(centroid[1])) if finite else (0.0, 0.0),
+                fallback_pose=self._fallbacks[i],
+            ))
+            slack[i] = estimates[-1].budget_j - estimates[-1].demand_j
+        self._estimates = estimates
+        self._slack = slack
+        return slack
+
+    def update(self, weights: np.ndarray, counts, area, centroids, sites) -> np.ndarray:
+        slack = self._estimate_all(area, centroids)
+        if math.isinf(self._clamp):
+            mean_zone_area = float(area.sum()) / max(1, len(area))
+            self._clamp = self._settings.weight_clamp_factor * max(mean_zone_area, 1.0)
+        # Grounded drones are held out of the arithmetic: they are not competing
+        # for work, so they must not pull the mean or the balance target.
+        active = ~self._grounded
+        updated = np.zeros_like(weights)
+        if active.any():
+            centred = slack[active] - slack[active].mean()
+            updated[active] = weights[active] + (
+                self._settings.weight_step * centred / self.rho_j_per_m2
+            )
+            updated[active] -= updated[active].mean()   # invariant to a shift
+        self._clamped = active & (np.abs(updated) > self._clamp)
+        # Every weight stays finite: a grounded drone is out via ``excluded``, so
+        # there is no sentinel to keep out of the mean, the balance target or the
+        # clamp, and no way to produce a row with no finite cost.
+        return np.clip(updated, -self._clamp, self._clamp)
+
+    def refresh(self, area: np.ndarray, centroids: np.ndarray) -> None:
+        """Re-estimate against the final zones. Read-only: weights are untouched,
+        so this cannot move the partition it is describing."""
+        self._estimate_all(area, centroids)
+
+    def balanced(self) -> bool:
+        if not self._estimates:
+            return False
+        active = ~self._grounded
+        if not active.any():
+            return True
+        live = self._slack[active]
+        return bool(np.max(np.abs(live - live.mean())) <= self.slack_tolerance_j)
+
+    def cannot_fly(self) -> list[int]:
+        """Drones that cannot fly AT ALL: negative slack even with an EMPTY zone,
+        i.e. takeoff plus the return plus the reserve already exceed what they
+        carry. Resolved once in ``__init__`` -- see the note there for why this
+        cannot depend on the partition, and therefore why it needs no re-check.
+
+        A drone in this state is taken out of play (``excluded``), so its work
+        migrates to the others rather than being quietly stranded in a zone nobody
+        will fly. Where no other drone can reach it, the core counts it as
+        ``no_eligible_owner``: genuinely uncoverable, and said out loud. Either
+        way it is accounted for, which is what the raster exists to guarantee
+        (D-8).
+        """
+        if self.all_grounded:
+            return [state.drone_id for state in self._states]
+        return [state.drone_id for i, state in enumerate(self._states) if self._grounded[i]]
+
+    def per_drone(self, drone_ids: list[int]) -> dict:
+        grounded = set(self.cannot_fly())
+        out = {}
+        for position, drone_id in enumerate(drone_ids):
+            estimate = self._estimates[position] if self._estimates else None
+            out[drone_id] = {
+                # The area the reported energy figures were computed against.
+                # It must equal the drone's own area_m2 in the diagnostics; if it
+                # ever does not, the energy numbers describe a different zone.
+                "estimate_area_m2": (float(estimate.remaining_area_m2)
+                                     if estimate else None),
+                "demand_j": float(estimate.demand_j) if estimate else None,
+                "budget_j": float(estimate.budget_j) if estimate else None,
+                "slack_j": float(self._slack[position]),
+                "ratio": (float(estimate.demand_budget_ratio)
+                          if estimate is not None
+                          and estimate.demand_budget_ratio is not None else None),
+                "status": estimate.status.value if estimate else None,
+                "clamped": bool(self._clamped[position]),
+                "cannot_fly": drone_id in grounded,
+            }
+        return out
+
+
+class LloydEnergyDecomposer(_LloydDecomposer):
+    """``lloyd_energy`` -- the additive power diagram (EXP-07b).
+
+    Differs from ``LloydCvtDecomposer`` in the weight source and NOTHING else:
+    initial sites, tie-breaking, the eligible-cell set, the centroid update, the
+    conservation asserts and the convergence logic are literally the same code.
+    Pinning the weights uniform therefore reproduces the CVT partition bit for
+    bit.
+
+    The converse does NOT hold: equal initial SoC does not imply equal energy
+    weights, because predicted demand varies with zone geometry (ferry, RTH,
+    remaining area). Equal batteries do not make this arm equal to CVT.
+    """
+    name = DecompositionAlgo.LLOYD_ENERGY
+
+    def __init__(self, *, energy_context, drone_states, altitude_m: float,
+                 capacity_j: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._energy_context = energy_context
+        self._drone_states = list(drone_states)
+        self._altitude_m = altitude_m
+        self._capacity_j = capacity_j
+
+    def _weight_policy(self):
+        return EnergyWeightPolicy(
+            self._energy_context, self._drone_states, self._altitude_m,
+            self._settings, self._capacity_j,
+            [self._deploy_poses[s.drone_id] for s in self._drone_states],
+        )

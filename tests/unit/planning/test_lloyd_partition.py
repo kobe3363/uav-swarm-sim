@@ -22,6 +22,8 @@ from uav_swarm_sim.planning.coverage_raster import CoverageRaster
 from uav_swarm_sim.planning.environment_map import EnvironmentMap
 from uav_swarm_sim.planning.lloyd_partition import (
     EligibleCells,
+    LloydPartitioner,
+    UniformWeightPolicy,
     LloydCvtDecomposer,
     aggregate,
     assign_cells,
@@ -460,3 +462,100 @@ def test_a_thick_separator_produces_no_straddling_cells():
     raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
     cells, _ = build_eligible_cells(raster, env, np.array([[5.0, 50.0], [95.0, 50.0]]))
     assert cells.n_spanning_components == 0
+
+
+# --------------------------------------------------------------------------- #
+# the all-infinite-row invariant                                               #
+# --------------------------------------------------------------------------- #
+def test_argmin_is_never_reached_with_every_cost_infinite():
+    """np.argmin on an all-infinite row returns index 0 in silence, handing the
+    cell to whichever drone is first -- possibly one not even allowed to own it.
+    That is the silent nearest-drone assignment the eligible-cell contract
+    forbids, so the assignment step refuses to run on such a row at all."""
+    xy = np.array([[0.5, 0.5], [1.5, 0.5]])
+    sites = np.array([[0.0, 0.5], [4.0, 0.5]])
+    weights = np.zeros(2)
+
+    ok = np.array([[True, False], [False, True]])
+    assert assign_cells(xy, sites, weights, ok).tolist() == [0, 1]
+
+    starved = np.array([[True, False], [False, False]])   # row 1 has no candidate
+    with pytest.raises(AssertionError, match="no finite cost"):
+        assign_cells(xy, sites, weights, starved)
+
+
+def test_a_drone_out_of_play_sends_its_orphans_to_no_eligible_owner():
+    """When the only drone that could reach a region is out of play, that region
+    is genuinely uncoverable. It must be COUNTED and dropped -- not handed to
+    drone 0, and not left with the drone that will never fly it (which would be
+    the same unaccounted coverage loss in a different shape)."""
+    area = box(0.0, 0.0, 300.0, 120.0)
+    wall = box(140.0, 0.0, 160.0, 120.0)                 # two components
+    env = EnvironmentMap(area, [_obstacle(wall)], 0.0)
+    raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
+    poses = np.array([[20.0, 60.0], [280.0, 60.0]])      # one drone per chamber
+    cells, drone_comp = build_eligible_cells(raster, env, poses)
+    assert set(drone_comp.tolist()) == {0, 1}
+    before = cells.n_no_eligible_owner
+
+    class _RightDroneIsOut(UniformWeightPolicy):
+        def excluded(self, n):
+            out = np.zeros(n, dtype=bool)
+            out[1] = True
+            return out
+
+    labels, _, _, _, _, _, kept = LloydPartitioner(SETTINGS, _RightDroneIsOut()).run(
+        cells, poses, drone_comp, Pose(150.0, 0.0, 0.0)
+    )
+    # the right chamber is gone from the work set, and counted
+    assert kept.n_no_eligible_owner == before + 168
+    assert kept.count == cells.count - 168
+    assert (labels == 1).sum() == 0                      # the excluded drone owns nothing
+    assert kept.centroids_xy[:, 0].max() <= 140.0        # nothing crossed the wall
+    assert float(kept.areas_m2.sum()) == pytest.approx(140.0 * 120.0, rel=1e-12)
+
+
+def test_uniform_weights_cannot_produce_an_unowned_row():
+    """The byte-identity claim for the CVT arm: with uniform weights nothing is
+    ever excluded and every allowed cost is finite (squared distances of real
+    coordinates), so the orphan path cannot fire and the cell set that reaches
+    the loop is exactly the one build_eligible_cells produced."""
+    area = box(0.0, 0.0, 300.0, 120.0)
+    wall = box(140.0, 0.0, 160.0, 120.0)
+    env = EnvironmentMap(area, [_obstacle(wall)], 0.0)
+    raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
+    poses = np.array([[20.0, 60.0], [280.0, 60.0]])
+    cells, drone_comp = build_eligible_cells(raster, env, poses)
+
+    assert not UniformWeightPolicy().excluded(2).any()
+    labels, _, weights, _, _, _, kept = LloydPartitioner(SETTINGS, UniformWeightPolicy()).run(
+        cells, poses, drone_comp, Pose(150.0, 0.0, 0.0)
+    )
+    assert kept.count == cells.count
+    assert kept.n_no_eligible_owner == cells.n_no_eligible_owner
+    assert np.isfinite(weights).all()
+    assert np.bincount(labels, minlength=2).sum() == cells.count
+
+
+def test_the_invariants_survive_python_dash_O():
+    """`python -O` strips `assert`, and these guards are the last thing between a
+    silent misassignment and the run output. Verified against the assert form:
+    under -O a starved row returned [0, 0] instead of failing."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import numpy as np\n"
+        "from uav_swarm_sim.planning.lloyd_partition import assign_cells\n"
+        "xy = np.array([[0.5, 0.5], [1.5, 0.5]])\n"
+        "sites = np.array([[0.0, 0.5], [4.0, 0.5]])\n"
+        "starved = np.array([[True, False], [False, False]])\n"
+        "try:\n"
+        "    assign_cells(xy, sites, np.zeros(2), starved)\n"
+        "    print('SILENT')\n"
+        "except AssertionError:\n"
+        "    print('GUARDED')\n"
+    )
+    out = subprocess.run([sys.executable, "-O", "-c", probe],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "GUARDED"

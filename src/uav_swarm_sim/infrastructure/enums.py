@@ -79,18 +79,20 @@ class DecompositionAlgo(Enum):
     central contribution). Note WEIGHTED_VORONOI is a TGC heuristic, NOT a
     Voronoi algorithm -- the label is historical.
 
-    EXP-07a adds LLOYD_CVT: a genuine Lloyd/CVT partition over the EXP-02
-    coverage grid (planning/lloyd_partition.py), which is the reference arm for
-    the energy-weighted power diagram EXP-07b will add beside it on the same code
-    path. It is deliberately NOT in ``metrics.comparison.DECOMPOSITION_PEERS`` --
-    it is reached only by naming it explicitly, so no existing run or sweep can
-    select it.
+    EXP-07 adds the two genuine grid partitioners (planning/lloyd_partition.py).
+    They share ONE code path and differ only in their weight source, so with the
+    weights pinned uniform they produce a bit-identical partition:
+    LLOYD_CVT (uniform weights -- the Voronoi/Lloyd reference arm) and
+    LLOYD_ENERGY (an additive power diagram balancing each drone's energy slack).
+    Neither is in ``metrics.comparison.DECOMPOSITION_PEERS`` -- they are reached
+    only by naming them explicitly, so no existing run or sweep can select one.
     """
     CLASSIC_VORONOI = "classic_voronoi"
     KMEANS = "kmeans"
     TGC_BASIC = "tgc_basic"
     WEIGHTED_VORONOI = "weighted_voronoi"
     LLOYD_CVT = "lloyd_cvt"
+    LLOYD_ENERGY = "lloyd_energy"
 
 
 class PlannerKind(Enum):

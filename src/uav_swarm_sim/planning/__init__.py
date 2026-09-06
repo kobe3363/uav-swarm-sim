@@ -7,7 +7,9 @@ from .geojson_parser import load_area
 from .grid_planner import GridPlanner
 from .gvg_builder import build_gvg
 from .kmeans_heuristic import KMeansHeuristicDecomposer
-from .lloyd_partition import LloydCvtDecomposer, LloydPartitioner
+from .lloyd_partition import (
+    LloydCvtDecomposer, LloydEnergyDecomposer, LloydPartitioner,
+)
 from .launch_site_optimizer import SiteScore, optimize
 from .obstacle_generator import Obstacle, generate
 from .tgc import TGCGraph, build_tgc
@@ -18,6 +20,6 @@ __all__ = [
     "build_gvg", "TGCGraph", "build_tgc", "Decomposer", "imbalance",
     "WeightedTgcDecomposer", "TgcBasicDecomposer", "ClassicVoronoiDecomposer",
     "KMeansHeuristicDecomposer", "SiteScore", "optimize", "boustrophedon",
-    "LloydCvtDecomposer", "LloydPartitioner",
+    "LloydCvtDecomposer", "LloydEnergyDecomposer", "LloydPartitioner",
     "GridPlanner",
 ]
