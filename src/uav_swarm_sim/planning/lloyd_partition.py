@@ -695,7 +695,13 @@ class EnergyWeightPolicy:
             )
             updated[active] -= updated[active].mean()   # invariant to a shift
         self._clamped = active & (np.abs(updated) > self._clamp)
-        updated = np.clip(updated, -self._clamp, self._clamp)
+        # Clip the ACTIVE entries only. Clipping the whole vector would happen to
+        # work today -- the grounded entries still hold 0.0 here, and the -inf is
+        # written below -- but that is an ordering accident: move the sentinel
+        # write one line up and the clamp would silently turn it finite, and a
+        # drone that cannot fly would start winning cells again. The sentinel is
+        # not a participating value, so it never enters the arithmetic at all.
+        updated[active] = np.clip(updated[active], -self._clamp, self._clamp)
         updated[self._grounded] = -np.inf
         return updated
 

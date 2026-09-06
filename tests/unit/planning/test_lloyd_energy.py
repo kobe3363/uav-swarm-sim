@@ -30,6 +30,7 @@ from uav_swarm_sim.planning.energy_balance import (
 from uav_swarm_sim.planning.environment_map import EnvironmentMap
 from uav_swarm_sim.planning.lloyd_partition import (
     EnergyWeightPolicy,
+    assign_cells,
     LloydPartitioner,
     UniformWeightPolicy,
     build_eligible_cells,
@@ -233,3 +234,90 @@ def test_slack_stays_defined_where_the_ratio_is_none(case):
     assert starved.demand_budget_ratio is None
     assert math.isfinite(starved.budget_j - starved.demand_j)
     assert math.isfinite(float(policy._slack[1]))
+
+
+# --------------------------------------------------------------------------- #
+# grounded drones and the loop arithmetic                                      #
+# --------------------------------------------------------------------------- #
+def _three_drone_case(case, levels):
+    """Three drones on the same rectangle: one grounded, two flying on unequal
+    budgets so the weight law is genuinely doing work around it."""
+    poses = [Pose(100.0, 120.0, 0.0), Pose(300.0, 120.0, 0.0), Pose(500.0, 120.0, 0.0)]
+    xy = np.array([[p.x, p.y] for p in poses])
+    states = [DroneEnergyState(i, p, lvl, False)
+              for i, (p, lvl) in enumerate(zip(poses, levels))]
+    settings = replace(SETTINGS, max_iterations=6, site_tolerance_m=0.001)
+    policy = EnergyWeightPolicy(case["ctx"], states, ALT, settings, CAPACITY_J, poses)
+    return policy, settings, xy
+
+
+def test_a_grounded_drone_never_poisons_the_loop_arithmetic(case):
+    """The -inf sentinel must stay OUT of the mean, out of s_bar and out of the
+    clamp. If it leaked into any of them the weights would go nan (mean of -inf)
+    or the sentinel would become finite (clamped) and the grounded drone would
+    start winning cells again -- both silent failures.
+
+    The CVT arm cannot catch this: it has no weights at all.
+    """
+    policy, settings, xy = _three_drone_case(
+        case, [CAPACITY_J, 0.55 * CAPACITY_J, 0.02 * CAPACITY_J]
+    )
+    assert policy.cannot_fly() == [2]
+    assert not policy.all_grounded
+
+    labels, sites, weights, converged, iterations, _ = LloydPartitioner(
+        settings, policy
+    ).run(case["cells"], xy, np.zeros(3, dtype=np.int32), Pose(300.0, 0.0, 0.0))
+
+    assert iterations >= 2, "the interaction only shows up across iterations"
+    live = weights[:2]
+    assert np.isfinite(live).all() and not np.isnan(live).any()   # no nan leak
+    assert weights[2] == -np.inf                                  # sentinel intact
+    assert np.isfinite(policy._slack[:2]).all()                   # s_bar finite
+    assert np.abs(live).max() <= policy._clamp + 1e-9             # clamp still binds
+    # the grounded drone owns nothing, and every cell still has exactly one owner
+    counts = np.bincount(labels, minlength=3)
+    assert counts[2] == 0
+    assert counts.sum() == case["cells"].count
+    areas = np.bincount(labels, weights=case["cells"].areas_m2, minlength=3)
+    assert float(areas.sum()) == pytest.approx(case["cells"].total_area_m2, rel=1e-12)
+    assert areas[2] == 0.0
+
+
+def test_the_grounded_drone_owns_nothing_in_every_iteration_not_just_the_first(case):
+    """Re-running the assignment with the weights from each iteration must keep
+    the grounded drone empty throughout -- a sentinel that decayed after the
+    first sweep would leave work with a drone that cannot fly."""
+    policy, settings, xy = _three_drone_case(
+        case, [CAPACITY_J, 0.55 * CAPACITY_J, 0.02 * CAPACITY_J]
+    )
+    allowed = np.ones((case["cells"].count, 3), dtype=bool)
+    weights = policy.initial(3)
+    area = np.full(3, case["cells"].total_area_m2 / 3.0)
+    centroids = xy.astype(float)
+
+    for sweep in range(4):
+        labels = assign_cells(case["cells"].centroids_xy, xy, weights, allowed)
+        assert np.bincount(labels, minlength=3)[2] == 0, f"sweep {sweep}"
+        weights = policy.update(weights, None, area, centroids, xy)
+        assert weights[2] == -np.inf, f"sweep {sweep}"
+        assert np.isfinite(weights[:2]).all(), f"sweep {sweep}"
+
+
+def test_when_nobody_can_fly_nothing_is_grounded_and_the_fact_is_reported(case):
+    """Grounding everyone would make every cost +inf, and argmin would hand the
+    whole survey to the lowest id in silence. Ground no one and say so instead."""
+    policy, settings, xy = _three_drone_case(
+        case, [0.02 * CAPACITY_J, 0.02 * CAPACITY_J, 0.02 * CAPACITY_J]
+    )
+    assert policy.all_grounded is True
+    assert policy.cannot_fly() == [0, 1, 2]
+
+    weights = policy.initial(3)
+    assert np.isfinite(weights).all()          # no sentinel at all
+    labels, _, weights, _, _, _ = LloydPartitioner(settings, policy).run(
+        case["cells"], xy, np.zeros(3, dtype=np.int32), Pose(300.0, 0.0, 0.0)
+    )
+    assert np.isfinite(weights).all() and not np.isnan(weights).any()
+    assert np.bincount(labels, minlength=3).sum() == case["cells"].count
+    assert all(d["cannot_fly"] for d in policy.per_drone([0, 1, 2]).values())
