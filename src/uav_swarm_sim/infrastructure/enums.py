@@ -17,10 +17,13 @@ class PlatformType(Enum):
 
 
 class AgentState(Enum):
-    """Eight-state behavioral automaton.
+    """Eight-state behavioral automaton (plus one flag-gated terminal state).
 
     Base set (C. Liu et al. 2026): S0_IDLE, S1_TRANSIT, S2_MISSION, S_FAIL.
     Author's extensions: S3_RTH, S_OBS, S_SWAP, S_FERRY.
+    EXP-04 extension: S_LANDED -- the terminal "landed on the same battery"
+    state, entered ONLY under ``mission.no_swap_mode``. Legacy (flag-off) runs
+    never enter it, so every legacy history is drawn from the eight states.
     """
     S0_IDLE = "S0_IDLE"
     S1_TRANSIT = "S1_TRANSIT"
@@ -30,6 +33,9 @@ class AgentState(Enum):
     S_OBS = "S_OBS"
     S_FAIL = "S_FAIL"
     S_FERRY = "S_FERRY"  # repositioning between coverage strips, camera OFF (non-productive flight)
+    # EXP-04 (mission.no_swap_mode): touched down at base with the sortie's own
+    # battery -- absorbing in the physical layer (no swap, no reset, no relaunch).
+    S_LANDED = "S_LANDED"
 
     @property
     def is_airborne(self) -> bool:
@@ -91,6 +97,11 @@ class EventType(Enum):
     OBSTACLE_THREAT = "OBSTACLE_THREAT"
     ZONE_COMPLETE = "ZONE_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
+    # EXP-04: an agent entered S_LANDED (published exactly once per agent).
+    # Payload: agent_id, work_released (bool: uncovered legs were still
+    # assigned), cov_idx, n_cov_legs. The engine records it; the reallocation
+    # that consumes it is EXP-08's.
+    UAV_RETIRED = "UAV_RETIRED"
 
 
 class TierStrategy(Enum):
@@ -150,6 +161,21 @@ class Outcome(Enum):
                           (livelock / stall halt / the sim.max_timesteps
                           ceiling -- an executor problem, not geometry). Default
                           outcome.
+
+    Under ``mission.no_swap_mode`` (EXP-04, author decision C-4) the labels are
+    re-derived from the same-battery lifecycle, evaluated only once the fleet
+    has SETTLED (every surviving drone is in S_LANDED, or parked in S0_IDLE
+    without ever having had a plan):
+      SUCCESS  -- A_plannable raster coverage >= the completion gate AND all
+                  drones safely landed (reaching the gate while airborne is
+                  not yet success).
+      PARTIAL  -- all drones safely landed, coverage below the gate.
+      FAILED   -- a drone was lost (battery reached 0 while airborne, or a
+                  hazard failure); decided when the survivors have settled.
+      INCOMPLETE -- the time cap or a stall halt hit with drones still airborne
+                  (never relabelled as a safe PARTIAL). ``pool_exhausted`` is
+                  never a terminal cause in this mode. Coverage is reported as
+                  its own metric, never as the success switch.
     """
     MISSION_SUCCESS = "MISSION_SUCCESS"
     MISSION_PARTIAL = "MISSION_PARTIAL"
@@ -200,5 +226,6 @@ class TelemetryEventKind(Enum):
     SWAP_REQ = "SWAP_REQ"      # entered S_SWAP (battery swap requested)
     SWAP_DONE = "SWAP_DONE"    # left S_SWAP -> S0_IDLE (swap complete)
     FAIL = "FAIL"              # entered S_FAIL (drone lost)
+    LANDED = "LANDED"          # entered S_LANDED (EXP-04 same-battery touchdown, terminal)
     LEG_REPAIR = "LEG_REPAIR"  # pre-flight trajectory repair (Task 2.5 Q2 hook)
     TERMINAL = "TERMINAL"      # mission terminal verdict (success / failure)

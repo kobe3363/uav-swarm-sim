@@ -323,6 +323,12 @@ class MissionConfig:
     n_targets: int
     target_coordinates: tuple[tuple[float, float], ...]
     weight_targets_by_battery: bool
+    # EXP-04: finite-battery lifecycle without swaps. A returning drone lands
+    # in the terminal S_LANDED state (no swap request, no battery.reset, no
+    # relaunch) and the mission outcome is derived from physical raster
+    # coverage plus the fleet's landed/lost status (see Outcome docstring).
+    # Default OFF => the legacy S3 -> S_SWAP -> S0 cycle is byte-identical.
+    no_swap_mode: bool = False
 
 
 @dataclass(frozen=True)
@@ -669,6 +675,12 @@ def _build(raw: dict, config_hash: str) -> Config:
     )
 
     m = raw.get("mission", {})
+    # EXP-04: strict boolean -- bool("false") is True, and a mis-typed value
+    # must never silently switch the outcome semantics (same rule as
+    # sensor.photogrammetry.enabled). Absent => False (legacy swap cycle).
+    no_swap_raw = m.get("no_swap_mode", False)
+    if not isinstance(no_swap_raw, bool):
+        raise ConfigError("mission.no_swap_mode must be a boolean")
     mission = MissionConfig(
         type=MissionType(str(m.get("type", "coverage"))),
         n_targets=int(m.get("n_targets", 30)),
@@ -676,6 +688,7 @@ def _build(raw: dict, config_hash: str) -> Config:
             (float(xy[0]), float(xy[1])) for xy in (m.get("target_coordinates") or [])
         ),
         weight_targets_by_battery=bool(m.get("weight_targets_by_battery", True)),
+        no_swap_mode=no_swap_raw,
     )
 
     do = raw.get("dynamic_obstacles", {})
@@ -739,6 +752,21 @@ def _validate(cfg: Config, raw: dict) -> None:
             "fleet.total_reserve_batteries must be >= 0 (or omitted for unbounded), "
             f"got {cfg.fleet.total_reserve_batteries}"
         )
+
+    # EXP-04: the no-swap outcome is judged on PHYSICAL raster coverage of
+    # A_plannable (EXP-02), never on leg credit, and only an area-coverage
+    # mission owns cells that a retiring drone can release.
+    if cfg.mission.no_swap_mode:
+        if cfg.mission.type is not MissionType.COVERAGE:
+            raise ConfigError(
+                "mission.no_swap_mode requires mission.type = coverage "
+                f"(got {cfg.mission.type.value})"
+            )
+        if not cfg.coverage.raster_enabled:
+            raise ConfigError(
+                "mission.no_swap_mode requires coverage.raster_enabled = true "
+                "(outcome is derived from physical raster coverage)"
+            )
 
     bz = cfg.battery_zones
     if not (1.0 > bz.high > bz.nominal > bz.critical > 0.0):

@@ -7,6 +7,11 @@ Guards are evaluated top-down (first match wins). The closed loop is structural:
 S3 -> S_SWAP -> S0 is realized here. S_FAIL is terminal in the *physical*
 simulation (the agent is removed, its zone redistributed); the S_FAIL -> S0
 replacement closure exists only in the SMDP analysis layer (Batch 5), by design.
+
+EXP-04 (``no_swap_mode``): with the flag on, touchdown in S3_RTH goes to the
+terminal S_LANDED state instead of S_SWAP / S0_IDLE -- the drone keeps its own
+battery and never relaunches. S_LANDED has no outgoing edge in the physical
+layer; like S_FAIL, its S0 closure exists only in the SMDP analysis layer.
 """
 from __future__ import annotations
 
@@ -63,6 +68,7 @@ ALLOWED: set[tuple[AgentState, AgentState]] = {
     (S.S3_RTH, S.S_OBS),
     (S.S3_RTH, S.S_SWAP),
     (S.S3_RTH, S.S0_IDLE),
+    (S.S3_RTH, S.S_LANDED),  # EXP-04 no_swap_mode only
     (S.S3_RTH, S.S_FAIL),
     (S.S_OBS, S.S1_TRANSIT),
     (S.S_OBS, S.S2_MISSION),
@@ -77,7 +83,11 @@ class StateMachine:
     ALLOWED = ALLOWED
 
     def __init__(
-        self, zones_cfg: BatteryZonesConfig, *, zone_demotion: bool = False
+        self,
+        zones_cfg: BatteryZonesConfig,
+        *,
+        zone_demotion: bool = False,
+        no_swap_mode: bool = False,
     ) -> None:
         self._zones = zones_cfg
         # EM-01 B1: when True (rth.energy_map.zone_demotion, requires decide) the
@@ -85,6 +95,9 @@ class StateMachine:
         # governs the normal energy return. Default False => the guard is byte-
         # identical to pre-B1 and every existing call site is unchanged.
         self._zone_demotion = zone_demotion
+        # EXP-04 (mission.no_swap_mode): touchdown is terminal (S_LANDED).
+        # Default False => the S3_RTH branch is byte-identical to pre-EXP-04.
+        self._no_swap = no_swap_mode
 
     def _coverage_guards(self, s: AgentState, ctx: AgentContext) -> Transition | None:
         """Triggers that interrupt coverage from EITHER S2_MISSION or S_FERRY.
@@ -156,6 +169,10 @@ class StateMachine:
             if ctx.threat_flag:
                 return Transition(s, S.S_OBS, "obstacle_threat")
             if ctx.landed_at_base:
+                if self._no_swap:
+                    # EXP-04: same-battery lifecycle -- touchdown is terminal
+                    # whether or not the plan was finished (no swap, no relaunch).
+                    return Transition(s, S.S_LANDED, "landed")
                 if ctx.own_plan_incomplete:
                     return Transition(s, S.S_SWAP, "swap")
                 return Transition(s, S.S0_IDLE, "mission_done")
@@ -172,5 +189,6 @@ class StateMachine:
                 return Transition(s, S.S0_IDLE, "swap_done")  # closes S3 -> S_SWAP -> S0
             return None
 
-        # S_FAIL: terminal in the physical layer
+        # S_FAIL and S_LANDED (EXP-04): terminal in the physical layer -- no
+        # guard (swap_done, launch_command, failure_flag) ever leaves them.
         return None

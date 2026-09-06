@@ -85,6 +85,8 @@ def _classify(from_state, to_state, reason) -> TelemetryEventKind:
         return TelemetryEventKind.SWAP_REQ
     if to_state is AgentState.S_FAIL:
         return TelemetryEventKind.FAIL
+    if to_state is AgentState.S_LANDED:
+        return TelemetryEventKind.LANDED  # EXP-04 terminal touchdown
     if from_state is AgentState.S_SWAP and reason == "swap_done":
         return TelemetryEventKind.SWAP_DONE
     return TelemetryEventKind.STATE

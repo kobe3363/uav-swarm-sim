@@ -283,6 +283,10 @@ class SimulationEngine:
         # --- mission planning: area coverage OR target visit -------------- #
         self._mission_type = cfg.mission.type
         self._weight_targets = cfg.mission.weight_targets_by_battery
+        # EXP-04: same-battery lifecycle (validated in config to require an
+        # area-coverage mission with the EXP-02 raster). Default False => every
+        # branch keyed on it below is the pre-EXP-04 code path.
+        self._no_swap = cfg.mission.no_swap_mode
         self.coverage_raster = None
         if (self._mission_type is MissionType.COVERAGE
                 and cfg.coverage.raster_enabled):
@@ -329,7 +333,8 @@ class SimulationEngine:
             self.plans = {}
 
         # support objects
-        sm = StateMachine(cfg.battery_zones, zone_demotion=cfg.rth.energy_map.zone_demotion)
+        sm = StateMachine(cfg.battery_zones, zone_demotion=cfg.rth.energy_map.zone_demotion,
+                          no_swap_mode=self._no_swap)
         self.bus = EventBus()
         self.history = StateHistory()
         # Phase 3 telemetry: optional, OFF by default, a read-only probe. When on,
@@ -424,6 +429,12 @@ class SimulationEngine:
             )
         )
         self.replan_times: list[float] = []
+        # EXP-04 terminal diagnostics. ``_terminal_reason`` is filled in both
+        # modes (the pre-existing telemetry reason strings); the other two only
+        # ever receive entries under no_swap_mode.
+        self._terminal_reason: str | None = None
+        self._retirements: list[tuple[int, float, bool]] = []   # (agent_id, t, work_released)
+        self._losses: list[tuple[int, float, str]] = []         # (agent_id, t, cause)
 
         # Phase 3: bind telemetry to the live fleet (so it can read pose/battery/
         # energy) and stamp the run header, before any sojourn opens.
@@ -490,11 +501,17 @@ class SimulationEngine:
             # are reported via MissionResult.stalled_agents.
             if outcome is None and self._stall is not None and self._stall.stalled:
                 outcome = Outcome.MISSION_INCOMPLETE
+                self._terminal_reason = "stall_livelock"
             if outcome is not None:
                 self._outcome = outcome
                 complete = outcome is Outcome.MISSION_SUCCESS
                 break
         record("dt_loop", perf_counter() - _loop_t0)
+        if self._terminal_reason is None:
+            # fell out of the dt loop: the sim.max_timesteps cap. Drones still
+            # airborne are reported as such -- never landed by fiat (EXP-04).
+            self._terminal_reason = "max_timesteps"
+        airborne_at_end = tuple(sorted(a.id for a in self.fleet.airborne()))
 
         t_end = t
         self.history.finalize(t_end)
@@ -531,7 +548,12 @@ class SimulationEngine:
                              cfg.config_hash, self._outcome, stalled_agents=stalled,
                              skipped_legs=self._skipped_legs(),
                              photo_events=self._photo_events(),
-                             target_coverage_frac=self._target_coverage_frac())
+                             target_coverage_frac=self._target_coverage_frac(),
+                             terminal_reason=self._terminal_reason,
+                             airborne_at_end=airborne_at_end,
+                             retired_agents=tuple(aid for aid, _, _ in self._retirements),
+                             work_releases=tuple((aid, rt) for aid, rt, rel in self._retirements if rel),
+                             losses=tuple(self._losses))
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
@@ -577,6 +599,11 @@ class SimulationEngine:
             if e.type is EventType.FAILURE:
                 aid = e.payload.get("agent_id")
                 self.fleet.kill(aid, t)
+                if self._no_swap and all(l[0] != aid for l in self._losses):
+                    # EXP-04: a hazard loss counts as FAILED once the fleet
+                    # settles (a depletion re-published as FAILURE was already
+                    # recorded with its own cause and is not double-counted).
+                    self._losses.append((aid, t, "hazard_failure"))
                 self._redistribute(e, t)
             elif e.type is EventType.NEW_TASK:
                 self._redistribute(e, t)
@@ -603,10 +630,20 @@ class SimulationEngine:
                 a = self.fleet.agents.get(e.payload.get("agent_id"))
                 if a is not None:
                     a.signal_swap_done()
+            elif e.type is EventType.UAV_RETIRED:
+                # EXP-04: record the same-battery touchdown and the one-time
+                # release of its uncovered work. Deliberately NO redistribution
+                # here -- re-partitioning the released cells among the
+                # remaining workers is EXP-08's trigger policy.
+                self._retirements.append((
+                    e.payload.get("agent_id"), e.t, bool(e.payload.get("work_released")),
+                ))
             # OBSTACLE_THREAT is informational (signal already set by the monitor)
 
     def _redistribute(self, e: Event, t: float) -> None:
-        active = self.fleet.active()
+        # EXP-04: only non-retired survivors can take work; == active() in
+        # every legacy run (nobody retires without no_swap_mode).
+        active = self.fleet.workers()
         if not active:
             return
         if self._mission_type is MissionType.TARGET_VISIT:
@@ -724,7 +761,13 @@ class SimulationEngine:
         ``battery.frac``, not on S_FAIL membership, so hazard-induced kills (which
         deliberately populate S_FAIL for the elevated-hazard Monte-Carlo / SMDP
         statistics) are naturally excluded and never halt the run.
+
+        EXP-04: under ``mission.no_swap_mode`` the whole evaluation is replaced
+        by ``_evaluate_terminal_no_swap`` (same-battery lifecycle semantics).
         """
+        if self._no_swap:
+            return self._evaluate_terminal_no_swap(t)
+
         cov = self._coverage_frac()
         coverage_complete = cov >= self._coverage_complete_frac()
 
@@ -734,6 +777,7 @@ class SimulationEngine:
         if depleted:
             for a in depleted:
                 self.fleet.kill(a.id, t)        # freeze mid-flight in S_FAIL
+            self._terminal_reason = "battery_depleted"
             if self.telemetry is not None:
                 self.telemetry.record_terminal(
                     t, Outcome.MISSION_FAILED, "battery_depleted",
@@ -741,6 +785,7 @@ class SimulationEngine:
             return Outcome.MISSION_FAILED
         # (b) shared swap reserve exhausted before coverage is complete.
         if self.swap_station.pool_exhausted and not coverage_complete:
+            self._terminal_reason = "pool_exhausted"
             if self.telemetry is not None:
                 self.telemetry.record_terminal(
                     t, Outcome.MISSION_FAILED, "pool_exhausted", coverage_frac=cov)
@@ -755,6 +800,7 @@ class SimulationEngine:
         # whenever the flag is off (skipped is then always empty).
         skipped = self._skipped_legs()
         if skipped and self._mission_complete():
+            self._terminal_reason = "coverage_complete_with_gaps"
             if self.telemetry is not None:
                 self.telemetry.record_terminal(
                     t, Outcome.MISSION_PARTIAL, "coverage_complete_with_gaps",
@@ -768,12 +814,76 @@ class SimulationEngine:
         # guards the t=0 / empty-plan edge; AND-ing the area gate keeps the
         # explicit Task 2.2 coverage condition and never relaxes the timing.
         if coverage_complete and self._mission_complete():
+            self._terminal_reason = "coverage_complete"
             if self.telemetry is not None:
                 self.telemetry.record_terminal(
                     t, Outcome.MISSION_SUCCESS, "coverage_complete", coverage_frac=cov)
             return Outcome.MISSION_SUCCESS
 
         return None
+
+    # ------------------------------------------------------------------ #
+    # EXP-04: same-battery (no-swap) lifecycle terminal evaluation         #
+    # ------------------------------------------------------------------ #
+    def _fleet_settled(self) -> bool:
+        """True once no surviving drone can still act: every active agent is
+        in the terminal S_LANDED state, or parked in S0_IDLE without a plan
+        (never launched -- e.g. no zone). A drone in any other state, or an
+        S0_IDLE drone still armed to launch, keeps the mission open. An empty
+        active set (everyone lost) is settled."""
+        for a in self.fleet.active():
+            if a.state is AgentState.S_LANDED:
+                continue
+            if (a.state is AgentState.S0_IDLE and not a._launch_ready
+                    and a.plan is None):
+                continue
+            return False
+        return True
+
+    def _evaluate_terminal_no_swap(self, t: float) -> Outcome | None:
+        """Author decision C-4 (EXP-04). Evaluated once per tick after event
+        routing, like the legacy check, but the outcome is decided ONLY when
+        the fleet has settled:
+
+          * FAILED  -- any drone was lost: battery reached 0 while airborne
+                       (killed here, cause "battery_depleted") or a hazard
+                       failure (S_FAIL via FAILURE). The run does NOT halt on
+                       the loss: the survivors keep working and land, so their
+                       coverage and safe touchdowns are measured; a depletion
+                       is re-published as FAILURE so the existing redistribution
+                       path treats it exactly like a hazard loss.
+          * SUCCESS -- fleet settled, no loss, A_plannable raster coverage at or
+                       above the completion gate. Reaching the gate while any
+                       drone is still airborne is NOT success: the return leg and
+                       touchdown must be flown (and paid for) first.
+          * PARTIAL -- fleet settled, no loss, coverage below the gate.
+          * None    -- otherwise (still flying). The sim.max_timesteps cap and a
+                       stall halt therefore leave MISSION_INCOMPLETE with the
+                       airborne drones reported, never a fictitious landing.
+
+        ``pool_exhausted`` is never consulted: no SWAP_REQUEST is ever issued
+        in this mode, so the reserve size cannot influence the outcome.
+        """
+        cov = self._coverage_frac()
+        depleted = [a for a in self.fleet.airborne() if a.battery.frac <= 0.0]
+        for a in depleted:
+            self.fleet.kill(a.id, t)            # physics: it is down, mid-flight
+            self._losses.append((a.id, t, "battery_depleted"))
+            self.bus.publish(Event(EventType.FAILURE, t, {"agent_id": a.id}))
+        if not self._fleet_settled():
+            return None
+        if self._losses or self.fleet.n_failed > 0:
+            outcome, reason = Outcome.MISSION_FAILED, "uav_lost"
+        elif cov >= self._coverage_complete_frac():
+            outcome, reason = Outcome.MISSION_SUCCESS, "coverage_complete_all_landed"
+        else:
+            outcome, reason = Outcome.MISSION_PARTIAL, "all_landed_below_gate"
+        self._terminal_reason = reason
+        if self.telemetry is not None:
+            self.telemetry.record_terminal(
+                t, outcome, reason, coverage_frac=cov,
+                n_retired=len(self._retirements), n_lost=len(self._losses))
+        return outcome
 
     def _coverage_frac(self) -> float:
         if self._mission_type is MissionType.TARGET_VISIT:
