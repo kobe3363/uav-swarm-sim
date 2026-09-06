@@ -64,6 +64,16 @@ class Redistributor:
         by_layer = self._layer_graphs.by_layer
         return by_layer.get(layer) or by_layer[0]
 
+    @property
+    def decomposer(self):
+        """The decomposer this redistributor actually runs.
+
+        Read-only, and deliberately public: it is NOT necessarily the run's
+        decomposer (see the construction in SimulationEngine), so a consumer that
+        reports which algorithm produced the current zones has to be able to ask.
+        """
+        return self._dec
+
     def handle(
         self,
         event: Event,

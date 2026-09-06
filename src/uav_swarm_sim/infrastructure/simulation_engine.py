@@ -738,6 +738,20 @@ class SimulationEngine:
             return
         new_part, new_plans = self.redistributor.handle(e, self.fleet, self.partition, self.plans, t)
         self.replan_times.append(self.redistributor.last_replan_time_s)
+        # EXP-07: redistribution runs its OWN decomposer -- weighted TGC unless
+        # the run's decomposer is one of its subclasses -- so from here on the
+        # zones are no longer the ones the grid partitioner produced. The
+        # partition diagnostics stay (they are the honest record of how planning
+        # started) but are stamped with what replaced them, so no reader can take
+        # them for a description of the zones actually being flown. Marked once:
+        # the first supersession is the one that ends the recorded partition.
+        diagnostics = getattr(self, "partition_diagnostics", None)
+        if diagnostics is not None and getattr(diagnostics, "superseded_by", None) is None:
+            diagnostics.superseded_by = {
+                "decomposer": type(self.redistributor.decomposer).__name__,
+                "trigger": e.type.value if hasattr(e.type, "value") else str(e.type),
+                "t_s": float(t),
+            }
         self.partition = new_part
         self.plans = new_plans
         for a in active:

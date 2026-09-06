@@ -14,6 +14,7 @@ import pytest
 from shapely.geometry import box, mapping
 
 from uav_swarm_sim.infrastructure.config import load_config
+from uav_swarm_sim.infrastructure.core_types import DroneStateView
 from uav_swarm_sim.infrastructure.enums import DecompositionAlgo, PlannerKind
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
@@ -219,3 +220,54 @@ def test_the_cli_default_is_unchanged_outside_experiment_mode():
     for resolver in (resolve_algo, replay_resolve):
         assert resolver(relaxed, None) is DecompositionAlgo.WEIGHTED_VORONOI
         assert resolver(relaxed, "lloyd_cvt") is DecompositionAlgo.LLOYD_CVT
+
+
+# --------------------------------------------------------------------------- #
+# reporting integrity: the record must not outlive the partition it describes  #
+# --------------------------------------------------------------------------- #
+def test_a_target_area_is_refused_rather_than_silently_ignored(overrides):
+    """The work atoms are grid cells, so this partitioner cannot restrict itself
+    to a sub-area -- it would re-partition the whole remaining raster. Ignoring a
+    contract argument in silence is how a caller ends up believing it asked for
+    something it did not get, so the call fails loudly instead. Redistributor is
+    exactly that caller; a Lloyd-aware redistributor is EXP-08 work."""
+    _, engine = _engine(overrides)
+    drones = [DroneStateView(i, 1.0, p) for i, p in enumerate(engine.deploy_poses)]
+
+    with pytest.raises(NotImplementedError, match="target_area"):
+        engine.decomposer.decompose(None, engine.env, drones,
+                                    target_area=box(0.0, 0.0, 100.0, 100.0))
+    # the ordinary whole-grid call is unaffected
+    assert engine.decomposer.decompose(None, engine.env, drones).total_area_m2 > 0.0
+
+
+def test_the_partition_record_is_stamped_when_redistribution_replaces_it(overrides):
+    """Redistribution runs its OWN decomposer, so after it fires the zones are no
+    longer the ones recorded here. The record stays -- it is the honest account
+    of how planning started -- but carries what replaced it, so nobody can read
+    it as a description of the zones actually being flown."""
+    from uav_swarm_sim.execution.events import Event
+    from uav_swarm_sim.infrastructure.enums import EventType
+
+    _, engine = _engine(overrides)
+    assert engine.partition_diagnostics.superseded_by is None
+    assert engine.partition_diagnostics.to_json()["superseded_by"] is None
+
+    engine._redistribute(Event(EventType.NEW_TASK, 12.5, {}), 12.5)
+
+    stamp = engine.partition_diagnostics.superseded_by
+    assert stamp is not None
+    assert stamp["decomposer"] == type(engine.redistributor.decomposer).__name__
+    assert stamp["decomposer"] != "LloydCvtDecomposer"      # the known limitation
+    assert stamp["trigger"] == "NEW_TASK" and stamp["t_s"] == 12.5
+    json.dumps(engine.partition_diagnostics.to_json(), allow_nan=False)
+
+
+def test_the_stamp_records_the_first_supersession_only(overrides):
+    from uav_swarm_sim.execution.events import Event
+    from uav_swarm_sim.infrastructure.enums import EventType
+
+    _, engine = _engine(overrides)
+    engine._redistribute(Event(EventType.NEW_TASK, 5.0, {}), 5.0)
+    engine._redistribute(Event(EventType.NEW_TASK, 9.0, {}), 9.0)
+    assert engine.partition_diagnostics.superseded_by["t_s"] == 5.0

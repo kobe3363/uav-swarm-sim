@@ -94,6 +94,10 @@ class PartitionDiagnostics:
     settings: dict
     cells: dict
     per_drone: dict = field(default_factory=dict)
+    # Set by the engine if redistribution later replaces this partition with one
+    # from a different decomposer. Present so the record cannot be mistaken for a
+    # description of the zones actually flown; absent means it still stands.
+    superseded_by: dict | None = None
 
     def to_json(self) -> dict:
         return {
@@ -105,6 +109,7 @@ class PartitionDiagnostics:
             "settings": dict(self.settings),
             "cells": dict(self.cells),
             "per_drone": {str(k): dict(v) for k, v in self.per_drone.items()},
+            "superseded_by": dict(self.superseded_by) if self.superseded_by else None,
         }
 
 
@@ -481,6 +486,18 @@ class _LloydDecomposer(Decomposer):
         self, tgc: TGCGraph, env: EnvironmentMap, drones: list[DroneStateView],
         target_area: Polygon | None = None,
     ) -> Partition:
+        if target_area is not None:
+            # The work atoms are coverage grid cells, so this partitioner has no
+            # way to honour a sub-area: it would re-partition the WHOLE remaining
+            # raster. Silently ignoring a contract argument is how the caller ends
+            # up believing it asked for something it did not get -- notably
+            # Redistributor, which passes the affected area. Fail loudly instead;
+            # a Lloyd-aware redistributor is EXP-08 work.
+            raise NotImplementedError(
+                f"{type(self).__name__} partitions the whole remaining coverage "
+                "grid and cannot restrict itself to target_area; a partial "
+                "re-partition needs the EXP-08 redistribution path"
+            )
         t0 = time.perf_counter()
         ordered = sorted(drones, key=lambda d: d.id)          # sites in id order
         ids = [d.id for d in ordered]
