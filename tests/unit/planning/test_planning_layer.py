@@ -1,6 +1,8 @@
 """Planning-layer tests (isolated + small integration)."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import math
 
 import networkx as nx
@@ -266,3 +268,27 @@ def test_forward_overlap_does_not_change_coverage_path(config_path):
     assert higher.connectors == lower.connectors
     assert higher.length_m == lower.length_m
     assert higher.est_energy_j == lower.est_energy_j
+
+
+def test_weighted_equals_tgc_basic_for_a_homogeneous_fleet(env, tgc):
+    """CLAUDE.md's CRITICAL NULL, previously unpinned: with identical drones
+    (battery_frac == 1.0) the battery weighting has nothing to differentiate, so
+    ``weighted_voronoi`` must reproduce ``tgc_basic`` BYTE-IDENTICALLY. Only a
+    diverged fleet may separate them -- which the second half asserts, so the
+    test cannot pass by both decomposers being trivially equal."""
+    rng = np.random.default_rng(11)
+    drones = _drones(env, 4, rng, battery=[1.0, 1.0, 1.0, 1.0])
+    if len(drones) < 4:
+        pytest.skip("not enough free space sampled")
+
+    weighted = WeightedTgcDecomposer().decompose(tgc, env, drones)
+    basic = TgcBasicDecomposer().decompose(tgc, env, drones)
+    assert set(weighted.zones) == set(basic.zones)
+    for did in weighted.zones:
+        assert weighted.zones[did].polygon.wkt == basic.zones[did].polygon.wkt
+
+    diverged = [replace(d, battery_frac=b)
+                for d, b in zip(drones, [1.0, 0.3, 1.0, 0.3])]
+    w_div = WeightedTgcDecomposer().decompose(tgc, env, diverged)
+    b_div = TgcBasicDecomposer().decompose(tgc, env, diverged)
+    assert any(w_div.zones[d].polygon.wkt != b_div.zones[d].polygon.wkt for d in w_div.zones)

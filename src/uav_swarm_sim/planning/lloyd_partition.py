@@ -117,6 +117,7 @@ class EligibleCells:
     component: np.ndarray       # (N,) free-space connected-component id
     n_rth_unreachable: int      # dropped: E_home non-finite at the cell
     n_no_eligible_owner: int    # dropped: no drone shares the cell's component
+    n_spanning_components: int = 0   # kept, but straddling >1 component (reported)
 
     @property
     def count(self) -> int:
@@ -145,6 +146,26 @@ def _free_space_parts(env: EnvironmentMap | None) -> list[Polygon]:
     if isinstance(space, Polygon):
         return [space]
     return [g for g in getattr(space, "geoms", []) if isinstance(g, Polygon) and g.area > 0.0]
+
+
+def _count_cells_spanning_components(parts: list[Polygon], geoms: np.ndarray) -> int:
+    """Cells whose geometry lies in more than one free-space component.
+
+    A cell is the atom of this partition, so one straddling a separator thinner
+    than a cell is assigned WHOLE to the component its interior point falls in;
+    the sliver on the far side is then planned for a drone that cannot fly to
+    it. Splitting cells would change the raster's own cell set, so EXP-07a keeps
+    the atom and COUNTS the condition instead -- bounded by one cell area per
+    occurrence, and never silent.
+    """
+    if len(parts) <= 1 or len(geoms) == 0:
+        return 0
+    tree = STRtree(np.array(parts, dtype=object))
+    hit_cell, _ = tree.query(geoms, predicate="intersects")
+    if len(hit_cell) == 0:
+        return 0
+    counts = np.bincount(hit_cell, minlength=len(geoms))
+    return int((counts > 1).sum())
 
 
 def _component_of_points(parts: list[Polygon], xy: np.ndarray) -> np.ndarray:
@@ -225,7 +246,7 @@ def build_eligible_cells(
     if len(geoms) == 0:
         return (
             EligibleCells(geoms, np.zeros((0, 2)), cells.areas_m2,
-                          np.zeros(0, dtype=np.int32), 0, 0),
+                          np.zeros(0, dtype=np.int32), 0, 0, 0),
             drone_comp,
         )
 
@@ -245,9 +266,10 @@ def build_eligible_cells(
     reachable_components = np.unique(drone_comp[drone_comp >= 0])
     owned = np.isin(cell_comp, reachable_components)
     n_orphan = int((~owned).sum())
+    n_spanning = _count_cells_spanning_components(parts, geoms[owned])
     return (
         EligibleCells(geoms[owned], xy[owned], areas[owned],
-                      cell_comp[owned].astype(np.int32), n_rth, n_orphan),
+                      cell_comp[owned].astype(np.int32), n_rth, n_orphan, n_spanning),
         drone_comp,
     )
 
@@ -507,6 +529,7 @@ class _LloydDecomposer(Decomposer):
                 "assigned": int(counts.sum()),
                 "rth_unreachable": cells.n_rth_unreachable,
                 "no_eligible_owner": cells.n_no_eligible_owner,
+                "spanning_components": cells.n_spanning_components,
                 "area_m2": total,
             },
             per_drone={

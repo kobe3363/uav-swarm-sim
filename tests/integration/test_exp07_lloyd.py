@@ -191,3 +191,31 @@ def test_lloyd_default_init_seeds_where_the_drones_stage(overrides):
                     + (p.y - engine.launch_pose.y) ** 2) ** 0.5, 6)
              for p in engine.deploy_poses}
     assert len(radii) == 1
+
+
+def test_the_cli_default_algo_cannot_stand_in_for_a_named_one_in_experiment_mode():
+    """D-3 at the CLI boundary. The engine guard only sees `algo is None`, and a
+    CLI default arrives as a real algorithm -- so an experiment-mode run that
+    omitted `--algo` would have recorded `weighted_voronoi` as though the user
+    had chosen it. Both entry points must refuse instead."""
+    from uav_swarm_sim.experiments.run_replay import resolve_algo as replay_resolve
+    from uav_swarm_sim.experiments.run_single_mission import resolve_algo
+
+    strict = load_config("config/default.yaml", {"mission.experiment_mode": True})
+    for resolver in (resolve_algo, replay_resolve):
+        with pytest.raises(SystemExit, match="requires an explicit --algo"):
+            resolver(strict, None)
+        # naming it explicitly is always accepted
+        assert resolver(strict, "tgc_basic") is DecompositionAlgo.TGC_BASIC
+
+
+def test_the_cli_default_is_unchanged_outside_experiment_mode():
+    """Flag-off identity at the CLI: omitting --algo still means weighted_voronoi."""
+    from uav_swarm_sim.experiments.run_replay import resolve_algo as replay_resolve
+    from uav_swarm_sim.experiments.run_single_mission import resolve_algo
+
+    relaxed = load_config("config/default.yaml")
+    assert relaxed.mission.experiment_mode is False
+    for resolver in (resolve_algo, replay_resolve):
+        assert resolver(relaxed, None) is DecompositionAlgo.WEIGHTED_VORONOI
+        assert resolver(relaxed, "lloyd_cvt") is DecompositionAlgo.LLOYD_CVT

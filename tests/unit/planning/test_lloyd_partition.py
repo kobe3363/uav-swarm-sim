@@ -301,8 +301,11 @@ def test_site_to_drone_matching_is_optimal_not_greedy_in_id_order():
     order = maximin_site_order(cells.centroids_xy, np.array([5.0, 50.0]), 2)
     picked = cells.centroids_xy[order]
     greedy = np.array([picked[0], picked[1]])          # drone 0 takes s1, drone 1 takes s2
-    cost = lambda a: float(((drones - a) ** 2).sum())
-    assert cost(sites) <= cost(greedy)
+    def cost(a):
+        return float(((drones - a) ** 2).sum())
+
+    # strict: with <= a regression to greedy matching would still pass
+    assert cost(sites) < cost(greedy)
     assert {tuple(p) for p in sites} == {tuple(p) for p in picked}
 
 
@@ -432,3 +435,28 @@ def test_mass_arithmetic_still_uses_the_area_centroid_not_the_surface_point():
     x, y = cells.centroids_xy[notched[0]]
     assert (x, y) == pytest.approx((45.0, 45.631579), abs=1e-6)     # area centroid
     assert (x, y) != pytest.approx((41.5, 43.0), abs=1e-6)          # NOT the surface point
+
+
+def test_cells_straddling_two_components_are_counted_not_hidden():
+    """A separator thinner than one cell leaves cells in both components. The
+    cell stays the atom (splitting it would change the raster's own cell set),
+    so the condition is COUNTED rather than silently absorbed."""
+    area = box(0.0, 0.0, 100.0, 100.0)
+    hairline = box(50.0, 0.0, 51.0, 100.0)          # 1 m wall inside a 10 m cell
+    env = EnvironmentMap(area, [_obstacle(hairline)], 0.0)
+    raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
+    cells, drone_comp = build_eligible_cells(
+        raster, env, np.array([[5.0, 50.0], [95.0, 50.0]])
+    )
+    assert set(drone_comp.tolist()) == {0, 1}
+    assert cells.n_spanning_components == 10       # one column of straddling cells
+    assert cells.n_no_eligible_owner == 0          # counted, not dropped
+
+
+def test_a_thick_separator_produces_no_straddling_cells():
+    area = box(0.0, 0.0, 100.0, 100.0)
+    wall = box(40.0, 0.0, 60.0, 100.0)              # aligned with the 10 m grid
+    env = EnvironmentMap(area, [_obstacle(wall)], 0.0)
+    raster = CoverageRaster(env.target_space, env.plannable_space, 10.0)
+    cells, _ = build_eligible_cells(raster, env, np.array([[5.0, 50.0], [95.0, 50.0]]))
+    assert cells.n_spanning_components == 0

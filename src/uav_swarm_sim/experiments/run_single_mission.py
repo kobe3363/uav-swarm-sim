@@ -33,10 +33,30 @@ from ..metrics.gpx_exporter import write_gpx
 from ..metrics.run_output import RunContext, build_plan, build_results_single
 
 
+
+# EXP-07 (D-3): the CLI default must not stand in for a named algorithm. Under
+# ``mission.experiment_mode`` a run has to say which algorithm it used, and
+# "the user omitted --algo" is exactly the case the engine's auto-selection
+# guard cannot see -- by the time it runs, the CLI default has already made the
+# choice look explicit. Outside experiment mode the default is unchanged.
+_DEFAULT_ALGO = "weighted_voronoi"
+
+
+def resolve_algo(cfg, algo_arg: str | None) -> DecompositionAlgo:
+    if algo_arg is not None:
+        return DecompositionAlgo(algo_arg)
+    if cfg.mission.experiment_mode:
+        raise SystemExit(
+            "mission.experiment_mode requires an explicit --algo "
+            f"(no default is applied; e.g. --algo {_DEFAULT_ALGO})"
+        )
+    return DecompositionAlgo(_DEFAULT_ALGO)
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/default.yaml")
-    ap.add_argument("--algo", default="weighted_voronoi")
+    ap.add_argument("--algo", default=None,
+                    help="decomposition algorithm (default: weighted_voronoi; required under mission.experiment_mode)")
     ap.add_argument("--planner", default="dubins", choices=["dubins", "grid"])
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--name", default=None, help="simulation folder name (default: the algo)")
@@ -50,7 +70,7 @@ def main(argv=None) -> int:
     if args.seed is not None:
         overrides["sim.master_seed"] = args.seed
     cfg = load_config(args.config, overrides)
-    algo = DecompositionAlgo(args.algo)
+    algo = resolve_algo(cfg, args.algo)
     planner = PlannerKind.GRID if args.planner == "grid" else PlannerKind.DUBINS
 
     run = RunContext(base_dir=args.base, name=args.run_name)
