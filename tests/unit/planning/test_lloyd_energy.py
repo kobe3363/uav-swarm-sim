@@ -373,3 +373,21 @@ def test_an_unusable_energy_density_is_refused_rather_than_dividing_by_it(case):
     with pytest.raises(ValueError, match="finite and > 0"):
         EnergyWeightPolicy(ctx, _states(case, [CAPACITY_J, CAPACITY_J]), ALT, SETTINGS,
                            CAPACITY_J, case["poses"])
+
+
+def test_the_reported_energy_describes_the_zones_that_are_returned(case):
+    """update() records demand, budget and slack for the assignment BEFORE it
+    moves the weights, and run() then makes one more assignment with the moved
+    weights. Without a read-only refresh the diagnostics would describe zones the
+    engine never sees -- so every drone's reported energy must have been computed
+    against its own final area."""
+    policy = _policy(case, [CAPACITY_J, 0.45 * CAPACITY_J], SETTINGS)
+    labels, _, _, _, _, _, kept = _run(case, policy, SETTINGS)
+    area = np.bincount(labels, weights=kept.areas_m2, minlength=2)
+
+    report = policy.per_drone([0, 1])
+    for i in (0, 1):
+        assert report[i]["estimate_area_m2"] == pytest.approx(float(area[i]), rel=1e-12)
+        assert report[i]["slack_j"] == pytest.approx(
+            report[i]["budget_j"] - report[i]["demand_j"]
+        )

@@ -374,10 +374,15 @@ def assign_cells(
         block = centroids_xy[start:stop]
         cost = ((block[:, None, :] - sites[None, :, :]) ** 2).sum(axis=2) - weights[None, :]
         cost[~allowed[start:stop]] = np.inf
-        assert np.isfinite(cost).any(axis=1).all(), (
-            "a cell reached assignment with no finite cost; argmin would hand it "
-            "to drone index 0 silently -- route it to no_eligible_owner instead"
-        )
+        if not np.isfinite(cost).any(axis=1).all():
+            # Deliberately not an `assert`: `python -O` strips those, and this
+            # guard is the last thing standing between a starved row and a silent
+            # hand-off to drone index 0. Verified: under -O the assert form
+            # returned [0, 0] for a row nobody could own.
+            raise AssertionError(
+                "a cell reached assignment with no finite cost; argmin would hand "
+                "it to drone index 0 silently -- route it to no_eligible_owner"
+            )
         labels[start:stop] = np.argmin(cost, axis=1)
     return labels
 
@@ -424,6 +429,9 @@ class UniformWeightPolicy:
 
     def per_drone(self, drone_ids: list[int]) -> dict:
         return {}
+
+    def refresh(self, area: np.ndarray, centroids: np.ndarray) -> None:
+        """Re-read the final zones without changing the weights. No-op here."""
 
     def excluded(self, n: int) -> np.ndarray:
         """Drones that may own no cell at all. None, for uniform weights.
@@ -495,6 +503,12 @@ class LloydPartitioner:
         # returned sites and weights. The last partition is USED either way: a
         # non-convergence is REPORTED, never repaired by another algorithm.
         labels = assign_cells(cells.centroids_xy, sites, weights, allowed)
+        # The weight policy recorded its energy figures for the LAST IN-LOOP
+        # assignment, which the update above then moved away from. Re-read the
+        # final zones -- read-only, no further weight update -- so the reported
+        # demand, budget and slack describe the zones actually returned.
+        _, final_area, final_centroids = aggregate(labels, cells, n)
+        self.weight_policy.refresh(final_area, final_centroids)
         return labels, sites, weights, converged, iterations, shift, cells
 
 
@@ -560,11 +574,17 @@ class _LloydDecomposer(Decomposer):
 
         # Conservation: every eligible cell has exactly one owner and no area is
         # lost. Nothing is dropped for being empty or disconnected.
-        assert int(counts.sum()) == cells.count, "cell count not conserved"
+        # Same reasoning as the assignment guard: these are the "nothing was
+        # silently dropped" guarantee, so they must not vanish under -O either.
         total = cells.total_area_m2
-        assert math.isclose(float(area.sum()), total, rel_tol=_AREA_REL_TOL, abs_tol=1e-9), (
-            "cell area not conserved"
-        )
+        if int(counts.sum()) != cells.count:
+            raise AssertionError(
+                f"cell count not conserved: {int(counts.sum())} owned of {cells.count}"
+            )
+        if not math.isclose(float(area.sum()), total, rel_tol=_AREA_REL_TOL, abs_tol=1e-9):
+            raise AssertionError(
+                f"cell area not conserved: {float(area.sum())!r} owned of {total!r}"
+            )
 
         zones: dict[int, Zone] = {}
         for position, drone in enumerate(ordered):
@@ -761,6 +781,11 @@ class EnergyWeightPolicy:
         # clamp, and no way to produce a row with no finite cost.
         return np.clip(updated, -self._clamp, self._clamp)
 
+    def refresh(self, area: np.ndarray, centroids: np.ndarray) -> None:
+        """Re-estimate against the final zones. Read-only: weights are untouched,
+        so this cannot move the partition it is describing."""
+        self._estimate_all(area, centroids)
+
     def balanced(self) -> bool:
         if not self._estimates:
             return False
@@ -793,6 +818,11 @@ class EnergyWeightPolicy:
         for position, drone_id in enumerate(drone_ids):
             estimate = self._estimates[position] if self._estimates else None
             out[drone_id] = {
+                # The area the reported energy figures were computed against.
+                # It must equal the drone's own area_m2 in the diagnostics; if it
+                # ever does not, the energy numbers describe a different zone.
+                "estimate_area_m2": (float(estimate.remaining_area_m2)
+                                     if estimate else None),
                 "demand_j": float(estimate.demand_j) if estimate else None,
                 "budget_j": float(estimate.budget_j) if estimate else None,
                 "slack_j": float(self._slack[position]),

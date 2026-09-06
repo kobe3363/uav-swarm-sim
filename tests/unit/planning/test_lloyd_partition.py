@@ -535,3 +535,27 @@ def test_uniform_weights_cannot_produce_an_unowned_row():
     assert kept.n_no_eligible_owner == cells.n_no_eligible_owner
     assert np.isfinite(weights).all()
     assert np.bincount(labels, minlength=2).sum() == cells.count
+
+
+def test_the_invariants_survive_python_dash_O():
+    """`python -O` strips `assert`, and these guards are the last thing between a
+    silent misassignment and the run output. Verified against the assert form:
+    under -O a starved row returned [0, 0] instead of failing."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import numpy as np\n"
+        "from uav_swarm_sim.planning.lloyd_partition import assign_cells\n"
+        "xy = np.array([[0.5, 0.5], [1.5, 0.5]])\n"
+        "sites = np.array([[0.0, 0.5], [4.0, 0.5]])\n"
+        "starved = np.array([[True, False], [False, False]])\n"
+        "try:\n"
+        "    assign_cells(xy, sites, np.zeros(2), starved)\n"
+        "    print('SILENT')\n"
+        "except AssertionError:\n"
+        "    print('GUARDED')\n"
+    )
+    out = subprocess.run([sys.executable, "-O", "-c", probe],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "GUARDED"
