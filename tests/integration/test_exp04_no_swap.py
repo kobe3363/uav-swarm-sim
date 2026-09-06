@@ -92,8 +92,8 @@ def _sojourns_of(res, aid):
 
 def _no_swap_invariants(res):
     """Zero swaps / resets / relaunches: no S_SWAP sojourn, no swap_done exit,
-    every agent's battery trace is monotone non-increasing, and each launched
-    agent launches exactly once."""
+    every agent's battery trace is monotone non-increasing, and every agent
+    (each has a zone in these fixtures) launches exactly once."""
     sj = res.history.sojourns()
     assert all(s.state is not S.S_SWAP for s in sj)
     assert all(s.reason_out != "swap_done" for s in sj)
@@ -102,7 +102,7 @@ def _no_swap_invariants(res):
         trace = res.history.battery_trace(aid)
         assert all(b <= a + 1e-12 for (_, a), (_, b) in zip(trace, trace[1:])), aid
         launches = [s for s in _sojourns_of(res, aid) if s.reason_out == "launch"]
-        assert len(launches) <= 1
+        assert len(launches) == 1
 
 
 class _AlwaysHigh(Battery):

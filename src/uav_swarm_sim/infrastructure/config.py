@@ -675,6 +675,12 @@ def _build(raw: dict, config_hash: str) -> Config:
     )
 
     m = raw.get("mission", {})
+    # EXP-04: strict boolean -- bool("false") is True, and a mis-typed value
+    # must never silently switch the outcome semantics (same rule as
+    # sensor.photogrammetry.enabled). Absent => False (legacy swap cycle).
+    no_swap_raw = m.get("no_swap_mode", False)
+    if not isinstance(no_swap_raw, bool):
+        raise ConfigError("mission.no_swap_mode must be a boolean")
     mission = MissionConfig(
         type=MissionType(str(m.get("type", "coverage"))),
         n_targets=int(m.get("n_targets", 30)),
@@ -682,7 +688,7 @@ def _build(raw: dict, config_hash: str) -> Config:
             (float(xy[0]), float(xy[1])) for xy in (m.get("target_coordinates") or [])
         ),
         weight_targets_by_battery=bool(m.get("weight_targets_by_battery", True)),
-        no_swap_mode=bool(m.get("no_swap_mode", False)),
+        no_swap_mode=no_swap_raw,
     )
 
     do = raw.get("dynamic_obstacles", {})

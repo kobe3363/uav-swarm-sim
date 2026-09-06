@@ -234,6 +234,12 @@ def test_config_no_swap_default_off_and_validation(config_path):
     assert load_config(config_path).mission.no_swap_mode is False
     with pytest.raises(ConfigError, match="raster_enabled"):
         load_config(config_path, overrides={"mission.no_swap_mode": True})
+    # strict boolean: a quoted "false" must not silently enable the mode
+    for bad in ("false", "true", 0, 1, [True]):
+        with pytest.raises(ConfigError, match="must be a boolean"):
+            load_config(config_path, overrides={
+                "mission.no_swap_mode": bad, "coverage.raster_enabled": True,
+            })
     with pytest.raises(ConfigError, match="mission.type"):
         load_config(config_path, overrides={
             "mission.no_swap_mode": True,
