@@ -355,3 +355,21 @@ def test_a_grounded_drone_alone_in_its_component_leaves_uncoverable_work(case):
     assert kept.count == cells.count - orphans
     assert (labels == 1).sum() == 0                        # nothing left with it
     assert kept.centroids_xy[:, 0].max() < 300.0           # and nothing crossed over
+
+
+def test_an_unusable_energy_density_is_refused_rather_than_dividing_by_it(case):
+    """rho is the divisor that turns joules into square metres. A platform with no
+    coverage power and no camera makes it 0.0, which would push NaN weights into
+    the partition loop and quietly wreck the assignment."""
+    # the propulsion term reads its power off the EnergyModel, so the model has to
+    # be rebuilt from the zero-power spec -- replacing ctx.spec alone changes only
+    # the speed and swath
+    dead = replace(case["spec"],
+                   power_w={**case["spec"].power_w, ManeuverType.COVERAGE: 0.0})
+    ctx = replace(case["ctx"], sensor_power_w=0.0, spec=dead, em=EnergyModel(dead))
+    from uav_swarm_sim.planning.energy_balance import coverage_energy_density_j_per_m2
+
+    assert coverage_energy_density_j_per_m2(ctx, ALT) == 0.0
+    with pytest.raises(ValueError, match="finite and > 0"):
+        EnergyWeightPolicy(ctx, _states(case, [CAPACITY_J, CAPACITY_J]), ALT, SETTINGS,
+                           CAPACITY_J, case["poses"])

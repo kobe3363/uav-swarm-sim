@@ -64,3 +64,17 @@ def test_absent_block_preserves_hash():
     # Raw YAML is unchanged; constructing default dataclasses cannot enter its hash.
     baseline = load_config("config/default.yaml")
     assert baseline.config_hash == load_config("config/default.yaml", {}).config_hash
+
+
+@pytest.mark.parametrize("key", ["weight_step", "weight_clamp_factor"])
+def test_partition_weights_reject_null(key):
+    """null is meaningful only where the schema defines a derived default. Left
+    unguarded it reaches _validate as None, where isfinite() raises TypeError
+    instead of the ConfigError every other malformed field produces."""
+    with pytest.raises(ConfigError, match=f"planning.partition.{key} must be numeric"):
+        load_config("config/default.yaml", {f"planning.partition.{key}": None})
+
+
+def test_slack_tolerance_may_be_null_because_it_has_a_derived_default():
+    cfg = load_config("config/default.yaml", {"planning.partition.slack_tolerance_j": None})
+    assert cfg.planning.partition.slack_tolerance_j is None

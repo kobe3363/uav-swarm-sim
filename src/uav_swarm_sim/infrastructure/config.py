@@ -901,10 +901,18 @@ def _build(raw: dict, config_hash: str) -> Config:
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError("planning.partition.site_tolerance_m must be numeric") from exc
-    def _number(key, default):
+    def _number(key, default, *, allow_none=False):
+        # ``null`` is meaningful only where the schema defines a derived default
+        # (slack_tolerance_j). Letting it through elsewhere pushes a None into
+        # _validate, where isfinite() raises TypeError instead of the ConfigError
+        # every other malformed field produces.
+        value = partition_raw.get(key, default)
+        if value is None:
+            if allow_none:
+                return None
+            raise ConfigError(f"planning.partition.{key} must be numeric")
         try:
-            value = partition_raw.get(key, default)
-            return None if value is None else float(value)
+            return float(value)
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"planning.partition.{key} must be numeric") from exc
 
@@ -915,7 +923,8 @@ def _build(raw: dict, config_hash: str) -> Config:
         weight_step=_number("weight_step", partition_defaults.weight_step),
         weight_clamp_factor=_number("weight_clamp_factor",
                                     partition_defaults.weight_clamp_factor),
-        slack_tolerance_j=_number("slack_tolerance_j", partition_defaults.slack_tolerance_j),
+        slack_tolerance_j=_number("slack_tolerance_j", partition_defaults.slack_tolerance_j,
+                                  allow_none=True),
     )
     planning = PlanningConfig(
         EnergyBalanceConfig(enabled=balance_enabled, area_override_enabled=area_override),

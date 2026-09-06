@@ -666,6 +666,16 @@ class EnergyWeightPolicy:
         self._settings = settings
         self._fallbacks = list(fallback_poses)
         self.rho_j_per_m2 = coverage_energy_density_j_per_m2(ctx, altitude_m)
+        # rho is the divisor that turns joules into square metres. A platform with
+        # zero coverage power and no camera makes it 0.0, which would send NaN
+        # weights into the partition loop and quietly wreck the assignment; a
+        # non-finite power coefficient does the same. Refuse to scale by it.
+        if not math.isfinite(self.rho_j_per_m2) or self.rho_j_per_m2 <= 0.0:
+            raise ValueError(
+                "coverage energy density must be finite and > 0 to scale J -> m^2; "
+                f"got {self.rho_j_per_m2!r} from P_COVERAGE + sensor_power_w over "
+                "v_coverage * swath"
+            )
         self.slack_tolerance_j = (
             settings.slack_tolerance_j if settings.slack_tolerance_j is not None
             else 0.005 * capacity_j
