@@ -29,6 +29,37 @@ Every dispatch prompt carries a `PR REVIEW ACCESS: DISABLED / ENABLED (PR #N)` l
 - **Drone deployment:** drones ring at `deploy_poses[i]` radius R for takeoff only; all return to a single `launch_pose` → one E_home network serves the whole swarm.
 - **`efficiency` metric** = SMDP throughput ratio, NOT energy efficiency.
 - **`config/study01_demand.yaml` is a FROZEN TEST FIXTURE, not experiment evidence.** Six integration tests load it and it carries the `test_energy_map_stage4` cross-commit golden; `run_rth_ab.py:529` defaults to it. Never delete, rename or edit its values — doing so voids four bug-fix regression tests.
+- **`CoverageRaster` cell points are NOT centroids.** `_plannable_points` is
+  `shapely.point_on_surface` and `_plannable_parts` are CLIPPED `cell ∩ plannable`
+  polygons (`planning/coverage_raster.py:62-68`), so on a boundary-clipped cell the
+  surface point and the area centroid differ. Lloyd/CVT's fixed point IS the
+  area-weighted centroid — the partitioner computes it itself
+  (`shapely.centroid`) and never uses the raster's surface points for partition
+  arithmetic. The public accessor `uncovered_plannable_cells()` deliberately
+  avoids the word "centroid".
+- **`energy_balance.budget_j` is NOT a property of the drone.**
+  `budget = level − takeoff − (ferry + rth + reserve)` (`planning/energy_balance.py:156`),
+  and ferry/rth come from the anchor/exit pose (`estimate_fast:209-214`), i.e. from
+  the CANDIDATE ZONE. It therefore changes on every Lloyd iteration, the fixed-point
+  map is NOT contractive, and the partitioner must carry an iteration cap plus an
+  explicit non-convergence report — never a silent fallback to another algorithm.
+- **`deploy_ring_poses` radius** `R = (hypot(L, W) + min_separation_m) / (2·sin(π/N))`
+  (`execution/fleet.py:40`): **6.06 / 8.93 / 13.71 m** at N = 3/5/8 for the M4E
+  (`config/djimatrice4e.yaml:32,231` → s = 10.494 m). Decomposer seeds taken from the
+  staging ring are therefore effectively coincident on a 1000×750 m survey — which is
+  why EXP-07 offers `planning.partition.init_sites: maximin` as an opt-in.
+- **`LLOYD_ENERGY` balances `slack_i = budget_i − demand_i` [J], NOT the
+  `demand/budget` ratio** (D-2 amendment, author decision 2026-09-06). The J→m²
+  scale is `1/ρ` with `ρ = (P_COVERAGE + sensor_power_w) / (v_coverage · swath)`,
+  derived from the energy model, not tuned. `demand_budget_ratio` stays a reporting
+  metric only.
+- **`RthCalculator.__init__` is pure** (`execution/rth_calculator.py:48-83`): attribute
+  assignment plus `landing_profile` (pure), its own cache and counters; no RNG stream,
+  no `EnergyMap` mutation. EXP-07b therefore hoists its construction above
+  `_make_decomposer` so planning can reach `return_energy`. But
+  `n_map_hits`/`n_map_fallbacks`/`n_route_fallbacks` are REPORTED metrics
+  (`experiments/run_rth_ab.py:270-272`), so any planning-time `return_energy` call must
+  be wrapped in save/restore (pattern: `infrastructure/simulation_engine.py:440,454`).
 - **Paired-seed determinism is the methodological cornerstone:** the same `master_seed` → bitwise-identical results. `RngFactory.stream(name, rep)` is a pure `(master_seed, name, replication)` function; a shared factory across arms guarantees identical environment/failure draws.
 
 ## Environment

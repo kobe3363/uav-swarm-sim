@@ -372,3 +372,6 @@ class MissionResult:
     initial_soc_by_drone: tuple[float, ...] = ()
     # EXP-06: absent when disabled; each method retains all joule components.
     energy_balance_t0: dict | None = None
+    # EXP-07: how the grid partition was reached (convergence, dropped cells,
+    # per-drone weight/area). None for every non-grid decomposition algorithm.
+    partition_diagnostics: object | None = None

@@ -34,6 +34,12 @@ WH_TO_J = 3600.0
 # "single" = all drones on layer 0 (the single-layer-z0 regression net).
 _LAYER_POLICIES = ("single", "area_balanced", "battery_tiered")
 
+# EXP-07 initial-site policies for the grid partitioner (planning/lloyd_partition.py).
+# "deploy_poses" (the default) seeds from the drones' staging poses, the same
+# convention the position-based decomposers use; "maximin" is the opt-in
+# deterministic farthest-point spread over the eligible coverage cells.
+_INIT_SITE_POLICIES = ("deploy_poses", "maximin")
+
 
 class ConfigError(ValueError):
     """Raised on any invalid configuration, with the offending field path."""
@@ -346,6 +352,11 @@ class MissionConfig:
     # coverage plus the fleet's landed/lost status (see Outcome docstring).
     # Default OFF => the legacy S3 -> S_SWAP -> S0 cycle is byte-identical.
     no_swap_mode: bool = False
+    # EXP-07 (D-3): in experiment mode the decomposition algorithm must be named
+    # explicitly -- the fleet-size tier auto-selection raises instead of quietly
+    # picking one, so a run's algorithm identity is never implicit. Default OFF
+    # => the auto-selection path is unchanged.
+    experiment_mode: bool = False
 
 
 @dataclass(frozen=True)
@@ -393,8 +404,23 @@ class EnergyBalanceConfig:
 
 
 @dataclass(frozen=True)
+class PartitionConfig:
+    """EXP-07 grid-partitioner knobs (planning/lloyd_partition.py).
+
+    Wholly inert unless the run selects ``lloyd_cvt`` / ``lloyd_energy``; no
+    other decomposition path reads any of these. Deliberately absent from
+    default.yaml -- ``config_hash`` is taken over the raw YAML, so defaulting
+    here leaves every pinned fixture hash unchanged.
+    """
+    init_sites: str = "deploy_poses"     # see _INIT_SITE_POLICIES
+    max_iterations: int = 50
+    site_tolerance_m: float = 1.0        # convergence: max site shift per sweep
+
+
+@dataclass(frozen=True)
 class PlanningConfig:
     energy_balance: EnergyBalanceConfig = field(default_factory=EnergyBalanceConfig)
+    partition: PartitionConfig = field(default_factory=PartitionConfig)
 
 
 @dataclass(frozen=True)
@@ -762,6 +788,11 @@ def _build(raw: dict, config_hash: str) -> Config:
     no_swap_raw = m.get("no_swap_mode", False)
     if not isinstance(no_swap_raw, bool):
         raise ConfigError("mission.no_swap_mode must be a boolean")
+    # EXP-07 (D-3): same strict-boolean rule -- a mis-typed value must never
+    # silently re-enable the implicit fleet-size algorithm selection.
+    experiment_raw = m.get("experiment_mode", False)
+    if not isinstance(experiment_raw, bool):
+        raise ConfigError("mission.experiment_mode must be a boolean")
     mission = MissionConfig(
         type=MissionType(str(m.get("type", "coverage"))),
         n_targets=int(m.get("n_targets", 30)),
@@ -770,6 +801,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         ),
         weight_targets_by_battery=bool(m.get("weight_targets_by_battery", True)),
         no_swap_mode=no_swap_raw,
+        experiment_mode=experiment_raw,
     )
 
     do = raw.get("dynamic_obstacles", {})
@@ -812,7 +844,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         planning_raw = {}
     if not isinstance(planning_raw, dict):
         raise ConfigError("planning must be a mapping")
-    unexpected = set(planning_raw) - {"energy_balance"}
+    unexpected = set(planning_raw) - {"energy_balance", "partition"}
     if unexpected:
         raise ConfigError(f"planning has unknown field(s): {', '.join(sorted(unexpected))}")
     balance_raw = planning_raw.get("energy_balance", {})
@@ -828,7 +860,36 @@ def _build(raw: dict, config_hash: str) -> Config:
     balance_enabled = balance_raw.get("enabled", False)
     if not isinstance(balance_enabled, bool):
         raise ConfigError("planning.energy_balance.enabled must be a boolean")
-    planning = PlanningConfig(EnergyBalanceConfig(enabled=balance_enabled))
+
+    partition_raw = planning_raw.get("partition", {})
+    if partition_raw is None:
+        partition_raw = {}
+    if not isinstance(partition_raw, dict):
+        raise ConfigError("planning.partition must be a mapping")
+    partition_defaults = PartitionConfig()
+    unexpected = set(partition_raw) - {
+        "init_sites", "max_iterations", "site_tolerance_m",
+    }
+    if unexpected:
+        raise ConfigError(
+            f"planning.partition has unknown field(s): {', '.join(sorted(unexpected))}"
+        )
+    init_sites = str(partition_raw.get("init_sites", partition_defaults.init_sites))
+    max_iterations_raw = partition_raw.get("max_iterations", partition_defaults.max_iterations)
+    if isinstance(max_iterations_raw, bool) or not isinstance(max_iterations_raw, int):
+        raise ConfigError("planning.partition.max_iterations must be an integer")
+    try:
+        site_tolerance_m = float(
+            partition_raw.get("site_tolerance_m", partition_defaults.site_tolerance_m)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("planning.partition.site_tolerance_m must be numeric") from exc
+    partition = PartitionConfig(
+        init_sites=init_sites,
+        max_iterations=int(max_iterations_raw),
+        site_tolerance_m=site_tolerance_m,
+    )
+    planning = PlanningConfig(EnergyBalanceConfig(enabled=balance_enabled), partition)
 
     return Config(
         fleet=fleet, platform=platform, sensor=sensor, coverage=coverage, aero=aero, env=env,
@@ -846,6 +907,20 @@ def _build(raw: dict, config_hash: str) -> Config:
 # Validation                                                                   #
 # --------------------------------------------------------------------------- #
 def _validate(cfg: Config, raw: dict) -> None:
+    # EXP-07: the partition block is inert unless an lloyd_* algorithm is named
+    # (the algorithm comes from the CLI, not the config, so the algorithm-level
+    # requirements are enforced in SimulationEngine._make_decomposer). These are
+    # the value checks that hold regardless of which algorithm runs.
+    part = cfg.planning.partition
+    if part.init_sites not in _INIT_SITE_POLICIES:
+        raise ConfigError(
+            f"planning.partition.init_sites '{part.init_sites}' "
+            f"not one of {list(_INIT_SITE_POLICIES)}"
+        )
+    if part.max_iterations < 1:
+        raise ConfigError("planning.partition.max_iterations must be >= 1")
+    if not isfinite(part.site_tolerance_m) or part.site_tolerance_m <= 0.0:
+        raise ConfigError("planning.partition.site_tolerance_m must be finite and > 0")
     if cfg.planning.energy_balance.enabled:
         if not (cfg.coverage.raster_enabled and cfg.sensor.photogrammetry.enabled):
             raise ConfigError(

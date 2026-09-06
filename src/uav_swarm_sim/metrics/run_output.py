@@ -277,6 +277,17 @@ def build_plan(cfg, *, identity: dict, algo, planner, engine=None) -> dict:
         "master_seed": cfg.sim.master_seed,
     }
 
+    # EXP-07 (D-3): the ENUM alone is ambiguous -- the fleet-size tier path
+    # resolves KMeansHeuristicDecomposer(weighted=True) AND WeightedTgcDecomposer
+    # to the same `weighted_voronoi` label. Recording the concrete class
+    # disambiguates them WITHOUT changing what `decomposition_algorithm` reports,
+    # so every pre-existing key keeps its pre-existing value.
+    decomposer = getattr(engine, "decomposer", None) if engine is not None else None
+    if decomposer is not None:
+        setup["decomposer_class"] = type(decomposer).__name__
+    if engine is not None and getattr(engine, "partition_diagnostics", None) is not None:
+        setup["partition_settings"] = dict(engine.partition_diagnostics.settings)
+
     derived: dict = {}
     if engine is not None and getattr(engine, "env", None) is not None:
         env = engine.env
@@ -414,6 +425,13 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
             "wall_time_mean_per_run_s": round(wall_time_s / mc.n_runs, 4) if mc.n_runs else None,
         },
     }
+    if any(getattr(run, "partition_diagnostics", None) is not None for run in mc.runs):
+        out["partition"] = [
+            {"replication": replication,
+             **run.partition_diagnostics.to_json()}
+            for replication, run in enumerate(mc.runs, start=1)
+            if getattr(run, "partition_diagnostics", None) is not None
+        ]
     if any(getattr(run, "energy_balance_t0", None) is not None for run in mc.runs):
         out["energy_balance"] = [
             {"replication": replication,
@@ -476,6 +494,8 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
     }
     if rth_arming is not None:
         out["rth_arming"] = rth_arming
+    if getattr(result, "partition_diagnostics", None) is not None:
+        out["partition"] = result.partition_diagnostics.to_json()
     if getattr(result, "energy_balance_t0", None) is not None:
         out["energy_balance"] = _energy_balance_json(result.energy_balance_t0)
     return out

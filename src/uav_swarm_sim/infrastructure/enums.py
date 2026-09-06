@@ -76,12 +76,21 @@ class DecompositionAlgo(Enum):
     Position-based baselines: CLASSIC_VORONOI (Euclidean Voronoi), KMEANS
     (position k-means), TGC_BASIC (unweighted topological). WEIGHTED_VORONOI is
     the thesis-facing name for the battery-weighted TGC decomposition (the
-    central contribution).
+    central contribution). Note WEIGHTED_VORONOI is a TGC heuristic, NOT a
+    Voronoi algorithm -- the label is historical.
+
+    EXP-07a adds LLOYD_CVT: a genuine Lloyd/CVT partition over the EXP-02
+    coverage grid (planning/lloyd_partition.py), which is the reference arm for
+    the energy-weighted power diagram EXP-07b will add beside it on the same code
+    path. It is deliberately NOT in ``metrics.comparison.DECOMPOSITION_PEERS`` --
+    it is reached only by naming it explicitly, so no existing run or sweep can
+    select it.
     """
     CLASSIC_VORONOI = "classic_voronoi"
     KMEANS = "kmeans"
     TGC_BASIC = "tgc_basic"
     WEIGHTED_VORONOI = "weighted_voronoi"
+    LLOYD_CVT = "lloyd_cvt"
 
 
 class PlannerKind(Enum):
