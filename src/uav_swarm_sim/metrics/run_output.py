@@ -328,6 +328,22 @@ def _outcome_counts(runs) -> dict[str, int]:
     return counts
 
 
+def _energy_balance_json(estimates: dict) -> dict:
+    """Keep every component; serialize status values and XY-only poses."""
+    return {
+        str(drone_id): {
+            method: {
+                f.name: ([getattr(estimate, f.name).x, getattr(estimate, f.name).y]
+                         if f.name in ("anchor_pose", "exit_pose")
+                         else _jsonable(getattr(estimate, f.name)))
+                for f in fields(estimate)
+            }
+            for method, estimate in methods.items()
+        }
+        for drone_id, methods in estimates.items()
+    }
+
+
 def build_results_mc(mc, *, identity: dict, wall_time_s: float,
                      variant=None) -> dict:
     """The OUTCOME of a Monte-Carlo simulation batch: how many replications ran
@@ -351,7 +367,7 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
             "planning_time_s": _stat(variant.planning_time_s),
         }
 
-    return {
+    out = {
         "schema": RESULTS_SCHEMA,
         "kind": "results",
         "mode": "monte_carlo",
@@ -398,6 +414,14 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
             "wall_time_mean_per_run_s": round(wall_time_s / mc.n_runs, 4) if mc.n_runs else None,
         },
     }
+    if any(getattr(run, "energy_balance_t0", None) is not None for run in mc.runs):
+        out["energy_balance"] = [
+            {"replication": replication,
+             "drones": _energy_balance_json(run.energy_balance_t0)}
+            for replication, run in enumerate(mc.runs, start=1)
+            if getattr(run, "energy_balance_t0", None) is not None
+        ]
+    return out
 
 
 def build_results_single(result, est, *, identity: dict, wall_time_s: float,
@@ -452,4 +476,6 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
     }
     if rth_arming is not None:
         out["rth_arming"] = rth_arming
+    if getattr(result, "energy_balance_t0", None) is not None:
+        out["energy_balance"] = _energy_balance_json(result.energy_balance_t0)
     return out

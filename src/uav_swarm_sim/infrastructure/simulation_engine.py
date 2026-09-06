@@ -423,6 +423,36 @@ class SimulationEngine:
                         self.plans[i] = plan
                 agents.append(agent)
 
+        if cfg.planning.energy_balance.enabled:
+            from ..planning.energy_balance import (
+                DroneEnergyState, ZoneEnergyEstimate, build_energy_balance_context,
+                estimate_fast, estimate_path,
+            )
+
+            ctx = build_energy_balance_context(
+                cfg, self.em, self.spec, self.motion, self.env,
+                lambda pose, alt: rth.return_energy(pose, altitude_m=alt),
+                emap=self.energy_map, graph_cache=self._transit_graph_cache,
+            )
+            self.energy_balance_t0: dict[int, dict[str, ZoneEnergyEstimate]] = {}
+            # Return queries increment diagnostics; t=0 estimates must not
+            # change the execution's map-hit/fallback observations.
+            map_counts = rth.n_map_hits, rth.n_map_fallbacks
+            try:
+                for agent in agents:
+                    zone = self.partition.zones.get(agent.id)
+                    if zone is None:
+                        continue
+                    state = DroneEnergyState(
+                        agent.id, self.deploy_poses[agent.id], agent.battery.level_j, False,
+                    )
+                    self.energy_balance_t0[agent.id] = {
+                        "fast": estimate_fast(ctx, state, zone, self.coverage_raster),
+                        "path": estimate_path(ctx, state, zone, self.coverage_raster),
+                    }
+            finally:
+                rth.n_map_hits, rth.n_map_fallbacks = map_counts
+
         self.fleet = Fleet(agents)
         self.formation.register_departure(agents)
         self.redistributor = (
@@ -564,7 +594,8 @@ class SimulationEngine:
                              retired_agents=tuple(aid for aid, _, _ in self._retirements),
                              work_releases=tuple((aid, rt) for aid, rt, rel in self._retirements if rel),
                              losses=tuple(self._losses),
-                             initial_soc_by_drone=self.initial_soc_by_drone)
+                             initial_soc_by_drone=self.initial_soc_by_drone,
+                             energy_balance_t0=getattr(self, "energy_balance_t0", None))
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
