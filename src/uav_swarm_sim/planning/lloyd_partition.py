@@ -630,9 +630,37 @@ class EnergyWeightPolicy:
         self._estimates: list = []
         self._slack = np.zeros(len(self._states))
         self._clamped = np.zeros(len(self._states), dtype=bool)
+        # Grounded drones are known BEFORE the loop: with an empty zone the
+        # anchor is the drone's own pose (energy_balance.py:250 -> fallback_pose,
+        # which is that drone's staging pose), so ferry is zero, demand is zero
+        # and slack == budget depends only on the drone's pose and level -- not
+        # on the partition. There is therefore nothing to re-check afterwards.
+        self._grounded = np.array([self._empty_zone_slack(i) < 0.0
+                                   for i in range(len(self._states))], dtype=bool)
+        # If NOBODY can fly, grounding everyone would silently hand every cell to
+        # the lowest id (every cost becomes +inf and argmin returns the first).
+        # Ground no one instead: the partition is then meaningless but honest,
+        # and ``all_grounded`` plus per-drone ``cannot_fly`` say so outright.
+        self.all_grounded = bool(self._grounded.all()) and len(self._states) > 0
+        if self.all_grounded:
+            self._grounded = np.zeros(len(self._states), dtype=bool)
+
+    def _empty_zone_slack(self, i: int) -> float:
+        from .energy_balance import estimate_fast_from_area
+
+        empty = estimate_fast_from_area(
+            self._ctx, self._states[i], alt=self._alt, area_m2=0.0,
+            centroid_xy=(0.0, 0.0), fallback_pose=self._fallbacks[i],
+        )
+        return float(empty.budget_j - empty.demand_j)
 
     def initial(self, n: int) -> np.ndarray:
-        return np.zeros(n, dtype=float)
+        weights = np.zeros(n, dtype=float)
+        # -inf makes ``d^2 - w`` evaluate to +inf for this drone on EVERY cell, so
+        # the shared assign_cells never selects it and its work migrates to the
+        # others by the existing mechanism. No outer loop, no core change.
+        weights[self._grounded] = -np.inf
+        return weights
 
     def _estimate_all(self, area: np.ndarray, centroids: np.ndarray) -> np.ndarray:
         from .energy_balance import estimate_fast_from_area
@@ -656,37 +684,45 @@ class EnergyWeightPolicy:
         if math.isinf(self._clamp):
             mean_zone_area = float(area.sum()) / max(1, len(area))
             self._clamp = self._settings.weight_clamp_factor * max(mean_zone_area, 1.0)
-        step = self._settings.weight_step * (slack - slack.mean()) / self.rho_j_per_m2
-        updated = weights + step
-        updated -= updated.mean()        # the partition is invariant to a shift
-        self._clamped = np.abs(updated) > self._clamp
-        return np.clip(updated, -self._clamp, self._clamp)
+        # Grounded drones are held out of the arithmetic entirely: their -inf
+        # weight would poison the mean, and they are not competing for work.
+        active = ~self._grounded
+        updated = np.zeros_like(weights)
+        if active.any():
+            centred = slack[active] - slack[active].mean()
+            updated[active] = weights[active] + (
+                self._settings.weight_step * centred / self.rho_j_per_m2
+            )
+            updated[active] -= updated[active].mean()   # invariant to a shift
+        self._clamped = active & (np.abs(updated) > self._clamp)
+        updated = np.clip(updated, -self._clamp, self._clamp)
+        updated[self._grounded] = -np.inf
+        return updated
 
     def balanced(self) -> bool:
         if not self._estimates:
             return False
-        return bool(np.max(np.abs(self._slack - self._slack.mean())) <= self.slack_tolerance_j)
+        active = ~self._grounded
+        if not active.any():
+            return True
+        live = self._slack[active]
+        return bool(np.max(np.abs(live - live.mean())) <= self.slack_tolerance_j)
 
     def cannot_fly(self) -> list[int]:
-        """Drones that cannot fly AT ALL: negative slack even with an EMPTY zone
-        (no coverage, no ferry), i.e. takeoff plus the return plus the reserve
-        already exceed what they carry.
+        """Drones that cannot fly AT ALL: negative slack even with an EMPTY zone,
+        i.e. takeoff plus the return plus the reserve already exceed what they
+        carry. Resolved once in ``__init__`` -- see the note there for why this
+        cannot depend on the partition, and therefore why it needs no re-check.
 
-        Only this means the drone cannot fly. An in-flight negative slack is a
-        transient of the current candidate zone, so this is evaluated after the
-        loop has settled, never as an entry condition.
+        A drone in this state receives NO cells (its weight is held at -inf), so
+        its work migrates to the others rather than being quietly stranded in a
+        zone nobody will fly. That distinction matters: leaving the cells with it
+        would be an unaccounted coverage loss, which the raster is the single
+        source of truth against (D-8).
         """
-        from .energy_balance import estimate_fast_from_area
-
-        grounded = []
-        for i, state in enumerate(self._states):
-            empty = estimate_fast_from_area(
-                self._ctx, state, alt=self._alt, area_m2=0.0, centroid_xy=(0.0, 0.0),
-                fallback_pose=self._fallbacks[i],
-            )
-            if empty.budget_j - empty.demand_j < 0.0:
-                grounded.append(state.drone_id)
-        return grounded
+        if self.all_grounded:
+            return [state.drone_id for state in self._states]
+        return [state.drone_id for i, state in enumerate(self._states) if self._grounded[i]]
 
     def per_drone(self, drone_ids: list[int]) -> dict:
         grounded = set(self.cannot_fly())
