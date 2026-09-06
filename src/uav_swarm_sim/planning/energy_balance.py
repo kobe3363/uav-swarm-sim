@@ -162,7 +162,7 @@ def _ferry(ctx, drone, anchor):
     # Horizontal executor paths use z=0; takeoff is accounted for by _budget.
     return route_transit(
         replace(drone.pose, z=anchor.z), anchor, ctx.motion, ctx.env,
-        enabled=ctx.coverage.transit_free_space,
+        enabled=ctx.coverage.transit_free_space and ctx.env is not None,
         operating_area=ctx.coverage.operating_area,
         margin_m=ctx.coverage.operating_margin_m, graph_cache=ctx.transit_graph_cache,
     )

@@ -212,3 +212,13 @@ def test_empty_path_and_photogrammetry_guard(energy_case):
     assert e.anchor_pose == e.exit_pose == c.zone.entry_pose
     with pytest.raises(AssertionError, match="requires photogrammetry"):
         estimate_path(replace(c.ctx, spec=replace(c.spec, photogrammetry=None)), c.drone, c.zone, None)
+
+
+@pytest.mark.parametrize("estimator", [estimate_fast, estimate_path])
+def test_optional_environment_with_transit_enabled(energy_case, estimator):
+    c = energy_case
+    ctx = replace(c.ctx, coverage=replace(c.ctx.coverage, transit_free_space=True))
+    expected = estimator(c.ctx, c.drone, c.zone, None)
+    actual = estimator(ctx, c.drone, c.zone, None)
+    assert actual.status is S.FEASIBLE
+    assert actual.e_ferry_j == pytest.approx(expected.e_ferry_j, rel=1e-9)

@@ -48,7 +48,8 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
         with phase("smdp_reduce"):
             return single_run_from_history(result.history, metrics=m, outcome=result.outcome,
                                            aborted=result.aborted,
-                                           initial_soc_by_drone=result.initial_soc_by_drone)
+                                           initial_soc_by_drone=result.initial_soc_by_drone,
+                                           energy_balance_t0=result.energy_balance_t0)
     return run_once
 
 

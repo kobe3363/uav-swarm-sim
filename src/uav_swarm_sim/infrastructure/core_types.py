@@ -370,3 +370,5 @@ class MissionResult:
     losses: tuple[tuple[int, float, str], ...] = ()
     # EXP-05: actual t=0 capacity fractions, ordered by contiguous drone ID.
     initial_soc_by_drone: tuple[float, ...] = ()
+    # EXP-06: absent when disabled; each method retains all joule components.
+    energy_balance_t0: dict | None = None

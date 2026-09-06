@@ -32,6 +32,7 @@ class SingleRunResult:
     aborted: bool = False
     outcome: object | None = None  # Outcome enum (mission terminal outcome), distinct from `aborted`
     initial_soc_by_drone: tuple[float, ...] = ()
+    energy_balance_t0: dict | None = None
 
 
 @dataclass
@@ -100,6 +101,7 @@ def single_run_from_history(
     history, close_failure_loop: bool = True, failure_repair_s: float = 600.0,
     *, metrics=None, outcome=None, aborted: bool = False,
     initial_soc_by_drone: tuple[float, ...] = (),
+    energy_balance_t0: dict | None = None,
 ) -> SingleRunResult:
     """Adapter: history -> SMDP estimate -> stationary pi -> efficiency -> SingleRunResult.
 
@@ -118,9 +120,11 @@ def single_run_from_history(
         return SingleRunResult(
             est.states, {}, float("nan"), metrics=metrics, aborted=True,
             outcome=outcome, initial_soc_by_drone=initial_soc_by_drone,
+            energy_balance_t0=energy_balance_t0,
         )
     pi_map = {s: float(pi_time[i]) for i, s in enumerate(est.states)}
     return SingleRunResult(
         est.states, pi_map, efficiency(pi_time, est.states), metrics=metrics,
         aborted=aborted, outcome=outcome, initial_soc_by_drone=initial_soc_by_drone,
+        energy_balance_t0=energy_balance_t0,
     )
