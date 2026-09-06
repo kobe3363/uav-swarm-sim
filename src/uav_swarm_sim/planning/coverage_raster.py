@@ -1,6 +1,7 @@
 """Persistent raster truth for physically flown camera coverage."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 import numpy as np
@@ -12,6 +13,32 @@ from ..infrastructure.core_types import Pose
 
 _AREA_EPS = 1e-12
 _MAX_RASTER_CELLS = 2_000_000
+
+
+@dataclass(frozen=True)
+class UncoveredPlannableCells:
+    """Read-only view of the plannable cells not yet credited as covered.
+
+    Every field is a quantity the raster ALREADY holds; nothing is derived here.
+
+    ``geometries``      clipped ``cell ∩ plannable_space`` polygons.
+    ``areas_m2``        their clipped areas, so they sum to the plannable area.
+    ``surface_points``  ``shapely.point_on_surface`` per cell -- a guaranteed
+                        INTERIOR representative point, deliberately not called a
+                        centroid: on a boundary-clipped cell the two differ. A
+                        consumer that needs the area centroid (Lloyd/CVT does)
+                        must compute it from ``geometries`` itself.
+    ``indices``         positions in the raster's own plannable arrays, so two
+                        calls taken as coverage grows stay correlatable.
+    """
+
+    geometries: np.ndarray
+    areas_m2: np.ndarray
+    surface_points: np.ndarray
+    indices: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.areas_m2)
 
 
 class CoverageRaster:
@@ -116,6 +143,17 @@ class CoverageRaster:
         """Clipped raster work geometry for later redistribution consumers."""
         remaining = self._plannable_parts[~self._plannable_covered]
         return shapely.union_all(remaining) if len(remaining) else Polygon()
+
+    def uncovered_plannable_cells(self) -> UncoveredPlannableCells:
+        """The still-uncovered plannable cells (EXP-08 re-partition semantics:
+        remaining work only). Pure read -- no raster state is touched."""
+        keep = ~self._plannable_covered
+        return UncoveredPlannableCells(
+            self._plannable_parts[keep],
+            self._plannable_weights[keep],
+            self._plannable_points[keep],
+            np.flatnonzero(keep),
+        )
 
     def record_segment(
         self,

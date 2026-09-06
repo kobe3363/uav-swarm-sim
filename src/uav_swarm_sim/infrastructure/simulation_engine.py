@@ -66,6 +66,7 @@ from ..planning.grid_planner import GridPlanner
 from ..planning.kmeans_heuristic import KMeansHeuristicDecomposer
 from ..planning.layer_planner import assign_to_layers, build_layer_graphs, decompose_layers
 from ..planning.launch_site_optimizer import optimize as optimize_launch
+from ..planning.lloyd_partition import LloydCvtDecomposer
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.target_mission import generate_targets, plan_target_mission
 from ..planning.dynamic_obstacles import DynamicObstacleField
@@ -165,13 +166,52 @@ class SimulationEngine:
             # position-based k-means baseline (weighted=False), a first-class
             # comparison peer; same paired stream so it is reproducible.
             return KMeansHeuristicDecomposer(motion, weighted=False, rng=kmeans_rng)
+        if self.algo is DecompositionAlgo.LLOYD_CVT:
+            # EXP-07a: Lloyd/CVT over the EXP-02 coverage grid. The raster, the
+            # staging poses, the launch pose and the energy map are all built
+            # above this call, so they are handed in through the constructor --
+            # the Decomposer ABC signature is untouched.
+            return LloydCvtDecomposer(
+                raster=self._require_raster(DecompositionAlgo.LLOYD_CVT),
+                deploy_poses=self.deploy_poses,
+                launch_pose=self.launch_pose,
+                settings=self.cfg.planning.partition,
+                energy_map=self.energy_map,
+            )
         # no explicit algo: pick by scale tier
         from ..execution.algorithm_selector import select
 
+        # EXP-07 (D-3): an experiment run must name its algorithm. The tier
+        # auto-selection resolves two DIFFERENT implementations
+        # (KMeansHeuristicDecomposer(weighted=True) and WeightedTgcDecomposer)
+        # and both report as `weighted_voronoi`, so leaving it implicit makes a
+        # run's algorithm identity unrecoverable from its output.
+        if self.cfg.mission.experiment_mode:
+            raise ValueError(
+                "mission.experiment_mode forbids fleet-size algorithm auto-selection; "
+                "name the decomposition algorithm explicitly (e.g. --algo tgc_basic)"
+            )
         strat = select(self.cfg.fleet.n_drones, self.cfg.tier_thresholds)
         if strat is TierStrategy.HEURISTIC:
             return KMeansHeuristicDecomposer(motion, weighted=True, rng=kmeans_rng)
         return WeightedTgcDecomposer()
+
+    def _require_raster(self, algo: DecompositionAlgo):
+        """The grid partitioners consume EXP-02 cells, so the raster must exist.
+
+        Validated here rather than in ``load_config`` because the algorithm comes
+        from the CLI, which the config loader never sees.
+        """
+        if self._mission_type is not MissionType.COVERAGE:
+            raise ValueError(f"--algo {algo.value} requires mission.type = coverage")
+        if self.coverage_raster is None:
+            raise ValueError(
+                f"--algo {algo.value} requires coverage.raster_enabled = true "
+                "(which requires sensor.photogrammetry.enabled = true)"
+            )
+        if len(self.layers) != 1:
+            raise ValueError(f"--algo {algo.value} requires exactly one coverage layer")
+        return self.coverage_raster
 
     def _build(self):
         cfg = self.cfg
@@ -337,6 +377,10 @@ class SimulationEngine:
                     self.layer_graphs, layer_assignment, self.decomposer
                 )
             self.plans = {}
+        # EXP-07: the grid partitioners record how the partition was reached
+        # (convergence, dropped cells, per-drone weights/areas). Absent -- and
+        # therefore absent from the run output -- for every other algorithm.
+        self.partition_diagnostics = getattr(self.decomposer, "diagnostics", None)
 
         # support objects
         sm = StateMachine(cfg.battery_zones, zone_demotion=cfg.rth.energy_map.zone_demotion,
@@ -595,7 +639,8 @@ class SimulationEngine:
                              work_releases=tuple((aid, rt) for aid, rt, rel in self._retirements if rel),
                              losses=tuple(self._losses),
                              initial_soc_by_drone=self.initial_soc_by_drone,
-                             energy_balance_t0=getattr(self, "energy_balance_t0", None))
+                             energy_balance_t0=getattr(self, "energy_balance_t0", None),
+                             partition_diagnostics=getattr(self, "partition_diagnostics", None))
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
@@ -693,6 +738,20 @@ class SimulationEngine:
             return
         new_part, new_plans = self.redistributor.handle(e, self.fleet, self.partition, self.plans, t)
         self.replan_times.append(self.redistributor.last_replan_time_s)
+        # EXP-07: redistribution runs its OWN decomposer -- weighted TGC unless
+        # the run's decomposer is one of its subclasses -- so from here on the
+        # zones are no longer the ones the grid partitioner produced. The
+        # partition diagnostics stay (they are the honest record of how planning
+        # started) but are stamped with what replaced them, so no reader can take
+        # them for a description of the zones actually being flown. Marked once:
+        # the first supersession is the one that ends the recorded partition.
+        diagnostics = getattr(self, "partition_diagnostics", None)
+        if diagnostics is not None and getattr(diagnostics, "superseded_by", None) is None:
+            diagnostics.superseded_by = {
+                "decomposer": type(self.redistributor.decomposer).__name__,
+                "trigger": e.type.value if hasattr(e.type, "value") else str(e.type),
+                "t_s": float(t),
+            }
         self.partition = new_part
         self.plans = new_plans
         for a in active:

@@ -84,6 +84,9 @@ kampai laipsniais; loaderis viską verčia į SI (Wh→J, deg→rad).
 | `rth.check_interval_s` / `reserve_frac` | 5 / 0.05 | + `rth.energy_map.{enabled,decide,route,zone_demotion,cell_m,yellow_penalty,red_threshold}` (visi default-OFF) |
 | `safety.*` | — | min_separation_m, obstacle_buffer_m, predict_horizon_s, `obstacle_recovery`, `stall_detector`, `stall_skip` |
 | `telemetry` / `viz` / `mission` / `tier_thresholds` | OFF / OFF / coverage / [15,50] | Stebėsena / vizualai / misijos tipas / tier ribos |
+| **`mission.experiment_mode`** | false | EXP-07 (D-3): `true` → dekompozicijos algoritmas privalo būti įvardytas; automatinis parinkimas pagal flotilės dydį **kelia klaidą** (tas kelias vieną `weighted_voronoi` etiketę duoda dviem skirtingoms realizacijoms) |
+| **`planning.partition.*`** | deploy_poses / 50 / 1.0 | EXP-07a tinklelio skaidytojo parametrai: `init_sites` (`deploy_poses` \| `maximin`), `max_iterations`, `site_tolerance_m`. **Inertiški**, nebent `--algo lloyd_*`. Nėra nė viename YAML — default'ai kode, kad `config_hash` nepajudėtų |
+| `planning.energy_balance.enabled` | false | EXP-06 t=0 energijos balanso diagnostika |
 
 ---
 
@@ -128,7 +131,7 @@ kliūčių „boxing".
 
 | Property | Tipas | Paaiškinimas |
 |---|---|---|
-| `--algo` | enum{classic_voronoi, kmeans, tgc_basic, weighted_voronoi} | Zonų dekompozicija |
+| `--algo` | enum{classic_voronoi, kmeans, tgc_basic, weighted_voronoi, **lloyd_cvt**} | Zonų dekompozicija. `lloyd_cvt` (EXP-07a) — tikras Lloyd/CVT virš EXP-02 dengimo tinklelio; reikalauja `coverage.raster_enabled: true` ir vieno sluoksnio. Nėra `DECOMPOSITION_PEERS` sąraše — pasiekiamas tik įvardijus. |
 | `--planner` | enum{dubins, grid} | Kelio planuotojas (dubins = ne-holonominis) |
 | `--seed` | int | Perrašo `sim.master_seed` |
 | `--name` | string | Simuliacijos poaplankio vardas (default = algo) |
