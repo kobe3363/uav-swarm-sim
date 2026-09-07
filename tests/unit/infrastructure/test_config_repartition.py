@@ -71,12 +71,12 @@ def test_interval_refuses_a_non_number(config_path, bad):
 # prerequisites (D-8)                                                          #
 # --------------------------------------------------------------------------- #
 def test_repartition_requires_the_coverage_raster_it_partitions(config_path):
-    with pytest.raises(ConfigError, match="requires coverage.raster_enabled"):
+    with pytest.raises(ConfigError, match=r"requires coverage\.raster_enabled"):
         load_config(config_path, overrides={"mission.repartition_enabled": True})
 
 
 def test_repartition_requires_an_area_coverage_mission(config_path):
-    with pytest.raises(ConfigError, match="requires mission.type = coverage"):
+    with pytest.raises(ConfigError, match=r"requires mission\.type = coverage"):
         load_config(config_path, overrides={
             **_RASTER_ON,
             "mission.repartition_enabled": True,
@@ -86,7 +86,7 @@ def test_repartition_requires_an_area_coverage_mission(config_path):
 
 def test_interval_alone_is_refused(config_path):
     """A configured cadence with the feature off would be silently inert."""
-    with pytest.raises(ConfigError, match="requires mission.repartition_enabled"):
+    with pytest.raises(ConfigError, match=r"requires mission\.repartition_enabled"):
         load_config(config_path, overrides={
             **_RASTER_ON, "mission.repartition_interval_s": 60.0,
         })
@@ -133,5 +133,5 @@ def test_a_non_finite_timestep_is_refused_even_with_no_interval(config_path, bad
     that cannot define simulation time whenever no interval was configured.
     (Found in review of this PR.)
     """
-    with pytest.raises(ConfigError, match="sim.dt_s must be finite"):
+    with pytest.raises(ConfigError, match=r"sim\.dt_s must be finite"):
         load_config(config_path, overrides={"sim.dt_s": bad_dt})
