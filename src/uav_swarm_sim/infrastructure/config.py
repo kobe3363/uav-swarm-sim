@@ -251,6 +251,15 @@ class SafetyConfig:
     # the FIX-B4 halt semantics are pinned by test_transit_livelock's
     # test_fix_b4 arm. Defaults false => byte-identical (same optional-key rule).
     stall_skip: bool = False
+    # EXP-10: factual safety-violation recording. When true the engine attaches a
+    # ViolationRecorder (execution/safety_monitor.py) that, every dt, inspects the
+    # EXECUTED fleet state and logs breaches that actually occurred (too-close
+    # separation, obstacle/buffer entry, speed-limit exceedance) into
+    # MissionResult.safety_violations. Purely observational -- it changes no
+    # trajectory, energy, RNG stream or outcome. Defaults false => the recorder is
+    # never built and the run is byte-identical (same optional-key absent-from-
+    # default.yaml hash rule as obstacle_recovery / stall_detector).
+    record_violations: bool = False
 
 
 @dataclass(frozen=True)
@@ -769,6 +778,12 @@ def _build(raw: dict, config_hash: str) -> Config:
         hazard_rate_per_hour=float(_require(fa, "hazard_rate_per_hour", "failure")),
     )
     sf = _require(raw, "safety", "")
+    # EXP-10: strict boolean -- a quoted YAML "false" is truthy in Python, and a
+    # mis-typed value must never silently switch violation recording on (same rule
+    # as the mission mode flags). Absent => False (recorder never built).
+    record_violations_raw = sf.get("record_violations", False)
+    if not isinstance(record_violations_raw, bool):
+        raise ConfigError("safety.record_violations must be a boolean")
     safety = SafetyConfig(
         min_separation_m=float(_require(sf, "min_separation_m", "safety")),
         obstacle_buffer_m=float(_require(sf, "obstacle_buffer_m", "safety")),
@@ -776,6 +791,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         obstacle_recovery=bool(sf.get("obstacle_recovery", False)),
         stall_detector=bool(sf.get("stall_detector", False)),
         stall_skip=bool(sf.get("stall_skip", False)),
+        record_violations=record_violations_raw,
     )
     rt = _require(raw, "rth", "")
     emr = rt.get("energy_map", {}) or {}

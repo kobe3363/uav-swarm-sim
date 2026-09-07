@@ -330,6 +330,51 @@ class PhotoEvent:
     distance_on_strip_m: float
 
 
+@dataclass(frozen=True)
+class SafetyViolation:
+    """EXP-10: one FACTUAL safety breach that actually occurred during execution
+    (not a predicted-then-avoided threat).
+
+    ``kind`` is "separation" | "obstacle" | "speed"; ``severity`` is "hard" |
+    "soft". ``agents`` is ``(id,)`` for obstacle/speed and the NORMALIZED pair
+    ``(lo, hi)`` for separation (so A-B and B-A are one record). One continuous
+    breach is ONE record; a breach that ends and restarts is a new record.
+
+    Time semantics (deliberately distinct):
+      * ``t_start`` / ``t_end`` -- the first and last SAMPLE at which the breach
+        was observed, i.e. the episode SPAN. Hysteresis can hold an episode open
+        across intervening non-violating samples.
+      * ``duration_s`` -- the accumulated VIOLATING time (n_samples * dt), which
+        is therefore NOT ``t_end - t_start`` in general.
+    ``ended_reason`` is "recovered" (metric returned past the hysteresis band),
+    "left_observed_set" (the agent failed/landed mid-breach -- its history is
+    preserved, closed at its last violating sample) or "mission_end".
+    ``truncated_at_end`` is True ONLY for an episode still open at mission end.
+
+    Exactly one extremum is set per ``kind`` (the rest stay None), so hard/soft
+    and the three kinds stay separable for EXP-11 and are never collapsed to one
+    score. Every extremum is updated ONLY while actually in violation, never
+    during the hysteresis-band non-violating samples:
+      * separation -> ``min_separation_m`` (the closest the pair actually came);
+      * obstacle   -> ``max_penetration_m`` (deepest inside the RAW obstacle;
+                      0.0 for a pure-soft/buffer-only episode);
+      * speed      -> ``peak_speed_m_s`` with ``limit_m_s`` (the envelope for a
+                      hard record, the commanded segment speed for a soft one).
+    """
+    kind: str
+    severity: str
+    agents: tuple[int, ...]
+    t_start: float
+    t_end: float
+    duration_s: float
+    ended_reason: str
+    truncated_at_end: bool = False
+    min_separation_m: float | None = None
+    max_penetration_m: float | None = None
+    peak_speed_m_s: float | None = None
+    limit_m_s: float | None = None
+
+
 @dataclass
 class MissionResult:
     metrics: object              # metrics.mission_metrics.MissionMetrics
@@ -395,3 +440,14 @@ class MissionResult:
     repartition_hold: dict | None = None
     # EXP-09 diagnostics only; no change to terminal outcome classification.
     rth_infeasible_events: tuple[Event, ...] = ()
+    # EXP-10: factual safety breaches recorded during execution (empty unless
+    # safety.record_violations is on). Additive; not serialized by the legacy
+    # result schema -- the EXP-11 exporter owns serialization. Hard and soft are
+    # kept as separate records, never collapsed to one score.
+    safety_violations: tuple[SafetyViolation, ...] = ()
+    # EXP-10: run-level safety minima, the FROZEN EXP-11 interface. Keys:
+    # "min_separation_m" (closest any airborne same-layer pair came; None if <2
+    # were ever airborne together), "min_obstacle_clearance_m" (closest any
+    # airborne drone came to a raw obstacle; None if obstacle-free), "n_hard" and
+    # "n_soft" (violation-record counts by severity). None with the flag off.
+    safety_minima: dict | None = None

@@ -377,3 +377,22 @@ def test_shutter_validation_checks_each_coverage_layer(config_path):
             # 20 m gives 0.4333 s at 10 m/s, below the 0.5 s shutter limit.
             "sensor.photogrammetry.min_photo_interval_s": 0.5,
         }))
+
+
+# --------------------------------------------------------------------------- #
+# EXP-10: safety.record_violations flag                                        #
+# --------------------------------------------------------------------------- #
+def test_record_violations_defaults_off(config_path):
+    assert load_config(config_path).safety.record_violations is False
+
+
+def test_record_violations_parses_true(config_path):
+    cfg = load_config(config_path, overrides={"safety.record_violations": True})
+    assert cfg.safety.record_violations is True
+
+
+def test_record_violations_must_be_boolean(config_path):
+    # A quoted YAML "false" is truthy in Python; the flag must reject non-booleans
+    # rather than silently switch violation recording on.
+    with pytest.raises(ConfigError, match=r"safety\.record_violations must be a boolean"):
+        load_config(config_path, overrides={"safety.record_violations": "false"})
