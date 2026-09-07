@@ -88,7 +88,7 @@ from ..execution.formation_manager import FormationManager
 from ..execution.redistribution import Redistributor
 from ..execution.repartition import Repartitioner
 from ..execution.rth_calculator import RthCalculator
-from ..execution.safety_monitor import SafetyMonitor
+from ..execution.safety_monitor import SafetyMonitor, ViolationRecorder
 from ..execution.state_machine import StateMachine
 from ..execution.swap_station import SwapStation
 
@@ -469,6 +469,12 @@ class SimulationEngine:
         # EM-01 Stage 4: skip-on-stall (validated to require the detector)
         self._stall_skip = cfg.safety.stall_skip and self._stall is not None
         self.safety = SafetyMonitor(self.layers, self.aero, cfg.safety, self.motion)
+        # EXP-10: factual safety-violation recorder (default OFF => None => not a
+        # single call below => byte-identical). Purely observational.
+        self.violations = (
+            ViolationRecorder(self.layers, cfg.safety, self.spec, cfg.sim.dt_s)
+            if cfg.safety.record_violations else None
+        )
         # dynamic obstacles + swarm sensing (feature is OFF unless enabled in config)
         self.sensing = SensingCoordinator(cfg.dynamic_obstacles, cfg.safety)
         if cfg.dynamic_obstacles.enabled and cfg.dynamic_obstacles.count > 0:
@@ -662,9 +668,25 @@ class SimulationEngine:
             if self._dynfield is not None:
                 self._dynfield.step(dt)
                 self.sensing.step(self.fleet.active(), self._dynfield, t, self.bus)
+            pre_airborne = None
+            if self.violations is not None:
+                self.violations.snapshot(self.fleet.active())
+                # Agents flying at the START of this tick: they execute a final
+                # movement even if the step lands (S_LANDED) or fails (S_FAIL)
+                # them, dropping them from airborne() before the observe below.
+                pre_airborne = self.fleet.airborne()
             for a in self.fleet.active():
                 a.step(dt, t, self.bus)
                 self.history.record_battery(a.id, t, a.battery.frac)
+            if self.violations is not None:
+                # Observe the UNION of the pre-step airborne set and the post-step
+                # airborne set (post-tick poses), so a breach on a drone's final
+                # executed movement -- the tick it lands or fails -- is still
+                # recorded and not merely closed as it leaves the set. Agents that
+                # were already grounded before the tick are in neither set.
+                observed = {a.id: a for a in pre_airborne}
+                observed.update({a.id: a for a in self.fleet.airborne()})
+                self.violations.observe(list(observed.values()), t)
             # proactive scanning is expensive: drain LIDAR power while active
             scan_w = self.sensing.scan_power_w()
             if scan_w > 0.0:
@@ -723,6 +745,15 @@ class SimulationEngine:
             self._terminal_reason = "max_timesteps"
         airborne_at_end = tuple(sorted(a.id for a in self.fleet.airborne()))
 
+        # EXP-10: close any still-open breach and collect the records. None when
+        # the recorder was never built (flag off) => the two MissionResult fields
+        # stay at their inert defaults.
+        if self.violations is not None:
+            self.violations.finalize(t)
+        safety_violations, safety_minima = (
+            self.violations.result() if self.violations is not None else ((), None)
+        )
+
         t_end = t
         self.history.finalize(t_end)
         coverage_frac = self._coverage_frac()
@@ -771,7 +802,9 @@ class SimulationEngine:
                                  r.to_json() for r in self._repartition_records),
                              repartition_hold=self._repartition_hold_summary(),
                              rth_infeasible_events=tuple(e for a in self.fleet.agents.values()
-                                                        for e in a.rth_infeasible_events))
+                                                        for e in a.rth_infeasible_events),
+                             safety_violations=safety_violations,
+                             safety_minima=safety_minima)
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
