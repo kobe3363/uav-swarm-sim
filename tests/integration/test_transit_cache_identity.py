@@ -1,5 +1,7 @@
-"""E3 full-mission byte-identity gate: the visibility-graph cache is bitwise
-identical to the uncached build on the obstacle-dense FIX-B1 replication.
+"""E3 cache identity on the obstacle-dense FIX-B1 replication.
+
+EXP-09 rejects this fixture's launch inside clearance in both branches. A
+complete valid flight's bitwise identity is covered by test_exp09_coherent.
 
 Uses an IN-PROCESS A/B rather than a pinned cross-commit hash: unlike the
 energy-map flag gates (where flag-OFF does nothing, so an in-process compare would
@@ -65,10 +67,11 @@ def _run_signature(res) -> tuple:
 
 @pytest.mark.slow
 def test_dense_mission_cache_byte_identical(monkeypatch):
-    """CORE E3 GATE: on the dense fixture, the cached run reproduces the uncached
-    run bit-for-bit -- full metrics tuple, complete FSM sojourn trajectory,
-    outcome, coverage, the stalled set and skipped legs. Also confirms the cache
-    was actually exercised (blocked chords occurred)."""
+    """Cached and uncached builds reject the same unsafe historical launch.
+
+    A separate valid complete-flight test exercises actual cached graph edges
+    and compares full trajectory, energy and photo output exactly.
+    """
     cfg = _dense_cfg()
 
     # uncached reference: force graph_cache=None through the symbol the engine
@@ -80,15 +83,20 @@ def test_dense_mission_cache_byte_identical(monkeypatch):
         return real_route_transit(*args, **kwargs)
 
     monkeypatch.setattr(se, "route_transit", _uncached)
-    res_uncached = _engine(cfg).run()
+    from uav_swarm_sim.planning.visibility_router import RouteUnavailable
+    with pytest.raises(RouteUnavailable, match="endpoint_outside_free_space") as uncached:
+        _engine(cfg)._build()
     monkeypatch.undo()
 
     eng = _engine(cfg)
-    res_cached = eng.run()
-
-    assert eng._transit_graph_cache, "no ok_pairs built -> route_transit never routed"
-    assert res_cached.outcome is Outcome.MISSION_SUCCESS  # sanity: FIX-B1 case succeeds
-    assert _run_signature(res_cached) == _run_signature(res_uncached)
+    with pytest.raises(RouteUnavailable) as cached:
+        eng._build()
+    assert str(cached.value) == str(uncached.value)
+    from shapely.geometry import Point
+    assert any(eng.env.buffered_obstacles.contains(Point(p.as_xy()))
+               and not eng.env.in_obstacle(p.as_xy()) for p in eng.deploy_poses)
+    # Valid complete-flight cache equality is covered separately by
+    # test_exp09_coherent::test_complete_flight_cache_byte_identity.
 
 
 @pytest.mark.slow

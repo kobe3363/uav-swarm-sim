@@ -393,3 +393,5 @@ class MissionResult:
     # that asymmetry is visible instead of assumed negligible. None with the flag
     # off (no drone is ever held).
     repartition_hold: dict | None = None
+    # EXP-09 diagnostics only; no change to terminal outcome classification.
+    rth_infeasible_events: tuple[Event, ...] = ()

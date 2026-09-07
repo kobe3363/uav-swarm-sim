@@ -304,6 +304,8 @@ class RTHConfig:
     check_interval_s: float
     reserve_frac: float
     energy_map: EnergyMapConfig = field(default_factory=EnergyMapConfig)
+    execution_coherent: bool = False
+    emergency_frac: float | None = None
 
 
 @dataclass(frozen=True)
@@ -789,10 +791,15 @@ def _build(raw: dict, config_hash: str) -> Config:
         route=bool(emr.get("route", False)),
         zone_demotion=bool(emr.get("zone_demotion", False)),
     )
+    coherent_raw = rt.get("execution_coherent", False)
+    if not isinstance(coherent_raw, bool):
+        raise ConfigError("rth.execution_coherent must be a boolean")
     rth = RTHConfig(
         check_interval_s=float(_require(rt, "check_interval_s", "rth")),
         reserve_frac=float(_require(rt, "reserve_frac", "rth")),
         energy_map=energy_map,
+        execution_coherent=coherent_raw,
+        emergency_frac=(float(rt["emergency_frac"]) if rt.get("emergency_frac") is not None else None),
     )
     si = _require(raw, "sim", "")
     sim = SimConfig(
@@ -1244,8 +1251,30 @@ def _validate(cfg: Config, raw: dict) -> None:
         raise ConfigError("rth.energy_map.decide requires rth.energy_map.enabled: true")
     if emc.route and not emc.enabled:
         raise ConfigError("rth.energy_map.route requires rth.energy_map.enabled: true")
-    if emc.zone_demotion and not emc.decide:
-        raise ConfigError("rth.energy_map.zone_demotion requires rth.energy_map.decide: true")
+    if emc.zone_demotion and not (emc.decide or cfg.rth.execution_coherent):
+        raise ConfigError("rth.energy_map.zone_demotion requires rth.energy_map.decide or rth.execution_coherent")
+    if cfg.rth.emergency_frac is not None and not (
+        math.isfinite(cfg.rth.emergency_frac) and 0.0 <= cfg.rth.emergency_frac < 1.0
+    ):
+        raise ConfigError("rth.emergency_frac must be finite and in [0, 1), or null")
+    if cfg.rth.execution_coherent:
+        if not (cfg.coverage.transit_free_space and cfg.coverage.ferry_free_space):
+            raise ConfigError("rth.execution_coherent requires coverage.transit_free_space and ferry_free_space")
+        if cfg.platform.type is not PlatformType.MULTIROTOR or len(cfg.layers.altitudes_m) != 1:
+            raise ConfigError("rth.execution_coherent currently supports single-layer MULTIROTOR missions")
+        if cfg.dynamic_obstacles.enabled or cfg.mission.type is not MissionType.COVERAGE:
+            raise ConfigError("rth.execution_coherent requires a static coverage mission")
+        if cfg.env.obstacle_floor_m != 0 or cfg.env.obstacle_ceil_range_m is not None:
+            raise ConfigError("rth.execution_coherent requires ground-based unbounded obstacles")
+        # EXP-08 interaction: coherent execution replaces Agent.step, which is
+        # where ZONE_COMPLETE is announced and the one-tick re-task hold is set.
+        # A drone finishing its zone therefore goes straight to S3_RTH, and
+        # eligible_executors excludes that state -- zone-completion
+        # re-partitioning would silently never happen and requested work would
+        # be left unassigned. Rejected here rather than run as a quiet no-op.
+        if cfg.mission.repartition_enabled:
+            raise ConfigError(
+                "rth.execution_coherent does not support mission.repartition_enabled")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):

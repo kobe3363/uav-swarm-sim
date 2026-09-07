@@ -178,8 +178,10 @@ def _return_reason_counts(res) -> Counter:
     return c
 
 
-def _study01_engine(*, zone_demotion: bool) -> SimulationEngine:
-    cfg = load_config("config/study01_demand.yaml")
+def _study01_engine(*, zone_demotion: bool, clear_world: bool = False) -> SimulationEngine:
+    cfg = load_config("config/study01_demand.yaml", overrides={
+        "env.obstacle_density_per_km2": 0.0, "rth.emergency_frac": 0.05,
+    } if clear_world else None)
     # replace() the existing map config rather than building a fresh one, so any
     # rth.energy_map fields the YAML defines (e.g. a future Stage-5 A/B block) are
     # preserved instead of silently reset to dataclass defaults.
@@ -198,8 +200,11 @@ def test_zone_demotion_shifts_return_attribution_to_rth_energy():
     the dynamic map governs the return. One replication is enough to show the
     DIRECTION (the 6-rep A/B measured critical 49->0, rth_energy 0->16); exact
     counts are physics-dependent and deliberately NOT pinned."""
-    off = _return_reason_counts(_study01_engine(zone_demotion=False).run())
-    on = _return_reason_counts(_study01_engine(zone_demotion=True).run())
+    # EXP-09: preserve workload/capacity but remove obstacles in BOTH arms to
+    # isolate return attribution from the historical invalid launch geometry.
+    # Use the approved independent emergency floor; reporting bins stay intact.
+    off = _return_reason_counts(_study01_engine(zone_demotion=False, clear_world=True).run())
+    on = _return_reason_counts(_study01_engine(zone_demotion=True, clear_world=True).run())
 
     # OFF: the static net governs -> critical_battery present, rth_energy absent
     assert off["critical_battery"] > 0
@@ -207,6 +212,13 @@ def test_zone_demotion_shifts_return_attribution_to_rth_energy():
     # ON: the static net is gone -> critical_battery eliminated, rth_energy takes over
     assert on["critical_battery"] == 0
     assert on["rth_energy"] > off["rth_energy"]
+
+
+def test_historical_study_launch_rejected_independently_of_zone_demotion():
+    from uav_swarm_sim.planning.visibility_router import RouteUnavailable
+    for demotion in (False, True):
+        with pytest.raises(RouteUnavailable, match="endpoint_outside_free_space"):
+            _study01_engine(zone_demotion=demotion)._build()
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ from ..physical_model.motion_model import MotionModel
 from .photo_tracker import PhotoTracker
 from .rth_calculator import RthCalculator
 from .state_machine import AgentContext, StateMachine, Transition
+from ..planning.visibility_router import RouteUnavailable
 
 # Task 2.5 Q2 (stateful S_OBS recovery): if the validated avoidance + leg-skip
 # still cannot clear the corridor after this many CONSECUTIVE obstacle re-entries
@@ -174,6 +175,12 @@ class Agent:
         self._rth_last_check_level_j = float("inf")
         self._sortie_idx = 0
         self.sortie_arms: list[tuple[int, float]] = []
+        self.rth_infeasible_events: list[Event] = []
+        self._rth_blocked = False
+        self._coherent = None
+        if getattr(rth, "execution_coherent", False):
+            from .coherent_flight import CoherentFlight
+            self._coherent = CoherentFlight(self)
 
         # Task 2.5 Q2 (stateful S_OBS recovery). Dormant unless the SafetyMonitor
         # sends recovery-mode threat signals; all three default to the inert state
@@ -200,6 +207,11 @@ class Agent:
         self._launch_ready = True
         self._zone_complete_published = False
         self._repartition_hold = False
+        if self._coherent is not None:
+            try:
+                self._coherent.validate_assignment()
+            except RouteUnavailable as exc:
+                self._coherent.reject(exc)
 
     def _build_coverage_legs(self, waypoints: list[Waypoint]) -> list[Path]:
         legs: list[Path] = []
@@ -250,7 +262,17 @@ class Agent:
         self._cov_frac_deficit = 0
         self._coverage_complete = False
         self._transit = transit
-        if self.state in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S_OBS):
+        if self._coherent is not None:
+            try:
+                self._coherent.validate_assignment()
+            except RouteUnavailable as exc:
+                if self.state.is_airborne:
+                    self._coherent.assignment_error = str(exc)
+                else:
+                    self._coherent.reject(exc)
+                return
+        if self.state in (AgentState.S1_TRANSIT, AgentState.S2_MISSION, AgentState.S_OBS) or (
+                self._coherent is not None and self.state is AgentState.S_FERRY):
             self._set_legs([transit])
             self.state = AgentState.S1_TRANSIT
             # EM-01 Stage 2: the remaining plan just changed and this jump
@@ -394,6 +416,9 @@ class Agent:
     # per-tick                                                           #
     # ------------------------------------------------------------------ #
     def step(self, dt: float, t: float, bus) -> None:
+        if self._coherent is not None:
+            self._coherent.step(dt, t, bus)
+            return
         if self.state is AgentState.S_FAIL:
             return
 
@@ -464,6 +489,17 @@ class Agent:
             self._apply_transition(tr, t, bus)
 
     def _tick_dynamics(self, dt: float, t: float) -> None:
+        if self._rth_blocked and self.state.is_airborne:
+            # Capped at what the battery actually holds: drain() floors the level
+            # at 0 but energy_consumed_j does not, so an uncapped charge would
+            # report more energy than was supplied on the final tick of every
+            # blocked-RTH depletion -- which is the designed end of this path.
+            # CoherentFlight.tick's holding branch already caps the same way.
+            e = min(self.battery.level_j,
+                    self.em.segment_energy(ManeuverType.HOVER, dt))
+            self.battery.drain(e)
+            self.energy_consumed_j += e
+            return
         # S_LANDED (EXP-04) is a powered-down ground state: zero energy, like
         # S_SWAP / S_FAIL (the S0_IDLE hover-idle draw does not apply).
         if self.state in (AgentState.S0_IDLE, AgentState.S_SWAP, AgentState.S_FAIL,
@@ -561,12 +597,17 @@ class Agent:
             at_zone_entry=(self.state is AgentState.S1_TRANSIT and self._phase_done()),
             rth_decision=getattr(self, "_rth_decision", False),
             coverage_complete=(self.state in (AgentState.S2_MISSION, AgentState.S_FERRY) and self._phase_done()),
-            landed_at_base=(self.state is AgentState.S3_RTH and self._phase_done()),
+            landed_at_base=(self.state is AgentState.S3_RTH and self._phase_done()
+                            and not self._rth_blocked and (self._coherent is None or
+                            (not self._coherent.holding and self._coherent.altitude_m <= 1e-8
+                             and math.dist(self.pose.as_xy(), self.base.as_xy()) <= 1e-6))),
             own_plan_incomplete=(self._cov_idx < len(self._cov_legs)),
             swap_done=self._swap_done,
             obs_return_state=self._obs_return,
             on_connector=self._on_connector(),
             repartition_pending=self._repartition_hold,
+            emergency_battery=(self.battery.frac < self.rth.emergency_frac
+                               if getattr(self.rth, "emergency_frac", None) is not None else None),
         )
 
     def _on_connector(self) -> bool:
@@ -595,7 +636,8 @@ class Agent:
         dst = tr.dst
         if dst is AgentState.S1_TRANSIT:
             self._launch_ready = False
-            self._set_legs([self._transit] if self._transit is not None else [])
+            self._set_legs(self._coherent.launch_legs() if self._coherent is not None
+                           else [self._transit] if self._transit is not None else [])
             # EM-01 Stage 2: this branch is every sortie start (initial launch
             # AND post-swap relaunch both come through S0 -> S1). No-op flag-off.
             self._arm_sortie()
@@ -614,12 +656,19 @@ class Agent:
             # stubs replace the calculator with bare objects (same rule as the
             # Stage-2 map_decide_on read); flag-off => attr False => the
             # straight chord below, byte-identical.
-            ret = None
-            if getattr(self.rth, "map_route_on", False):
-                ret = self.rth.plan_return(self.pose)
-            if ret is None:
-                ret = self.motion.plan(self.pose, self.base, ManeuverType.CRUISE)
-            self._set_legs([ret])
+            if self._coherent is not None:
+                self._set_legs(self._coherent.prepare_return(t, bus))
+            else:
+                ret = None
+                if getattr(self.rth, "map_route_on", False):
+                    ret = self.rth.plan_return(self.pose)
+                if ret is None:
+                    ret = self.motion.plan(self.pose, self.base, ManeuverType.CRUISE)
+                    if getattr(self.rth, "map_route_on", False) and not self.rth.path_clear(ret):
+                        self._rth_blocked = True
+                        self.report_rth_infeasible(t, bus, None, "rth_blocked")
+                        ret = None
+                self._set_legs([ret] if ret is not None else [])
         elif dst is AgentState.S_LANDED:
             # EXP-04 (mission.no_swap_mode): touchdown on the sortie's own
             # battery is terminal -- no SWAP_REQUEST, no battery.reset(), no
@@ -647,8 +696,16 @@ class Agent:
                 self.battery.reset()
                 self._swap_done = False
                 # resume remaining coverage: transit from base to resume entry
-                self._transit = self._resume_transit()
-                self._launch_ready = True
+                try:
+                    self._transit = self._resume_transit()
+                    self._launch_ready = True
+                except RouteUnavailable as exc:
+                    # The remaining coverage legs are abandoned here. Record the
+                    # cause: without it the agent simply settles and the run ends
+                    # with no trace of why the work was dropped.
+                    self.report_rth_infeasible(t, bus, None, str(exc))
+                    self.plan = None
+                    self._launch_ready = False
             self._set_legs([])
         elif dst is AgentState.S_OBS:
             self._obs_return = self.state
@@ -725,7 +782,10 @@ class Agent:
                 return routed
         if self._transit_planner is not None:
             return self._transit_planner(self.base, entry)
-        return self.motion.plan(self.base, entry, ManeuverType.CRUISE)
+        chord = self.motion.plan(self.base, entry, ManeuverType.CRUISE)
+        if getattr(self.rth, "map_route_on", False) and not self.rth.path_clear(chord):
+            raise RouteUnavailable("resume_blocked")
+        return chord
 
     def skip_stuck_leg(self) -> None:
         """EM-01 Stage 4 (safety.stall_skip): forfeit the coverage leg this agent
@@ -790,6 +850,8 @@ class Agent:
         remaining bundle through this one method (single source of truth).
         Default ``None`` is the live ``_cov_idx`` path, byte-identical.
         """
+        if self._coherent is not None and from_idx is None:
+            return self._coherent.bundle()
         k = self._cov_idx if from_idx is None else from_idx
         if k >= len(self._cov_legs):
             return 0.0, self.pose
@@ -813,7 +875,7 @@ class Agent:
         re-trigger RTH. Resetting ``_rth_last_check_level_j`` to inf makes the
         first below-arm tick always evaluate (the arm-crossing check for free).
         """
-        if not getattr(self.rth, "map_decide_on", False):
+        if self._coherent is not None or not getattr(self.rth, "map_decide_on", False):
             return
         self._sortie_idx += 1
         self.sortie_arms.append((self._sortie_idx, self._compute_arm()))
@@ -862,3 +924,20 @@ class Agent:
 
     def signal_threat_cleared(self) -> None:
         self._threat_cleared = True
+
+    def report_rth_infeasible(self, t, bus, deficit_j, reason):
+        """Diagnostic only. Unknown route cost uses null, never invented joules.
+
+        Every OCCURRENCE is recorded, not merely every distinct reason: a
+        swap cycle starts a fresh sortie on a full battery and can re-enter
+        the same infeasibility later, with a different time and deficit. A
+        reason-keyed guard would silently drop those. The call sites are
+        S3_RTH entries, not per-tick, so this cannot flood.
+        """
+        event = Event(EventType.RTH_INFEASIBLE, t, {
+            "agent_id": self.id, "deficit_j": deficit_j, "reason": reason,
+        })
+        self.rth_infeasible_events.append(event)
+        bus.publish(event)
+        log.warning("rth_infeasible t=%s drone_id=%s deficit_j=%s reason=%s",
+                    t, self.id, deficit_j, reason)
