@@ -69,6 +69,25 @@ class _WorkRegion:
 class Decomposer(ABC):
     name: DecompositionAlgo
 
+    # EXP-08: does this decomposer read the remaining-work set ITSELF?
+    #
+    # False (the default, and every TGC/Voronoi/k-means peer): the work atoms
+    # are TGC regions, and restricting the partition to a sub-area is done by
+    # passing ``target_area``, which ``clip_regions`` below intersects each
+    # region with. A re-partition over remaining work therefore hands such a
+    # decomposer the coverage raster's uncovered geometry.
+    #
+    # True (the EXP-07 grid partitioners): the work atoms are coverage grid
+    # cells taken straight from the raster, which already holds only the
+    # uncovered ones. Such a decomposer must NOT be given a ``target_area`` --
+    # it cannot honour one and says so by raising.
+    #
+    # Declared here so a caller can ASK which input a decomposer takes instead
+    # of testing its class. An isinstance branch is exactly the confound EXP-08
+    # removes from the engine; replacing it with another would be a regression
+    # in kind.
+    partitions_raster_work: bool = False
+
     @abstractmethod
     def decompose(
         self,

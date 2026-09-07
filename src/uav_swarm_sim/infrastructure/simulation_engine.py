@@ -173,7 +173,6 @@ class SimulationEngine:
             # the Decomposer ABC signature is untouched.
             return LloydCvtDecomposer(
                 raster=self._require_raster(DecompositionAlgo.LLOYD_CVT),
-                deploy_poses=self.deploy_poses,
                 launch_pose=self.launch_pose,
                 settings=self.cfg.planning.partition,
                 energy_map=self.energy_map,
@@ -182,9 +181,7 @@ class SimulationEngine:
             # EXP-07b: the same partitioner, an energy weight source. It needs
             # return costs at planning time, which is why the RTH calculator is
             # built above the decomposition (B-1).
-            from ..planning.energy_balance import (
-                DroneEnergyState, build_energy_balance_context,
-            )
+            from ..planning.energy_balance import build_energy_balance_context
 
             raster = self._require_raster(DecompositionAlgo.LLOYD_ENERGY)
             if not self.cfg.planning.energy_balance.enabled:
@@ -192,9 +189,11 @@ class SimulationEngine:
                     "--algo lloyd_energy requires planning.energy_balance.enabled = true"
                 )
             capacity_j = self.spec.battery_capacity_j
+            # No drone_states here: the decomposer builds them from the views it
+            # is handed (EXP-08), which at t=0 carry exactly deploy_poses[i] and
+            # initial_soc_by_drone[i] -- the values this call site used to freeze.
             return LloydEnergyDecomposer(
                 raster=raster,
-                deploy_poses=self.deploy_poses,
                 launch_pose=self.launch_pose,
                 settings=self.cfg.planning.partition,
                 energy_map=self.energy_map,
@@ -203,11 +202,6 @@ class SimulationEngine:
                     lambda pose, alt: self.rth.return_energy(pose, altitude_m=alt),
                     emap=self.energy_map, graph_cache=self._transit_graph_cache,
                 ),
-                drone_states=[
-                    DroneEnergyState(i, self.deploy_poses[i],
-                                     self.initial_soc_by_drone[i] * capacity_j, False)
-                    for i in range(self.cfg.fleet.n_drones)
-                ],
                 altitude_m=self.layers.altitude(0),
                 capacity_j=capacity_j,
             )

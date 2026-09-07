@@ -314,7 +314,10 @@ def initial_sites(
 
     ``deploy_poses`` (the default) reproduces the drone-pose seeding convention
     the existing position-based decomposers use, so switching the partitioner on
-    does not silently change where the sweep starts.
+    does not silently change where the sweep starts. Since EXP-08 the poses
+    handed in are the drones' CURRENT poses, so at t=0 the policy still seeds
+    from the staging ring (the name's origin) and an in-flight re-partition
+    seeds from where each drone actually is.
 
     ``maximin`` spreads the sites over the work itself and then matches sites to
     drones by a deterministic OPTIMAL assignment -- minimum total squared
@@ -533,24 +536,34 @@ class _LloydDecomposer(Decomposer):
 
     The ABC signature ``decompose(tgc, env, drones, target_area)`` is NOT
     changed. Everything this partitioner needs beyond it -- the raster, the
-    staging poses, the launch pose, the energy map -- arrives through the
-    constructor, exactly the way ``KMeansHeuristicDecomposer`` takes its motion
-    model and RNG. ``tgc`` is deliberately unused: the work atoms are coverage
-    grid cells, not TGC regions.
+    launch pose, the energy map -- arrives through the constructor, exactly the
+    way ``KMeansHeuristicDecomposer`` takes its motion model and RNG. ``tgc`` is
+    deliberately unused: the work atoms are coverage grid cells, not TGC regions.
+
+    Per-drone state comes from the ``DroneStateView`` list the CALLER passes,
+    never from a constructor snapshot (EXP-08). The pose seeds the drone's site
+    and labels which free-space component it can reach; the battery fraction and
+    the airborne flag feed the energy weight source. At t=0 the engine builds
+    those views straight from the staging ring and the initial SoC, so this is
+    byte-identical to the previous snapshot behaviour -- but an IN-FLIGHT
+    re-partition now reads where the drones actually are and what they actually
+    have left, which is the whole point of re-partitioning at all.
     """
 
+    # The work atoms are the raster's uncovered cells; see the ABC.
+    partitions_raster_work = True
+
     def __init__(
-        self, *, raster: CoverageRaster, deploy_poses: list[Pose], launch_pose: Pose,
+        self, *, raster: CoverageRaster, launch_pose: Pose,
         settings: PartitionConfig, energy_map=None,
     ) -> None:
         self._raster = raster
-        self._deploy_poses = list(deploy_poses)
         self._launch_pose = launch_pose
         self._settings = settings
         self._energy_map = energy_map
         self.diagnostics: PartitionDiagnostics | None = None
 
-    def _weight_policy(self):
+    def _weight_policy(self, drones: list[DroneStateView]):
         raise NotImplementedError
 
     def decompose(
@@ -572,13 +585,17 @@ class _LloydDecomposer(Decomposer):
         t0 = time.perf_counter()
         ordered = sorted(drones, key=lambda d: d.id)          # sites in id order
         ids = [d.id for d in ordered]
+        # The pose the CALLER supplied, not a constructor snapshot. It does two
+        # jobs below: it seeds this drone's site, and it labels which free-space
+        # component the drone can reach (``_drone_components``). A drone that has
+        # flown into another component must be labelled with THAT component, or
+        # the eligibility mask would describe where it took off from.
         poses = np.array(
-            [[self._deploy_poses[d.id].x, self._deploy_poses[d.id].y] for d in ordered],
-            dtype=float,
+            [[d.pose.x, d.pose.y] for d in ordered], dtype=float,
         ).reshape(len(ordered), 2)
 
         cells, drone_comp = build_eligible_cells(self._raster, env, poses, self._energy_map)
-        policy = self._weight_policy()
+        policy = self._weight_policy(ordered)
         labels, sites, weights, converged, iterations, shift, cells = LloydPartitioner(
             self._settings, policy
         ).run(cells, poses, drone_comp, self._launch_pose)
@@ -644,7 +661,7 @@ class LloydCvtDecomposer(_LloydDecomposer):
     """``lloyd_cvt`` -- uniform weights: the Lloyd/CVT reference arm."""
     name = DecompositionAlgo.LLOYD_CVT
 
-    def _weight_policy(self):
+    def _weight_policy(self, drones: list[DroneStateView]):
         return UniformWeightPolicy()
 
 
@@ -864,17 +881,34 @@ class LloydEnergyDecomposer(_LloydDecomposer):
     """
     name = DecompositionAlgo.LLOYD_ENERGY
 
-    def __init__(self, *, energy_context, drone_states, altitude_m: float,
+    def __init__(self, *, energy_context, altitude_m: float,
                  capacity_j: float, **kwargs) -> None:
         super().__init__(**kwargs)
         self._energy_context = energy_context
-        self._drone_states = list(drone_states)
         self._altitude_m = altitude_m
         self._capacity_j = capacity_j
 
-    def _weight_policy(self):
+    def _weight_policy(self, drones: list[DroneStateView]):
+        """Energy states built from the CALLER's views (EXP-08).
+
+        A constructor snapshot would pin the weights to the t=0 poses and the
+        t=0 charge, which is exactly what makes the two arms compute the same
+        partition when nothing re-partitions in flight. Reading the views makes
+        ``budget_j`` -- which subtracts ferry and RTH from the candidate zone's
+        anchor -- a function of where the drone IS and what it has LEFT.
+
+        Deferred import for the same reason the rest of this file defers it:
+        ``energy_balance`` pulls in the launch-site and routing modules.
+        """
+        from .energy_balance import DroneEnergyState
+
+        states = [
+            DroneEnergyState(d.id, d.pose, d.battery_frac * self._capacity_j, d.airborne)
+            for d in drones
+        ]
+        # Fallback pose for an EMPTY zone is the drone's own pose, so a drone
+        # that wins no cells is anchored where it actually is.
         return EnergyWeightPolicy(
-            self._energy_context, self._drone_states, self._altitude_m,
-            self._settings, self._capacity_j,
-            [self._deploy_poses[s.drone_id] for s in self._drone_states],
+            self._energy_context, states, self._altitude_m,
+            self._settings, self._capacity_j, [d.pose for d in drones],
         )
