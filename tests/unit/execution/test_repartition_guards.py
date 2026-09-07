@@ -13,6 +13,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 
 import pytest
 from shapely.geometry import box
@@ -244,26 +245,36 @@ def test_guard_1_an_already_covered_cell_is_never_re_issued():
 
 
 def test_guard_2_a_cell_outside_the_snapshot_is_refused():
-    """A zone reaching beyond the survey claims cells the snapshot never held.
-    Cheap to check -- the same query already answers guards 1 and 3 -- and it is
-    what makes the set of guards complete rather than merely plausible."""
+    """Guard 2 is defence in depth, and this test says so rather than pretending.
+
+    Through the ordinary path it is nearly unreachable: the snapshot IS the
+    raster's uncovered set at the instant of the call, so every uncovered cell a
+    zone claims is in it by construction. What guard 2 catches is a decomposer
+    answering about a DIFFERENT cell set than the one this revision read -- so
+    that is what is constructed here, by verifying a whole-survey zone against a
+    deliberately truncated snapshot.
+
+    The earlier version of this test covered a row and proposed a zone over the
+    whole survey. Guard 1 fires first on that input, so it passed on the wrong
+    guard while its name promised this one, and a `match` alternation hid the
+    substitution. (Found in review of this PR.)
+    """
     raster = _raster()
-    outside = box(0.0, 0.0, 200.0, 100.0)
+    full = raster.uncovered_plannable_cells()
+    assert len(full) == TOTAL_CELLS
+    truncated = replace(full, indices=full.indices[:TOTAL_CELLS // 2])
 
-    class _Bigger(_Decomposer):
-        pass
+    rp = _repartitioner(raster, _Decomposer(lambda d: {}))
+    partition = Partition(DecompositionAlgo.LLOYD_CVT, {0: _zone(0, AREA)}, 0.0)
+    covered = raster.plannable_covered_area_m2
 
-    # A zone whose polygon covers the survey is fine; make one claim a cell that
-    # the snapshot excluded by shrinking the snapshot instead.
-    raster.record_segment(Pose(-20.0, 5.0, 0.0), Pose(220.0, 5.0, 0.0), 20.0, 0.1)
-    covered_row = TOTAL_CELLS - len(raster.uncovered_plannable_cells())
-    assert covered_row > 0
+    with pytest.raises(AssertionError, match="not in the remaining-work snapshot"):
+        rp._verify(partition, truncated, covered, TOTAL_AREA)
 
-    with pytest.raises(AssertionError, match="already-covered|not in the remaining-work"):
-        _attempt_with_zones(raster, lambda d: {
-            d[0].id: _zone(d[0].id, outside),
-            d[1].id: _zone(d[1].id, box(0.0, 0.0, 0.0, 0.0)),
-        })
+    # against the FULL snapshot the very same zone passes, so the failure above
+    # is guard 2 and nothing else
+    assert rp._verify(partition, full, covered, TOTAL_AREA) == (TOTAL_CELLS,
+                                                               TOTAL_AREA)
 
 
 def test_guard_3_the_same_ground_may_not_go_to_two_drones():

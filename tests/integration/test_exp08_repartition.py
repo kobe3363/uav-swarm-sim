@@ -16,6 +16,7 @@ from shapely.geometry import box, mapping
 
 from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import (
+    AgentState,
     DecompositionAlgo,
     ManeuverType,
     Outcome,
@@ -219,8 +220,11 @@ def test_a_drone_committed_to_a_return_is_never_handed_work(area_file):
     original = engine._run_repartition
 
     def probe(t, causes):
+        # Identity, not the serialized value: if AgentState.S3_RTH.value ever
+        # changed, a string comparison would leave `returning` empty and this
+        # probe would pass while checking nothing. (Found in review of this PR.)
         returning = {a.id for a in engine.fleet.agents.values()
-                     if a.state.value == "S3_RTH"}
+                     if a.state is AgentState.S3_RTH}
         snapshot = {a.id: (a.plan, a._cov_idx, tuple(a._legs))
                     for a in engine.fleet.agents.values() if a.id in returning}
         original(t, causes)
