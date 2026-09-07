@@ -20,8 +20,9 @@ test keeps covering the skip-off path against main.
 THE RESIDUAL TEST replays study01_demand replication 7 -- one of the 4/50 M0
 residuals (drone #0 stall-cycles on coverage leg 48, whose entry cell is
 in-grid with E_home=inf: a genuine obstacle-boxed pocket): with stall_skip on,
-the replication that stall-halted as MISSION_INCOMPLETE now terminates cleanly
-as MISSION_PARTIAL with the forfeited strip on the record.
+EXP-09 rejects its unsafe RTH fallback. The drone depletes while holding and
+the existing lifecycle reports MISSION_FAILED. Strip-skip accounting remains
+independently tested below; it cannot repair an unreachable return.
 """
 from __future__ import annotations
 
@@ -169,7 +170,7 @@ def test_target_visit_never_skips_and_keeps_the_fix_b4_halt():
 # THE RESIDUAL TEST (M0 rep 7) -- the stage's acceptance criterion             #
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
-def test_stall_skip_turns_the_boxed_replication_partial():
+def test_stall_skip_cannot_make_an_unreachable_return_safe():
     cfg = load_config("config/study01_demand.yaml")
     cfg = dataclasses.replace(
         cfg,
@@ -183,13 +184,22 @@ def test_stall_skip_turns_the_boxed_replication_partial():
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), replication=7,
                            planner=PlannerKind.DUBINS)
     res = eng.run()
-    # skipped-not-stalled: the forfeit is on the record, the halt flag is not
-    assert res.outcome is Outcome.MISSION_PARTIAL
-    assert res.skipped_legs == ((0, 48),)
+    # EXP-09 rejects the invalid map route AND unsafe straight fallback. The
+    # existing depletion lifecycle, not strip skipping, determines this outcome.
+    from uav_swarm_sim.infrastructure.enums import ManeuverType
+    from uav_swarm_sim.planning.visibility_router import _path_clear
+    assert res.outcome is Outcome.MISSION_FAILED
+    blocked = [a for a in eng.fleet.agents.values() if a._rth_blocked]
+    assert blocked
+    for a in blocked:
+        chord = a.motion.plan(a.pose, a.base, ManeuverType.CRUISE)
+        assert not _path_clear(chord, eng.env)
+        assert a.battery.level_j == 0
+    assert any(e.payload["reason"] == "rth_blocked" for e in res.rth_infeasible_events)
     assert res.stalled_agents == ()
-    # honest coverage: below 1.0 by exactly the forfeited strip's credit
-    assert 0.99 <= res.coverage_frac < 1.0
-    # clean termination, no timestep burn to the ceiling
+    assert res.coverage_frac < 1.0
+    # No timestep burn or fictitious safe landing; unit tests above still pin
+    # the exact skip accounting independently of this infeasible return.
     assert res.metrics.duration_s < 0.5 * cfg.sim.max_timesteps * cfg.sim.dt_s
 
 

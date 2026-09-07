@@ -11,8 +11,8 @@ Both tests replay that exact replication end-to-end, so they are marked slow.
 Flags are set via dataclasses.replace (not YAML), keeping them independent of
 config/study01_demand.yaml's own flag values.
 
-  * FIX-B1 on  -> the resume chord is routed around the prisms at plan time:
-    the mission that livelocked now SUCCEEDS with a finite swap demand.
+  * FIX-B1 on -> EXP-09 rejects the historical launch inside clearance.
+    The former SUCCESS depended on an unchecked escape chord.
   * FIX-B4 on (B1 off) -> the livelock is cut after 5 no-progress swap cycles:
     early MISSION_INCOMPLETE with stalled_agents == (3,) instead of a
     max_timesteps burn (full flag-off byte-identity vs the GOLDEN batch is the
@@ -59,15 +59,21 @@ def _swaps_per_drone(res) -> dict[int, int]:
 
 
 @pytest.mark.slow
-def test_fix_b1_routed_transit_unblocks_the_livelocked_replication():
-    res = _run(_cfg(transit_free_space=True, stall_detector=True))
-    assert res.outcome is Outcome.MISSION_SUCCESS
-    assert res.stalled_agents == ()
-    swaps = _swaps_per_drone(res)
-    # the pathological signature (151 swaps on drone #3) is gone: every drone's
-    # demand is a small finite count, consistent with the healthy reps (D <= 11)
-    assert sum(swaps.values()) <= 15
-    assert swaps.get(LOOP_DRONE, 0) <= 5
+def test_fix_b1_rejects_the_buffered_launch_in_livelocked_replication():
+    from shapely.geometry import Point
+    from uav_swarm_sim.planning.visibility_router import RouteUnavailable
+
+    cfg = _cfg(transit_free_space=True, stall_detector=True)
+    eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed),
+                           replication=REPLICATION, planner=PlannerKind.DUBINS)
+    with pytest.raises(RouteUnavailable, match="endpoint_outside_free_space"):
+        eng.run()
+    # Independent geometry evidence: the historical success used an unchecked
+    # escape chord from inside clearance. This is not a valid routing fixture.
+    unsafe = [p for p in eng.deploy_poses
+              if eng.env.buffered_obstacles.contains(Point(p.as_xy()))]
+    assert unsafe
+    assert any(not eng.env.in_obstacle(p.as_xy()) for p in unsafe)
 
 
 @pytest.mark.slow

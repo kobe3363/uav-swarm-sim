@@ -104,9 +104,13 @@ def _swaps_per_drone(res) -> dict[int, int]:
 
 
 @pytest.mark.slow
-def test_boxing_map_routing_unblocks_the_livelocked_replication():
-    """THE BOXING TEST: map routing alone (no B1, no map decide) resolves the
-    replication that livelocks with straight chords."""
+def test_boxing_map_routing_rejects_buffered_resume():
+    """EXP-09: the historical ring start is inside clearance, not a valid route.
+
+    Previously the map resumed through that buffer and this test expected
+    SUCCESS. Rejecting the unsafe fallback is an intentional bug fix; valid
+    detours are exercised by test_exp09_coherent and the Stage-3 seam tests.
+    """
     cfg = load_config("config/study01_demand.yaml")
     cfg = dataclasses.replace(
         cfg,
@@ -118,21 +122,17 @@ def test_boxing_map_routing_unblocks_the_livelocked_replication():
     )
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), replication=1,
                            planner=PlannerKind.DUBINS)
-    res = eng.run()
+    eng._build()
     assert eng.rth.map_route_on
-    assert res.outcome is Outcome.MISSION_SUCCESS
-    assert res.stalled_agents == ()
-    # full coverage, and the map never had to fall back to a straight chord
-    assert res.coverage_frac >= 0.999
-    assert eng.rth.n_route_fallbacks == 0
-    swaps = _swaps_per_drone(res)
-    # the pathological signature (151 swaps on drone #3) is gone. Deliberately
-    # BOUNDS, not the exact per-drone counts (2 each at delivery): swap demand
-    # is physics-dependent and exact pinning would break spuriously on later
-    # flag-on stages -- same convention as the FIX-B1 arm of
-    # test_transit_livelock (healthy reps have D <= 11)
-    assert sum(swaps.values()) <= 15
-    assert swaps.get(3, 0) <= 5
+    from shapely.geometry import Point
+    from uav_swarm_sim.planning.visibility_router import RouteUnavailable
+    unsafe = [a for a in eng.fleet.agents.values()
+              if eng.env.buffered_obstacles.contains(Point(a.base.as_xy()))]
+    assert unsafe
+    for a in unsafe:
+        assert not eng.env.in_obstacle(a.base.as_xy())
+        with pytest.raises(RouteUnavailable, match="resume_blocked"):
+            a._resume_transit()
 
 
 if __name__ == "__main__":

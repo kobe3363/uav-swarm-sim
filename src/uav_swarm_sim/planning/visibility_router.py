@@ -31,7 +31,7 @@ import hashlib
 import math
 
 import networkx as nx
-from shapely.geometry import LineString, box
+from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
 
 from ..infrastructure.core_types import Path, Pose
@@ -41,6 +41,22 @@ from ..infrastructure.enums import ManeuverType
 # a hair off it so that a graph vertex lying exactly ON that boundary (and an
 # edge running along it) counts as clear rather than as a self-intersection.
 _SKIN_EPS_M = 1e-3
+
+
+class RouteUnavailable(ValueError):
+    """No validated route; callers must not execute an unchecked chord."""
+
+
+def geometry_key(env):
+    """Identity of the static geometry, including clearance (not object identity)."""
+    obs = env.buffered_obstacles
+    return (hashlib.sha256(env.area.wkb).digest(),
+            None if obs is None else hashlib.sha256(obs.wkb).digest())
+
+
+def _require_endpoints(a, b, region):
+    if not all(region.buffer(1e-8).covers(Point(p.as_xy())) for p in (a, b)):
+        raise RouteUnavailable("endpoint_outside_free_space")
 
 
 def flyable_region(survey_poly, buffered_obstacles, operating_area: str, margin_m: float) -> BaseGeometry:
@@ -266,20 +282,26 @@ def _obstacle_cache_key(buffered_obstacles, operating_area_poly):
     )
 
 
-def _path_clear(path: Path, env, ds: float = 1.0) -> bool:
-    """Validate the ACTUAL realized motion, not just the visibility polyline.
+def _path_clear(path: Path, env, ds: float = 1.0, *, region=None) -> bool:
+    """Planner acceptance against buffered obstacles; NOT a safety event.
 
-    ``_shortest_polyline`` certifies straight edges, but ``_chain_turn_legs`` builds
-    the connector from ``motion.plan(...)`` geometry, which for a non-holonomic
-    platform can arc between waypoints and bulge into an obstacle the straight edge
-    cleared. We therefore sample the built Path and reject it if any span crosses a
-    RAW obstacle -- the exact predicate the SafetyMonitor uses for S_OBS, so the
-    guard rejects precisely the paths that would trip it. A holonomic multirotor's
-    connector is the straight polyline (a full ``buffer_m`` off the raw prisms), so
-    it always passes: no behaviour change; this is a net for curvature > 0."""
-    pts = path.sample(ds)
-    for i in range(len(pts) - 1):
-        if env.segment_in_obstacle(pts[i], pts[i + 1]):
+    Each maneuver is checked separately, so sampling cannot cut across a yaw
+    vertex. Touching the buffer boundary is permitted (the full clearance is
+    attained); penetrating its interior is not. The 1e-8 m erosion only absorbs
+    floating point coordinate noise. Region may extend outside the survey.
+    """
+    obs = env.buffered_obstacles
+    core = None if obs is None else obs.buffer(-1e-8)
+    accepted_region = None if region is None else region.buffer(1e-8)
+    for seg in path.segments:
+        pts = Path((seg,)).sample(ds)
+        coords = [p.as_xy() for p in pts]
+        if not coords:
+            continue
+        shape = Point(coords[0]) if seg.length_m == 0 else LineString(coords)
+        if accepted_region is not None and not accepted_region.covers(shape):
+            return False
+        if core is not None and core.intersects(shape):
             return False
     return True
 
@@ -322,31 +344,24 @@ def route_connector(
 ) -> Path:
     """The single source of truth for a camera-off connector's geometry.
 
-    Returns the straight chord ``motion.plan(a, b, TURN)`` when routing is off,
-    when there are no obstacles, or when the chord is unobstructed (all
-    byte-identical to today). Only a chord blocked by a buffered obstacle is
-    rerouted around it; if no obstacle-free polyline exists the straight chord is
-    returned unchanged (a detour never makes a connector *worse*, and the runtime
-    S_OBS recovery remains the safety net exactly as before).
+    Routing off retains the legacy chord. Routing on returns only a validated
+    path, or raises RouteUnavailable. No runtime skip is assumed to repair it.
     """
     chord = motion.plan(a, b, ManeuverType.TURN)
     if not enabled:
         return chord
     obs = env.buffered_obstacles
-    if obs is None:
-        return chord
-    seg = LineString([a.as_xy(), b.as_xy()])
-    if not obs.intersects(seg):
-        return chord  # unobstructed -> straight chord (byte-identical)
-
     region = flyable_region(env.area, obs, operating_area, margin_m)
+    _require_endpoints(a, b, region)
+    if _path_clear(chord, env, region=region):
+        return chord
     polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
     if polyline is None or len(polyline) < 2:
-        return chord  # boxed in -> fall back (never worse than today)
+        raise RouteUnavailable("connector_blocked")
     routed = _chain_turn_legs(polyline, a, b, motion)
     # validate the realized motion (arcs may bulge where the polyline was straight)
-    if not _path_clear(routed, env):
-        return chord  # infeasible realized path -> fall back (S_OBS remains the net)
+    if not _path_clear(routed, env, region=region):
+        raise RouteUnavailable("connector_invalid")
     return routed
 
 
@@ -394,12 +409,9 @@ def route_transit(
     around the buffered obstacles at plan time removes the collision course
     before the SafetyMonitor ever sees it.
 
-    Semantics mirror ``route_connector`` exactly: returns the straight
-    ``motion.plan(a, b, CRUISE)`` chord when routing is off, when there are no
-    obstacles, or when the chord is unobstructed (all byte-identical to today);
-    only a blocked chord is rerouted, and every fallback returns the chord
-    unchanged (a detour never makes a transit *worse*; runtime S_OBS recovery
-    remains the safety net exactly as before).
+    Semantics mirror route_connector: an enabled router returns only a
+    buffer-clear realized path, or raises RouteUnavailable. Disabled routing
+    retains the legacy chord.
 
     ``graph_cache`` (E3): an optional per-replication dict memoising the
     endpoint-independent O(V**2) obstacle-vertex visibility result. When ``None``
@@ -411,13 +423,10 @@ def route_transit(
     if not enabled:
         return chord
     obs = env.buffered_obstacles
-    if obs is None:
-        return chord
-    seg = LineString([a.as_xy(), b.as_xy()])
-    if not obs.intersects(seg):
-        return chord  # unobstructed -> straight chord (byte-identical)
-
     region = flyable_region(env.area, obs, operating_area, margin_m)
+    _require_endpoints(a, b, region)
+    if _path_clear(chord, env, region=region):
+        return chord
     if graph_cache is None:
         polyline = _shortest_polyline(a.as_xy(), b.as_xy(), obs, region)
     else:
@@ -428,9 +437,9 @@ def route_transit(
             graph_cache[key] = ok_pairs
         polyline = _shortest_polyline_cached(a.as_xy(), b.as_xy(), obs, region, ok_pairs)
     if polyline is None or len(polyline) < 2:
-        return chord  # boxed in -> fall back (never worse than today)
+        raise RouteUnavailable("transit_blocked")
     routed = _chain_cruise_legs(polyline, a, b, motion)
     # validate the realized motion (arcs may bulge where the polyline was straight)
-    if not _path_clear(routed, env):
-        return chord  # infeasible realized path -> fall back (S_OBS remains the net)
+    if not _path_clear(routed, env, region=region):
+        raise RouteUnavailable("transit_invalid")
     return routed

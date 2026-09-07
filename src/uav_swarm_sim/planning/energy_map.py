@@ -61,6 +61,7 @@ from ..infrastructure.core_types import Pose
 from ..infrastructure.enums import ManeuverType
 from ..physical_model.energy_model import EnergyModel
 from .environment_map import EnvironmentMap, GridFrame
+from .visibility_router import geometry_key
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +92,8 @@ class EnergyMap:
     e_home: np.ndarray
     parent: np.ndarray
     penalty: np.ndarray
+    # EXP-09: optional provenance for route selection, never an energy term.
+    geometry_fingerprint: tuple[bytes, bytes | None] | None = None
 
     @property
     def base_cell(self) -> tuple[int, int]:
@@ -275,6 +278,7 @@ def build_energy_map(
         e_home=dist.reshape(nx, ny),
         parent=parent.reshape(nx, ny),
         penalty=penalty,
+        geometry_fingerprint=geometry_key(env),
     )
 
 

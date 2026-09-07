@@ -39,7 +39,7 @@ from .coverage_path import boustrophedon
 from .energy_map import EnergyMap
 from .environment_map import EnvironmentMap
 from .launch_site_optimizer import _coverage_geometry
-from .visibility_router import route_transit
+from .visibility_router import route_transit, _path_clear, flyable_region
 
 
 class EnergyBalanceStatus(Enum):
@@ -70,6 +70,7 @@ class EnergyBalanceContext:
     return_energy: Callable[[Pose, float | None], float]
     emap: EnergyMap | None = None
     transit_graph_cache: dict | None = None
+    execution_coherent: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,7 @@ def build_energy_balance_context(
     return EnergyBalanceContext(
         em, spec, motion, env, cfg.coverage, cfg.sensor.sensor_power_w,
         tuple(cfg.layers.altitudes_m), cfg.rth.reserve_frac * spec.battery_capacity_j,
-        return_energy, emap, graph_cache,
+        return_energy, emap, graph_cache, cfg.rth.execution_coherent,
     )
 
 
@@ -182,9 +183,16 @@ def _estimate(ctx, drone, method, alt, area, n_strips, anchor, exit_pose,
         status = EnergyBalanceStatus.BUDGET_NONPOSITIVE
     # Physical obstructions take precedence over a depleted budget; all terms
     # are still returned, so consumers can inspect both conditions.
-    if ctx.env is not None and not ctx.env.path_clear(ferry_path):
-        status = EnergyBalanceStatus.FERRY_BLOCKED
-    if ctx.emap is not None:
+    if ctx.env is not None:
+        if ctx.execution_coherent:
+            region = flyable_region(ctx.env.area, ctx.env.buffered_obstacles,
+                                     ctx.coverage.operating_area, ctx.coverage.operating_margin_m)
+            clear = _path_clear(ferry_path, ctx.env, region=region)
+        else:
+            clear = ctx.env.path_clear(ferry_path)
+        if not clear:
+            status = EnergyBalanceStatus.FERRY_BLOCKED
+    if ctx.emap is not None and not ctx.execution_coherent:
         frame = ctx.emap.frame
         i, j = frame.world_to_cell(exit_pose.x, exit_pose.y)
         if 0 <= i < frame.nx and 0 <= j < frame.ny:

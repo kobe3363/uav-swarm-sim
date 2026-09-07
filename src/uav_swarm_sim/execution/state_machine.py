@@ -53,6 +53,7 @@ class AgentContext:
     # to hand it a new zone. Defers ONLY the coverage_complete -> S3_RTH edge;
     # every safety and energy guard is evaluated ahead of it and is unaffected.
     repartition_pending: bool = False
+    emergency_battery: bool | None = None  # None preserves the legacy reporting-zone guard
 
 
 @dataclass(frozen=True)
@@ -158,7 +159,8 @@ class StateMachine:
             return Transition(s, S.S3_RTH, "rth_energy")
         if not self._zone_demotion and ctx.battery_zone is BatteryZone.CRITICAL:
             return Transition(s, S.S3_RTH, "critical_battery")
-        if ctx.battery_zone is BatteryZone.TERMINAL:
+        if (ctx.battery_zone is BatteryZone.TERMINAL if ctx.emergency_battery is None
+                else ctx.emergency_battery):
             return Transition(s, S.S3_RTH, "terminal_battery")
         return None
 

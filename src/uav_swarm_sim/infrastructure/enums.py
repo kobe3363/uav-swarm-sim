@@ -101,6 +101,7 @@ class PlannerKind(Enum):
 
 
 class EventType(Enum):
+    RTH_INFEASIBLE = "rth_infeasible"  # diagnostic only; never changes run outcome
     FAILURE = "FAILURE"
     NEW_TASK = "NEW_TASK"
     SWAP_REQUEST = "SWAP_REQUEST"

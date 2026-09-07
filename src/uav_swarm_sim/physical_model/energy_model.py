@@ -116,3 +116,24 @@ class EnergyModel:
         if speed <= 0:
             raise ValueError("distance_energy requires speed > 0")
         return self.power(m, formation_factor) * dist_m / speed
+
+    def path_interval_energy(
+        self, path: Path, start_s: float, end_s: float, sensor_power_w: float = 0.0,
+    ) -> float:
+        """Exact P*duration over maneuver overlaps, including a partial last step.
+
+        EXP-09 uses this same integral for prediction and physical drain. The
+        existing path_energy and sensor_energy contracts remain unchanged.
+        """
+        total = 0.0
+        elapsed = 0.0
+        for seg in path.segments:
+            overlap = max(0.0, min(end_s, elapsed + seg.duration_s) - max(start_s, elapsed))
+            if overlap > 0:
+                total += self.segment_energy(seg.maneuver, overlap)
+                if seg.maneuver is ManeuverType.COVERAGE:
+                    total += self.sensor_energy(overlap, sensor_power_w)
+                dz = max(0.0, seg.end.z - seg.start.z)
+                total += self._spec.mass_kg * _G * dz * overlap / seg.duration_s
+            elapsed += seg.duration_s
+        return total

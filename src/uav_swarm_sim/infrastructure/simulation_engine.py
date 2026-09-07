@@ -71,7 +71,7 @@ from ..planning.lloyd_partition import LloydCvtDecomposer, LloydEnergyDecomposer
 from ..planning.obstacle_generator import generate as generate_obstacles
 from ..planning.target_mission import generate_targets, plan_target_mission
 from ..planning.dynamic_obstacles import DynamicObstacleField
-from ..planning.visibility_router import route_transit
+from ..planning.visibility_router import route_transit, RouteUnavailable
 from ..execution.sensing import SensingCoordinator
 from ..planning.weighted_decomposition import (
     TgcBasicDecomposer,
@@ -363,6 +363,9 @@ class SimulationEngine:
             # decide=False the calculator consumes nothing (Stage-1 gate test
             # stays green) -- the decide sub-flag is checked inside.
             energy_map=self.energy_map,
+            # EXP-09: the routed return validates against the same buffered
+            # obstacle union the coverage/transit routers use.
+            coverage=cfg.coverage,
         )
 
         # --- mission planning: area coverage OR target visit -------------- #
@@ -512,14 +515,19 @@ class SimulationEngine:
                 else:
                     zone = self.partition.zones.get(i)
                     if zone is not None:
-                        plan = (grid.coverage(zone, self.spec) if grid is not None
-                                else boustrophedon(zone, self.spec, self.motion, self.em,
-                                                   env=self.env, coverage=cfg.coverage,
-                                                   altitude_m=self.layers.altitude(i_layer)))
-                        entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
-                        transit = self._plan_transit(self.deploy_poses[i], entry_pose)
-                        agent.assign(plan, transit)
-                        self.plans[i] = plan
+                        try:
+                            plan = (grid.coverage(zone, self.spec) if grid is not None
+                                    else boustrophedon(zone, self.spec, self.motion, self.em,
+                                                       env=self.env, coverage=cfg.coverage,
+                                                       altitude_m=self.layers.altitude(i_layer)))
+                            entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
+                            transit = self._plan_transit(self.deploy_poses[i], entry_pose)
+                            agent.assign(plan, transit)
+                            self.plans[i] = plan
+                        except RouteUnavailable as exc:
+                            if agent._coherent is None:
+                                raise
+                            agent._coherent.reject(exc)
                 agents.append(agent)
 
         if cfg.planning.energy_balance.enabled:
@@ -542,13 +550,31 @@ class SimulationEngine:
                     zone = self.partition.zones.get(agent.id)
                     if zone is None:
                         continue
+                    if cfg.rth.execution_coherent:
+                        if agent.plan is None:
+                            continue
+                        from dataclasses import replace
+                        ctx = replace(ctx, return_energy=lambda pose, alt, base=agent.base:
+                                      rth.return_energy(pose, altitude_m=alt, base=base))
                     state = DroneEnergyState(
                         agent.id, self.deploy_poses[agent.id], agent.battery.level_j, False,
                     )
-                    self.energy_balance_t0[agent.id] = {
-                        "fast": estimate_fast(ctx, state, zone, self.coverage_raster),
-                        "path": estimate_path(ctx, state, zone, self.coverage_raster),
-                    }
+                    estimates = {}
+                    for method, estimate in (("fast", estimate_fast), ("path", estimate_path)):
+                        try:
+                            estimates[method] = estimate(ctx, state, zone, self.coverage_raster)
+                        except RouteUnavailable as exc:
+                            if not cfg.rth.execution_coherent:
+                                raise
+                            # Observational proxy anchors may be unreachable
+                            # even when the already-validated flight is valid.
+                            # Omit unknown costs; never invent a finite weight
+                            # or abort the fleet because of a diagnostic query.
+                            logging.getLogger(__name__).warning(
+                                "energy_balance_unavailable drone_id=%s method=%s reason=%s",
+                                agent.id, method, exc,
+                            )
+                    self.energy_balance_t0[agent.id] = estimates
             finally:
                 rth.n_map_hits, rth.n_map_fallbacks = map_counts
 
@@ -743,7 +769,9 @@ class SimulationEngine:
                              partition_diagnostics=getattr(self, "partition_diagnostics", None),
                              repartitions=tuple(
                                  r.to_json() for r in self._repartition_records),
-                             repartition_hold=self._repartition_hold_summary())
+                             repartition_hold=self._repartition_hold_summary(),
+                             rth_infeasible_events=tuple(e for a in self.fleet.agents.values()
+                                                        for e in a.rth_infeasible_events))
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
@@ -872,7 +900,14 @@ class SimulationEngine:
         if self._mission_type is MissionType.TARGET_VISIT:
             self._redistribute_targets(active, t)
             return
-        new_part, new_plans = self.redistributor.handle(e, self.fleet, self.partition, self.plans, t)
+        try:
+            new_part, new_plans = self.redistributor.handle(e, self.fleet, self.partition, self.plans, t)
+        except RouteUnavailable:
+            if not self.cfg.rth.execution_coherent:
+                raise
+            # Reject this candidate replan. Keep the existing assignments;
+            # each survivor's flight guard validates its own next movement.
+            return
         self.replan_times.append(self.redistributor.last_replan_time_s)
         # EXP-07: redistribution runs its OWN decomposer -- weighted TGC unless
         # the run's decomposer is one of its subclasses -- so from here on the
@@ -900,7 +935,16 @@ class SimulationEngine:
                 continue
             plan = new_plans[a.id]
             entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
-            transit = self._plan_transit(a.pose, entry_pose)
+            try:
+                transit = self._plan_transit(a.pose, entry_pose)
+            except RouteUnavailable as exc:
+                if a._coherent is None:
+                    raise
+                if a.state.is_airborne:
+                    a._coherent.assignment_error = str(exc)
+                else:
+                    a._coherent.reject(exc)
+                continue
             a.adopt_plan(plan, transit)
 
     def _run_repartition(self, t: float, causes) -> None:
