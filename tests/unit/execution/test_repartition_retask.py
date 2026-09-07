@@ -169,9 +169,17 @@ def test_the_held_tick_is_charged_as_a_real_hover(cfg):
     assert agent.pose == pose_at_hold
 
 
-def test_an_empty_plan_announces_nothing(cfg):
+def test_an_empty_plan_announces_nothing_and_is_charged_no_hover(cfg):
     """D-8: an empty plan credits no work. Announcing one would also spin, since
-    the drone would be re-tasked, finish instantly and announce again."""
+    the drone would be re-tasked, finish instantly and announce again.
+
+    It must also not be billed for a hold it never had. An empty-plan agent sits
+    in S2_MISSION with no legs for the one tick between zone entry and the
+    coverage_complete transition -- exactly the position a HELD agent is in --
+    so keying the hover on the flag and the state alone would invent energy and
+    inflate repartition_hold_ticks, the counter that exists to measure the hold.
+    (Found in review of this PR.)
+    """
     agent, motion, _ = _agent(cfg, repartition=True)
     agent.assign(CoveragePlan(0, [], 0.0, 0.0), motion.plan(
         agent.base, Pose(10.0, 0.0, 0.0), ManeuverType.CRUISE))
@@ -180,7 +188,30 @@ def test_an_empty_plan_announces_nothing(cfg):
         agent.step(DT, k * DT, bus)
         if agent.state is S.S3_RTH:
             break
+    assert agent.state is S.S3_RTH, "the empty plan must still complete"
     assert not [e for e in bus._queue if e.type is EventType.ZONE_COMPLETE]
+    assert agent.repartition_hold_ticks == 0
+    assert agent.repartition_hold_energy_j == 0.0
+
+
+def test_only_the_held_tick_is_billed_as_a_hold(cfg):
+    """One hover tick per hold, and none at any other time."""
+    agent, motion, spec = _agent(cfg, repartition=True)
+    plan, transit = _plan(motion, agent.base)
+    agent.assign(plan, transit)
+    bus = EventBus()
+
+    t = _fly_to_zone_complete(agent, bus)
+    assert agent.repartition_hold_ticks == 0, "the last flying tick is not a hold"
+
+    agent.step(DT, t + DT, bus)                      # the held tick
+    assert agent.repartition_hold_ticks == 1
+    assert agent.repartition_hold_energy_j == pytest.approx(
+        spec.power_w[ManeuverType.HOVER] * DT, rel=1e-12)
+
+    for k in range(2, 12):                           # returning home afterwards
+        agent.step(DT, t + k * DT, bus)
+    assert agent.repartition_hold_ticks == 1, "no further tick may bill as a hold"
 
 
 def test_the_energy_and_safety_guards_still_pre_empt_the_hold(cfg):

@@ -1086,6 +1086,14 @@ def _validate(cfg: Config, raw: dict) -> None:
         # The periodic trigger fires on integer step counts, never on an
         # accumulated float comparison. An interval that is not a whole number
         # of ticks is refused rather than silently rounded to one.
+        #
+        # dt_s is checked HERE as well as further down: the general
+        # ``sim.dt_s > 0`` rule runs after this block, so dt_s = 0 would reach
+        # the division as a ZeroDivisionError and dt_s = nan would reach round()
+        # as a ValueError -- both escaping the ConfigError contract every other
+        # malformed field follows.
+        if not isfinite(cfg.sim.dt_s) or cfg.sim.dt_s <= 0.0:
+            raise ConfigError("sim.dt_s must be finite and > 0")
         steps = interval / cfg.sim.dt_s
         if abs(steps - round(steps)) > 1e-9 or round(steps) < 1:
             raise ConfigError(

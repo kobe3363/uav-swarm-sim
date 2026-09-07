@@ -274,6 +274,13 @@ class Repartitioner:
 
         covered_before = self._raster.plannable_covered_area_m2
         counters = self._save_rth_counters()
+        # plan_time_s feeds the SAME replan_times aggregate as the legacy
+        # Redistributor.last_replan_time_s, so it must span the same scope or the
+        # aggregate compares two different things. Legacy spans decomposition
+        # plus boustrophedon plan construction and stops before the engine plans
+        # transits, so the sweep planning below is added in and _plan_transit is
+        # left out. The conservation guards are excluded too -- legacy has no
+        # such step, and timing it would again make the two incomparable.
         t0 = time.perf_counter()
         try:
             partition = self._dec.decompose(self._tgc, self._env, views,
@@ -296,9 +303,11 @@ class Repartitioner:
                     f"{agent.id}; an empty zone is legal, a missing one is not"
                 )
             zone.layer = agent.layer
+            sweep_t0 = time.perf_counter()
             plan = boustrophedon(zone, self._spec, self._motion, self._em,
                                  env=self._env, coverage=self._coverage,
                                  altitude_m=self._altitude_m)
+            plan_time += time.perf_counter() - sweep_t0
             entry = self._entry_pose(plan, zone.entry_pose)
             transit = self._plan_transit(agent.pose, entry)
             plans[agent.id] = plan

@@ -112,3 +112,15 @@ def test_an_interval_that_is_not_a_whole_tick_count_is_refused(config_path, dt, 
 def test_a_nonpositive_or_non_finite_interval_is_refused(config_path, bad):
     with pytest.raises(ConfigError):
         _on(config_path, **{"mission.repartition_interval_s": bad})
+
+
+@pytest.mark.parametrize("bad_dt", [0.0, -0.5, float("nan"), float("inf")])
+def test_a_broken_timestep_is_a_config_error_not_an_arithmetic_crash(config_path, bad_dt):
+    """The interval check divides by sim.dt_s, and the general "dt_s > 0" rule
+    runs AFTER it. Without a local guard, dt_s = 0 surfaces as ZeroDivisionError
+    and dt_s = nan as ValueError from round() -- both escaping the ConfigError
+    contract every other malformed field follows. (Found in review of this PR.)
+    """
+    with pytest.raises(ConfigError):
+        _on(config_path, **{"sim.dt_s": bad_dt,
+                            "mission.repartition_interval_s": 60.0})

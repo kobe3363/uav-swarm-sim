@@ -394,13 +394,15 @@ class Agent:
     # per-tick                                                           #
     # ------------------------------------------------------------------ #
     def step(self, dt: float, t: float, bus) -> None:
-        # EXP-08: the one-tick re-task window opened on the previous tick is
-        # over. Clearing it HERE, before anything else, is what bounds the window
-        # to exactly one tick without comparing simulation times.
-        self._repartition_hold = False
         if self.state is AgentState.S_FAIL:
             return
 
+        # _repartition_hold still carries LAST tick's value here, and that is
+        # deliberate: this tick IS the held one, so _tick_dynamics needs to know
+        # the window was open in order to charge the hover. It is closed below,
+        # after the dynamics and before the zone-complete check can re-open it,
+        # which bounds the window to exactly one tick without comparing
+        # simulation times.
         self._tick_dynamics(dt, t)
 
         # avoidance micro-plan finished -> clear the threat so S_OBS can resume
@@ -432,6 +434,10 @@ class Agent:
                 self._rth_decision = getattr(self, "_rth_decision", False)
         else:
             self._rth_decision = getattr(self, "_rth_decision", False)
+
+        # The window opened on the previous tick is now spent (the hover above
+        # was its cost); the check below may open a fresh one.
+        self._repartition_hold = False
 
         # EXP-08: this drone has just flown the last leg of its zone. Announce
         # it and hold the automatic return for exactly one tick, so the engine
@@ -470,13 +476,18 @@ class Agent:
         if self._leg_idx >= len(self._legs):
             # EXP-08: a drone that has finished its zone and is waiting one tick
             # for a possible re-task is HOVERING at the end of its last strip.
-            # The pre-EXP-08 model never spends a whole tick in this position --
-            # the coverage_complete transition fires in the same step the last
-            # leg ends -- so this branch is unreachable with the flag off, and it
-            # is gated on the flag as well. Charging hover keeps the extra tick
-            # physically true instead of free (CLAUDE.md rule 4).
-            if self._repartition_on and self.state in (AgentState.S2_MISSION,
-                                                       AgentState.S_FERRY):
+            # Charging hover keeps that extra tick physically true instead of
+            # free (CLAUDE.md rule 4).
+            #
+            # Gated on the HOLD, not merely on the flag and the state. An agent
+            # handed an EMPTY plan also sits here with no legs for the one tick
+            # between entering S2_MISSION and the coverage_complete transition,
+            # and it is not being held for anything -- charging it would invent
+            # energy AND inflate repartition_hold_ticks, which exists to measure
+            # the hold. ``_repartition_hold`` still holds last tick's value at
+            # this point (see step), so the real held tick is the one charged.
+            if self._repartition_hold and self.state in (AgentState.S2_MISSION,
+                                                         AgentState.S_FERRY):
                 # ManeuverType.HOVER at the platform's existing hover power, via
                 # the same P*dt call S0_IDLE uses. This is the existing model
                 # applied to a state the drone is genuinely in -- not new flight
