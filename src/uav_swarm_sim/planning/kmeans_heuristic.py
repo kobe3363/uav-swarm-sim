@@ -50,6 +50,14 @@ class KMeansHeuristicDecomposer(Decomposer):
             DecompositionAlgo.WEIGHTED_VORONOI if weighted else DecompositionAlgo.KMEANS
         )
 
+    def with_rng(self, rng) -> "KMeansHeuristicDecomposer":
+        """A sibling on another stream (EXP-08): same class, same weighting, same
+        iteration budget, same motion model -- only the generator differs. See
+        the base-class docstring for why a re-partition may not draw from the
+        stream that seeded t=0."""
+        return KMeansHeuristicDecomposer(self._motion, self._weighted, rng,
+                                         self._iters)
+
     def decompose(
         self,
         tgc: TGCGraph,

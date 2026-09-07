@@ -263,6 +263,11 @@ class DroneStateView:
     battery_frac: float
     pose: Pose
     layer: int = 0   # assigned coverage layer index; 0 == single-layer-z0 default
+    # EXP-08: is the drone in the air RIGHT NOW? Only the energy-balance budget
+    # reads it (``_budget`` deducts takeoff for a grounded drone and must not
+    # charge it twice to one already flying), so every t=0 construction keeps
+    # the default and stays byte-identical: at t=0 every drone is on the ground.
+    airborne: bool = False
 
 
 @dataclass
@@ -375,3 +380,16 @@ class MissionResult:
     # EXP-07: how the grid partition was reached (convergence, dropped cells,
     # per-drone weight/area). None for every non-grid decomposition algorithm.
     partition_diagnostics: object | None = None
+    # EXP-08: one record per in-flight re-partition ATTEMPT, in order, including
+    # the attempts that were deliberately not applied (no eligible executor, no
+    # remaining work, no progress). Empty tuple unless
+    # mission.repartition_enabled is on -- an attempt that changes nothing is
+    # recorded rather than dropped, so a run can never be read as "no
+    # re-partition happened" when in fact one was refused.
+    repartitions: tuple[dict, ...] = ()
+    # EXP-08: what the one-tick re-task hold cost this run. The hold is applied
+    # by one rule to both arms, but it is NOT paired -- two arms can finish a
+    # different NUMBER of zones, so their totals differ. Reported so the size of
+    # that asymmetry is visible instead of assumed negligible. None with the flag
+    # off (no drone is ever held).
+    repartition_hold: dict | None = None

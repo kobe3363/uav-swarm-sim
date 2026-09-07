@@ -87,6 +87,8 @@ kampai laipsniais; loaderis viską verčia į SI (Wh→J, deg→rad).
 | **`mission.experiment_mode`** | false | EXP-07 (D-3): `true` → dekompozicijos algoritmas privalo būti įvardytas; automatinis parinkimas pagal flotilės dydį **kelia klaidą** (tas kelias vieną `weighted_voronoi` etiketę duoda dviem skirtingoms realizacijoms) |
 | **`planning.partition.*`** | deploy_poses / 50 / 1.0 | EXP-07a tinklelio skaidytojo parametrai: `init_sites` (`deploy_poses` \| `maximin`), `max_iterations`, `site_tolerance_m`. **Inertiški**, nebent `--algo lloyd_*`. Nėra nė viename YAML — default'ai kode, kad `config_hash` nepajudėtų |
 | `planning.energy_balance.enabled` | false | EXP-06 t=0 energijos balanso diagnostika |
+| **`mission.repartition_enabled`** | false | EXP-08 (D-12): `true` → skrydžio metu perskirstomas **likęs** rastro darbas — vienoda trigerių aibė, vienodas tinkamumo predikatas ir vienoda eiliškumo taisyklė **visiems** algoritmams; perskirsto **paties runo** dekompozeris (jokio atsitraukimo į `WeightedTgcDecomposer`). Reikalauja `mission.type: coverage` + `coverage.raster_enabled` (D-8) |
+| `mission.repartition_interval_s` | null | EXP-08 pasirenkamas periodinis trigeris (s). Privalo būti **tikslus `sim.dt_s` kartotinis** — trigeris skaičiuojamas sveikais žingsniais, netikslus intervalas kelia `ConfigError`, o ne apvalinamas tyliai. Reikalauja `repartition_enabled` |
 
 ---
 

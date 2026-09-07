@@ -69,6 +69,45 @@ class _WorkRegion:
 class Decomposer(ABC):
     name: DecompositionAlgo
 
+    # EXP-08: does this decomposer read the remaining-work set ITSELF?
+    #
+    # False (the default, and every TGC/Voronoi/k-means peer): the work atoms
+    # are TGC regions, and restricting the partition to a sub-area is done by
+    # passing ``target_area``, which ``clip_regions`` below intersects each
+    # region with. A re-partition over remaining work therefore hands such a
+    # decomposer the coverage raster's uncovered geometry.
+    #
+    # True (the EXP-07 grid partitioners): the work atoms are coverage grid
+    # cells taken straight from the raster, which already holds only the
+    # uncovered ones. Such a decomposer must NOT be given a ``target_area`` --
+    # it cannot honour one and says so by raising.
+    #
+    # Declared here so a caller can ASK which input a decomposer takes instead
+    # of testing its class. An isinstance branch is exactly the confound EXP-08
+    # removes from the engine; replacing it with another would be a regression
+    # in kind.
+    partitions_raster_work: bool = False
+
+    def with_rng(self, rng) -> "Decomposer":
+        """An equivalent decomposer bound to a different RNG stream (EXP-08).
+
+        Default: return self. Every decomposer here except the k-means heuristic
+        is deterministic given its inputs, so "the same decomposer on another
+        stream" IS the same object and re-partitioning with it consumes nothing.
+
+        ``KMeansHeuristicDecomposer`` overrides this. It draws inside every
+        ``decompose`` call and a numpy Generator is stateful, so re-partitioning
+        with the run's own instance would consume from the stream the t=0
+        partition used and make the replication-keyed init variance -- a
+        characteristic this project keeps and reports -- depend on how many
+        re-partitions happened to fire. It hands back a sibling on its own
+        stream instead.
+
+        Declared on the ABC so the engine ASKS rather than testing classes. The
+        isinstance branch EXP-08 removes must not be replaced by another one.
+        """
+        return self
+
     @abstractmethod
     def decompose(
         self,

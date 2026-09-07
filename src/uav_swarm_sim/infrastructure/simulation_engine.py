@@ -48,6 +48,7 @@ from ..infrastructure.rng import (
     STREAM_LAUNCH_SAMPLING,
     STREAM_DYNOBS,
     STREAM_OBSTACLES,
+    STREAM_REPARTITION_INIT,
     STREAM_TARGETS,
     RngFactory,
 )
@@ -85,6 +86,7 @@ from ..execution.failure_model import FailureModel
 from ..execution.fleet import Fleet, deploy_ring_poses
 from ..execution.formation_manager import FormationManager
 from ..execution.redistribution import Redistributor
+from ..execution.repartition import Repartitioner
 from ..execution.rth_calculator import RthCalculator
 from ..execution.safety_monitor import SafetyMonitor
 from ..execution.state_machine import StateMachine
@@ -173,7 +175,6 @@ class SimulationEngine:
             # the Decomposer ABC signature is untouched.
             return LloydCvtDecomposer(
                 raster=self._require_raster(DecompositionAlgo.LLOYD_CVT),
-                deploy_poses=self.deploy_poses,
                 launch_pose=self.launch_pose,
                 settings=self.cfg.planning.partition,
                 energy_map=self.energy_map,
@@ -182,9 +183,7 @@ class SimulationEngine:
             # EXP-07b: the same partitioner, an energy weight source. It needs
             # return costs at planning time, which is why the RTH calculator is
             # built above the decomposition (B-1).
-            from ..planning.energy_balance import (
-                DroneEnergyState, build_energy_balance_context,
-            )
+            from ..planning.energy_balance import build_energy_balance_context
 
             raster = self._require_raster(DecompositionAlgo.LLOYD_ENERGY)
             if not self.cfg.planning.energy_balance.enabled:
@@ -192,9 +191,11 @@ class SimulationEngine:
                     "--algo lloyd_energy requires planning.energy_balance.enabled = true"
                 )
             capacity_j = self.spec.battery_capacity_j
+            # No drone_states here: the decomposer builds them from the views it
+            # is handed (EXP-08), which at t=0 carry exactly deploy_poses[i] and
+            # initial_soc_by_drone[i] -- the values this call site used to freeze.
             return LloydEnergyDecomposer(
                 raster=raster,
-                deploy_poses=self.deploy_poses,
                 launch_pose=self.launch_pose,
                 settings=self.cfg.planning.partition,
                 energy_map=self.energy_map,
@@ -203,11 +204,6 @@ class SimulationEngine:
                     lambda pose, alt: self.rth.return_energy(pose, altitude_m=alt),
                     emap=self.energy_map, graph_cache=self._transit_graph_cache,
                 ),
-                drone_states=[
-                    DroneEnergyState(i, self.deploy_poses[i],
-                                     self.initial_soc_by_drone[i] * capacity_j, False)
-                    for i in range(self.cfg.fleet.n_drones)
-                ],
                 altitude_m=self.layers.altitude(0),
                 capacity_j=capacity_j,
             )
@@ -376,6 +372,11 @@ class SimulationEngine:
         # area-coverage mission with the EXP-02 raster). Default False => every
         # branch keyed on it below is the pre-EXP-04 code path.
         self._no_swap = cfg.mission.no_swap_mode
+        # EXP-08 (mission.repartition_enabled). Validated in load_config to
+        # require an area-coverage mission with the EXP-02 raster (D-8), which
+        # also pins the run to a single coverage layer. Default False => every
+        # branch keyed on it below is the pre-EXP-08 code path.
+        self._repartition_on = cfg.mission.repartition_enabled
         self.coverage_raster = None
         if (self._mission_type is MissionType.COVERAGE
                 and cfg.coverage.raster_enabled):
@@ -500,7 +501,8 @@ class SimulationEngine:
                                   self.spec.coverage_photo_spacing_m(self.layers.altitude(i_layer))
                                   if self._mission_type is MissionType.COVERAGE else None
                               ),
-                              coverage_observer=self._coverage_observer(i_layer))
+                              coverage_observer=self._coverage_observer(i_layer),
+                              repartition_enabled=self._repartition_on)
                 if self._mission_type is MissionType.TARGET_VISIT:
                     plan = self.plans.get(i)
                     if plan is not None and plan.waypoints:
@@ -552,8 +554,41 @@ class SimulationEngine:
 
         self.fleet = Fleet(agents)
         self.formation.register_departure(agents)
+        # EXP-08 (D-12): with the flag on, the run's OWN decomposer performs
+        # every re-partition and the legacy Redistributor is not constructed at
+        # all -- so a new-mode run cannot fall back to WeightedTgcDecomposer by
+        # any path, structurally rather than by convention. With the flag off,
+        # the construction below is untouched, which is what keeps the four
+        # legacy algorithms byte-identical (only tgc_basic and weighted_voronoi
+        # reuse their own decomposer today; kmeans and classic_voronoi are
+        # substituted, and removing that unconditionally would change them).
+        self.repartitioner = None
+        self._repartition_records: list = []
+        self._repartition_causes: list = []
+        self._repartition_period_steps = None
+        if self._repartition_on and self._mission_type is not MissionType.TARGET_VISIT:
+            interval = cfg.mission.repartition_interval_s
+            if interval is not None:
+                # Validated to be a whole multiple of dt, so this is exact.
+                self._repartition_period_steps = int(round(interval / cfg.sim.dt_s))
+            self.repartitioner = Repartitioner(
+                # ``with_rng`` returns self for every decomposer that is
+                # deterministic given its inputs, and a sibling on the
+                # re-partition stream for k-means. The engine ASKS; it does not
+                # test the class.
+                decomposer=self.decomposer.with_rng(
+                    self.rng.stream(STREAM_REPARTITION_INIT, self.replication)
+                ),
+                raster=self.coverage_raster, env=self.env, tgc=self.tgc,
+                motion=self.motion, em=self.em, spec=self.spec,
+                coverage=cfg.coverage, altitude_m=self.layers.altitude(0),
+                plan_transit=self._plan_transit,
+                entry_pose=self._coverage_entry_pose,
+                rth=self.rth, rng_stream=STREAM_REPARTITION_INIT,
+            )
         self.redistributor = (
-            None if self._mission_type is MissionType.TARGET_VISIT else Redistributor(
+            None if self._mission_type is MissionType.TARGET_VISIT
+            or self.repartitioner is not None else Redistributor(
                 self.decomposer if isinstance(self.decomposer, (WeightedTgcDecomposer,))
                 else WeightedTgcDecomposer(),
                 self.layer_graphs, self.motion, self.em, self.spec,
@@ -616,6 +651,18 @@ class SimulationEngine:
                 if abs(t - at) < dt / 2:
                     self.bus.publish(Event(EventType.NEW_TASK, t, {"polygon": poly}))
             self._route_events(t)
+            if self.repartitioner is not None:
+                # EXP-08: ONE revision per tick, after the whole event drain, so
+                # several causes landing on the same tick produce one partition
+                # rather than a chain of meaningless intermediates. The periodic
+                # cause is appended last and is evaluated on integer step counts
+                # -- never on an accumulated float.
+                if (self._repartition_period_steps is not None and step > 0
+                        and step % self._repartition_period_steps == 0):
+                    self._repartition_causes.append(("interval", None))
+                if self._repartition_causes:
+                    self._run_repartition(t, tuple(self._repartition_causes))
+                self._repartition_causes = []
             # log every agent's (x, y, state) after the tick settles, for 2D replay
             for a in self.fleet.agents.values():
                 self.history.record_position(a.id, t, a.pose.x, a.pose.y, a.state)
@@ -693,7 +740,10 @@ class SimulationEngine:
                              losses=tuple(self._losses),
                              initial_soc_by_drone=self.initial_soc_by_drone,
                              energy_balance_t0=getattr(self, "energy_balance_t0", None),
-                             partition_diagnostics=getattr(self, "partition_diagnostics", None))
+                             partition_diagnostics=getattr(self, "partition_diagnostics", None),
+                             repartitions=tuple(
+                                 r.to_json() for r in self._repartition_records),
+                             repartition_hold=self._repartition_hold_summary())
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
@@ -744,8 +794,23 @@ class SimulationEngine:
                     # settles (a depletion re-published as FAILURE was already
                     # recorded with its own cause and is not double-counted).
                     self._losses.append((aid, t, "hazard_failure"))
-                self._redistribute(e, t)
+                if self.repartitioner is not None:
+                    # The kill above has already left the fleet, so the executor
+                    # set this cause is collected for is the surviving one.
+                    self._repartition_causes.append(("failure", aid))
+                else:
+                    self._redistribute(e, t)
             elif e.type is EventType.NEW_TASK:
+                if self.repartitioner is not None:
+                    # The coverage raster is fixed at build time from the survey
+                    # polygon and cannot grow, so an injected polygon has no cell
+                    # to become and could only be accepted by dropping it. Refuse
+                    # loudly rather than take work and never fly it.
+                    raise NotImplementedError(
+                        "mission.repartition_enabled cannot accept a NEW_TASK: "
+                        "the coverage raster is built once from the survey area "
+                        "and the injected polygon has no cells in it"
+                    )
                 self._redistribute(e, t)
             elif e.type is EventType.SWAP_REQUEST:
                 aid = e.payload.get("agent_id")
@@ -772,15 +837,33 @@ class SimulationEngine:
                     a.signal_swap_done()
             elif e.type is EventType.UAV_RETIRED:
                 # EXP-04: record the same-battery touchdown and the one-time
-                # release of its uncovered work. Deliberately NO redistribution
-                # here -- re-partitioning the released cells among the
-                # remaining workers is EXP-08's trigger policy.
-                self._retirements.append((
-                    e.payload.get("agent_id"), e.t, bool(e.payload.get("work_released")),
-                ))
+                # release of its uncovered work.
+                released = bool(e.payload.get("work_released"))
+                self._retirements.append((e.payload.get("agent_id"), e.t, released))
+                # EXP-08 (D-12): a terminal landing triggers a re-partition only
+                # when work was actually outstanding. A drone that finished
+                # everything releases nothing, and re-partitioning then would
+                # reset every survivor's progress to redistribute an unchanged
+                # pool.
+                if self.repartitioner is not None and released:
+                    self._repartition_causes.append(
+                        ("uav_retired", e.payload.get("agent_id")))
+            elif e.type is EventType.ZONE_COMPLETE:
+                # EXP-08: a drone flew the last leg of its zone and the FSM is
+                # holding its return for this one tick. If the revision below
+                # gives it cells it is re-tasked; if not, it returns next tick.
+                self._repartition_causes.append(("zone_complete",
+                                                 e.payload.get("agent_id")))
             # OBSTACLE_THREAT is informational (signal already set by the monitor)
 
     def _redistribute(self, e: Event, t: float) -> None:
+        if self.repartitioner is not None:
+            # Structural, not decorative: the whole point of EXP-08 is that a
+            # new-mode run never silently re-partitions with weighted TGC.
+            raise AssertionError(
+                "legacy redistribution reached with mission.repartition_enabled "
+                f"on (event {e.type}); the re-partitioner owns every trigger"
+            )
         # EXP-04: only non-retired survivors can take work; == active() in
         # every legacy run (nobody retires without no_swap_mode).
         active = self.fleet.workers()
@@ -819,6 +902,69 @@ class SimulationEngine:
             entry_pose = self._coverage_entry_pose(plan, zone.entry_pose)
             transit = self._plan_transit(a.pose, entry_pose)
             a.adopt_plan(plan, transit)
+
+    def _run_repartition(self, t: float, causes) -> None:
+        """EXP-08: plan one revision, then apply it atomically.
+
+        Everything that can fail -- eligibility, the snapshot, the decomposition,
+        all four conservation guards, every boustrophedon plan and every transit
+        -- happens inside ``attempt`` and touches nothing. Only after it returns
+        is any state replaced, and the apply loop below contains no computation
+        at all. A raise therefore leaves the old partition, the old plans and
+        every agent's progress exactly as they were: there is no half-applied
+        plan to recover from, by construction rather than by try/except.
+        """
+        attempt = self.repartitioner.attempt(self.fleet, t, causes)
+        self._repartition_records.append(attempt.record)
+        if attempt.staged is None:
+            return
+        partition, plans, staged = attempt.staged
+
+        # EXP-07: the t=0 diagnostics record how PLANNING started and must not be
+        # read as a description of the zones being flown once a revision has
+        # replaced them. Unlike the legacy path this is the run's own decomposer,
+        # so the stamp names it honestly. Marked once -- the first supersession
+        # is the one that ends the recorded partition.
+        diagnostics = getattr(self, "partition_diagnostics", None)
+        if diagnostics is not None and getattr(diagnostics, "superseded_by", None) is None:
+            diagnostics.superseded_by = {
+                "decomposer": type(self.repartitioner.decomposer).__name__,
+                "trigger": causes[0][0] if causes else "repartition",
+                "t_s": float(t),
+            }
+
+        # ---- apply: assignment only, no computation ---------------------- #
+        self.partition = partition
+        # Merge rather than replace: a drone that was not an executor is still
+        # flying the plan it already had, and dropping its entry would lose that.
+        # (The legacy Redistributor merges for the same reason.)
+        self.plans = {**self.plans, **plans}
+        self.replan_times.append(attempt.record.plan_time_s)
+        for agent, plan, transit in staged:
+            agent.retask(plan, transit, t, self.bus)
+
+    def _repartition_hold_summary(self) -> dict | None:
+        """What the one-tick re-task hold cost, per run and per drone.
+
+        The hold is one rule applied to both arms, but the arms can finish a
+        different NUMBER of zones, so the totals are not paired. Reported rather
+        than assumed negligible. None with the flag off: no drone is ever held,
+        so there is nothing to report and the legacy output is unchanged.
+        """
+        if not self._repartition_on:
+            return None
+        per_agent = {a.id: a.repartition_hold_energy_j
+                     for a in self.fleet.agents.values()
+                     if a.repartition_hold_ticks}
+        ticks = sum(a.repartition_hold_ticks for a in self.fleet.agents.values())
+        energy = sum(a.repartition_hold_energy_j for a in self.fleet.agents.values())
+        capacity = self.spec.battery_capacity_j
+        return {
+            "ticks": int(ticks),
+            "energy_j": float(energy),
+            "frac_of_one_battery": float(energy / capacity) if capacity else None,
+            "per_agent_j": {str(k): float(v) for k, v in sorted(per_agent.items())},
+        }
 
     def _redistribute_targets(self, active, t: float) -> None:
         import time as _time

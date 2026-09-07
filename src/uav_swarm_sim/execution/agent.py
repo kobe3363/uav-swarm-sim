@@ -41,7 +41,7 @@ from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import MotionModel
 from .photo_tracker import PhotoTracker
 from .rth_calculator import RthCalculator
-from .state_machine import AgentContext, StateMachine
+from .state_machine import AgentContext, StateMachine, Transition
 
 # Task 2.5 Q2 (stateful S_OBS recovery): if the validated avoidance + leg-skip
 # still cannot clear the corridor after this many CONSECUTIVE obstacle re-entries
@@ -79,6 +79,7 @@ class Agent:
         transit_planner: Callable[[Pose, Pose], Path] | None = None,
         photo_spacing_m: float | None = None,
         coverage_observer: Callable[[Pose, Pose], None] | None = None,
+        repartition_enabled: bool = False,
     ) -> None:
         self.id = id
         self.spec = spec
@@ -103,6 +104,9 @@ class Agent:
             PhotoTracker(id, photo_spacing_m) if photo_spacing_m is not None else None
         )
         self._coverage_observer = coverage_observer
+        # EXP-08 (mission.repartition_enabled). Default False => every branch
+        # keyed on it below is dead and the agent is byte-identical.
+        self._repartition_on = repartition_enabled
 
         self.state: AgentState = AgentState.S0_IDLE
         self.pose: Pose = base
@@ -145,6 +149,23 @@ class Agent:
         # (adopt_plan) or swap signal. Never set in legacy runs.
         self._retired = False
 
+        # EXP-08 re-partition bookkeeping. All three are inert with the flag off.
+        # ``_zone_complete_published`` makes ZONE_COMPLETE one-shot per plan;
+        # ``_repartition_hold`` is the ONE-TICK window during which the engine
+        # may re-task this drone instead of letting it return, cleared at the top
+        # of the next step so the window can never widen; ``_rth_reason`` records
+        # WHY the drone entered S3_RTH, so a return ordered by the energy or
+        # safety guards is distinguishable from one ordered by finishing a zone.
+        self._zone_complete_published = False
+        self._repartition_hold = False
+        self._rth_reason: str | None = None
+        # The hold is a modelling choice applied by one rule to both arms, but it
+        # is NOT paired: two arms can finish a different NUMBER of zones, so the
+        # total hold cost differs between them. It is therefore measured per
+        # drone and reported, never left to be assumed negligible.
+        self.repartition_hold_ticks = 0
+        self.repartition_hold_energy_j = 0.0
+
         # EM-01 Stage 2 (rth.energy_map.decide): per-sortie arming threshold
         # (seam 7b) + battery-quantized decide cadence (design doc section 7).
         # All four are inert when the flag is off (_arm_sortie early-returns,
@@ -177,6 +198,8 @@ class Agent:
         self._cov_frac_deficit = 0
         self._coverage_complete = False
         self._launch_ready = True
+        self._zone_complete_published = False
+        self._repartition_hold = False
 
     def _build_coverage_legs(self, waypoints: list[Waypoint]) -> list[Path]:
         legs: list[Path] = []
@@ -237,8 +260,105 @@ class Agent:
         elif self.state is AgentState.S0_IDLE:
             self._launch_ready = True
 
+    # States from which an in-flight re-partition may re-task a drone (EXP-08).
+    # Excluded and NOT an oversight: S3_RTH (committed to a return -- a
+    # re-partition must never cancel one), S_FAIL and S_LANDED (terminal). The
+    # engine applies its own eligibility rule before calling; this set is the
+    # agent's own last line of defence, and it RAISES rather than silently
+    # accepting a plan it would not act on.
+    RETASKABLE = frozenset({
+        AgentState.S0_IDLE,
+        AgentState.S1_TRANSIT,
+        AgentState.S2_MISSION,
+        AgentState.S_FERRY,
+        AgentState.S_OBS,
+        AgentState.S_SWAP,
+    })
+
+    def retask(self, plan: CoveragePlan, transit: Path, t: float, bus) -> None:
+        """EXP-08: hand a live agent a different zone, as a RECORDED transition.
+
+        This is the re-partition path's replacement for ``adopt_plan``, which is
+        left exactly as it was for the legacy redistribution. Three differences,
+        each of them a defect ``adopt_plan`` still has:
+
+        * the state dispatch is EXHAUSTIVE -- ``adopt_plan`` handles S1_TRANSIT,
+          S2_MISSION, S_OBS and S0_IDLE, so an agent in S_FERRY has its plan
+          replaced while its OLD leg queue keeps running, and an agent in S3_RTH
+          or S_SWAP falls through both branches with its plan silently swapped.
+          Here every reachable state is handled and anything else raises;
+        * the move S2_MISSION/S_FERRY -> S1_TRANSIT is applied through
+          ``_apply_transition``, so the recorder sees it and the sojourn history
+          stops charging the new transit to the old S2_MISSION sojourn.
+          ``adopt_plan`` assigns ``self.state`` directly, behind the recorder;
+        * the RTH arm is recomputed exactly ONCE. ``_apply_transition`` already
+          arms on entry to S1_TRANSIT, so calling ``_arm_sortie`` here the way
+          ``adopt_plan`` does would arm twice and append two ``sortie_arms``
+          entries for one sortie -- and those are reported metrics.
+
+        Coverage, energy, flown distance, battery level and the raster are never
+        touched: a re-partition changes what a drone will do next, never what it
+        has already done.
+        """
+        if self._retired:
+            raise ValueError(
+                f"agent {self.id} retired (S_LANDED) and can never be re-tasked"
+            )
+        if self.state not in self.RETASKABLE:
+            raise ValueError(
+                f"agent {self.id} cannot be re-tasked from {self.state.value}"
+            )
+        if self._photo_tracker is not None:
+            self._photo_tracker.finish_pass()
+        source = self.state
+        self.plan = plan
+        self._leg_mode = getattr(plan, "leg_mode", "boustrophedon")
+        self._cov_legs = self._build_coverage_legs(plan.waypoints)
+        self._cov_idx = 0
+        # Skips belong to the plan they were observed on; a re-task starts a
+        # fresh plan (the same rule adopt_plan applies).
+        self._skipped_cov = ()
+        self._cov_frac_deficit = 0
+        self._coverage_complete = False
+        self._transit = transit
+        self._zone_complete_published = False
+        self._repartition_hold = False
+
+        if source in (AgentState.S2_MISSION, AgentState.S_FERRY):
+            # The two edges EXP-08 adds to the designed FSM. Recorded, so the
+            # transit that follows becomes its own sojourn.
+            self._apply_transition(
+                Transition(source, AgentState.S1_TRANSIT, "retask"), t, bus
+            )
+        elif source is AgentState.S1_TRANSIT:
+            # Already transiting: the SORTIE is unchanged, only its destination
+            # moved. No self-loop edge is recorded -- closing and reopening a
+            # sojourn in the same state would invent a transition that did not
+            # happen -- so the arm is amended in place instead of appended.
+            self._set_legs([transit])
+            self._rearm_current_sortie()
+        elif source is AgentState.S_OBS:
+            # Committed to an avoidance micro-plan: let it finish, then leave
+            # through the existing S_OBS -> S1_TRANSIT edge, which picks up the
+            # new transit and arms there. The saved pre-avoidance leg queue is
+            # dropped -- it belongs to a plan this agent no longer has.
+            self._obs_return = AgentState.S1_TRANSIT
+            self._obs_legs_saved = None
+        elif source is AgentState.S_SWAP:
+            # Grounded awaiting a pack. ``_resume_transit`` rebuilds the resume
+            # leg from the NEW plan when SWAP_DONE arrives, and the S0 -> S1
+            # transition arms there; the transit passed here is deliberately
+            # unused, exactly as it is for a swapping agent today.
+            pass
+        else:                                   # S0_IDLE
+            self._launch_ready = True
+
     def view(self) -> DroneStateView:
-        return DroneStateView(self.id, self.battery.frac, self.pose, self.layer)
+        # EXP-08: the airborne bit lets a re-partition's energy budget skip the
+        # takeoff deduction for a drone that is already flying. At t=0 every
+        # agent is S0_IDLE, so this is False and the view is unchanged.
+        return DroneStateView(self.id, self.battery.frac, self.pose, self.layer,
+                              self.state.is_airborne)
 
     # ------------------------------------------------------------------ #
     # external signals                                                   #
@@ -277,6 +397,12 @@ class Agent:
         if self.state is AgentState.S_FAIL:
             return
 
+        # _repartition_hold still carries LAST tick's value here, and that is
+        # deliberate: this tick IS the held one, so _tick_dynamics needs to know
+        # the window was open in order to charge the hover. It is closed below,
+        # after the dynamics and before the zone-complete check can re-open it,
+        # which bounds the window to exactly one tick without comparing
+        # simulation times.
         self._tick_dynamics(dt, t)
 
         # avoidance micro-plan finished -> clear the threat so S_OBS can resume
@@ -309,6 +435,29 @@ class Agent:
         else:
             self._rth_decision = getattr(self, "_rth_decision", False)
 
+        # The window opened on the previous tick is now spent (the hover above
+        # was its cost); the check below may open a fresh one.
+        self._repartition_hold = False
+
+        # EXP-08: this drone has just flown the last leg of its zone. Announce
+        # it and hold the automatic return for exactly one tick, so the engine
+        # can re-partition the work that is still uncovered ELSEWHERE and hand
+        # this drone a new zone instead of sending it home with the mission
+        # unfinished. An empty plan announces nothing (D-8: an empty plan credits
+        # no work, and re-announcing one would spin).
+        if (self._repartition_on
+                and not self._zone_complete_published
+                and self._cov_legs
+                and self.state in (AgentState.S2_MISSION, AgentState.S_FERRY)
+                and self._phase_done()):
+            self._zone_complete_published = True
+            self._repartition_hold = True
+            bus.publish(Event(EventType.ZONE_COMPLETE, t, {
+                "agent_id": self.id,
+                "cov_idx": self._cov_idx,
+                "n_cov_legs": len(self._cov_legs),
+            }))
+
         ctx = self._make_ctx()
         tr = self.sm.step(ctx)
         if tr is not None:
@@ -325,6 +474,29 @@ class Agent:
                 self.energy_consumed_j += e
             return
         if self._leg_idx >= len(self._legs):
+            # EXP-08: a drone that has finished its zone and is waiting one tick
+            # for a possible re-task is HOVERING at the end of its last strip.
+            # Charging hover keeps that extra tick physically true instead of
+            # free (CLAUDE.md rule 4).
+            #
+            # Gated on the HOLD, not merely on the flag and the state. An agent
+            # handed an EMPTY plan also sits here with no legs for the one tick
+            # between entering S2_MISSION and the coverage_complete transition,
+            # and it is not being held for anything -- charging it would invent
+            # energy AND inflate repartition_hold_ticks, which exists to measure
+            # the hold. ``_repartition_hold`` still holds last tick's value at
+            # this point (see step), so the real held tick is the one charged.
+            if self._repartition_hold and self.state in (AgentState.S2_MISSION,
+                                                         AgentState.S_FERRY):
+                # ManeuverType.HOVER at the platform's existing hover power, via
+                # the same P*dt call S0_IDLE uses. This is the existing model
+                # applied to a state the drone is genuinely in -- not new flight
+                # physics, and not a new coefficient.
+                e = self.em.segment_energy(ManeuverType.HOVER, dt)
+                self.battery.drain(e)
+                self.energy_consumed_j += e
+                self.repartition_hold_ticks += 1
+                self.repartition_hold_energy_j += e
             return
         leg = self._legs[self._leg_idx]
         photo_on = (
@@ -394,6 +566,7 @@ class Agent:
             swap_done=self._swap_done,
             obs_return_state=self._obs_return,
             on_connector=self._on_connector(),
+            repartition_pending=self._repartition_hold,
         )
 
     def _on_connector(self) -> bool:
@@ -429,6 +602,10 @@ class Agent:
         elif dst is AgentState.S2_MISSION:
             self._set_legs(self._cov_legs[self._cov_idx:])
         elif dst is AgentState.S3_RTH:
+            # EXP-08 diagnostics: a return ordered by the energy or safety guards
+            # is not the same event as one ordered by finishing a zone, and the
+            # revision log has to be able to tell them apart.
+            self._rth_reason = tr.reason
             if self._photo_tracker is not None:
                 # RTH ends a partial pass.  The existing resume rule re-flies
                 # this coverage leg from its start after the swap.
@@ -639,16 +816,40 @@ class Agent:
         if not getattr(self.rth, "map_decide_on", False):
             return
         self._sortie_idx += 1
-        self._rth_decision = False
-        self._rth_last_check_level_j = float("inf")
-        bundles = [self.lookahead(k) for k in range(self._cov_idx, len(self._cov_legs))]
-        self._arm_level_j = self.rth.sortie_arm_j(bundles, self.coverage_altitude_m)
-        self.sortie_arms.append((self._sortie_idx, self._arm_level_j))
+        self.sortie_arms.append((self._sortie_idx, self._compute_arm()))
         log.debug(
             "agent %d sortie %d: RTH arm %.0f J (%.3f of capacity)",
             self.id, self._sortie_idx, self._arm_level_j,
             self._arm_level_j / self.spec.battery_capacity_j,
         )
+
+    def _rearm_current_sortie(self) -> None:
+        """EXP-08: the PLAN changed but the sortie did not.
+
+        Re-tasking a drone that is already transiting gives it a new destination
+        within the same sortie, so the arm must be recomputed against the new
+        remaining bundles -- but appending a second ``sortie_arms`` entry would
+        report two arms for one sortie, and ``len(sortie_arms)`` is asserted
+        against the S1_TRANSIT sojourn count. The entry is therefore AMENDED.
+        """
+        if not getattr(self.rth, "map_decide_on", False):
+            return
+        arm = self._compute_arm()
+        if self.sortie_arms:
+            self.sortie_arms[-1] = (self._sortie_idx, arm)
+        else:
+            # Re-tasked before ever launching: no sortie is open to amend.
+            self.sortie_arms.append((self._sortie_idx, arm))
+
+    def _compute_arm(self) -> float:
+        """The arm threshold for the plan currently loaded, plus the stale-decision
+        reset that has to accompany it. Extracted so that STARTING a sortie and
+        AMENDING one share one definition and cannot drift apart."""
+        self._rth_decision = False
+        self._rth_last_check_level_j = float("inf")
+        bundles = [self.lookahead(k) for k in range(self._cov_idx, len(self._cov_legs))]
+        self._arm_level_j = self.rth.sortie_arm_j(bundles, self.coverage_altitude_m)
+        return self._arm_level_j
 
     def _leg_sensor_energy(self, leg) -> float:
         """Camera payload energy this leg will draw at execution: sensor power over

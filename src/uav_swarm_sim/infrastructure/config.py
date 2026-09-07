@@ -357,6 +357,19 @@ class MissionConfig:
     # picking one, so a run's algorithm identity is never implicit. Default OFF
     # => the auto-selection path is unchanged.
     experiment_mode: bool = False
+    # EXP-08 (D-12): in-flight re-partition of the REMAINING work, under one
+    # trigger set, one eligibility rule and one ordering, identical for every
+    # decomposition algorithm -- only the partitioning method differs. With the
+    # flag on the run's OWN decomposer performs every re-partition (no
+    # substitution to WeightedTgcDecomposer) and the legacy ``Redistributor`` is
+    # not used at all. Default OFF => the legacy event-driven redistribution
+    # path is byte-identical.
+    repartition_enabled: bool = False
+    # Optional fixed-interval trigger, in seconds. None (the default) means the
+    # lifecycle triggers alone drive re-partitioning. Must be an exact multiple
+    # of ``sim.dt_s``: the trigger is evaluated on integer step counts, never by
+    # comparing accumulated floats.
+    repartition_interval_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -806,6 +819,18 @@ def _build(raw: dict, config_hash: str) -> Config:
     experiment_raw = m.get("experiment_mode", False)
     if not isinstance(experiment_raw, bool):
         raise ConfigError("mission.experiment_mode must be a boolean")
+    # EXP-08: same strict-boolean rule -- a mis-typed value must never silently
+    # switch the redistribution policy (and with it the decomposer identity).
+    repartition_raw = m.get("repartition_enabled", False)
+    if not isinstance(repartition_raw, bool):
+        raise ConfigError("mission.repartition_enabled must be a boolean")
+    interval_raw = m.get("repartition_interval_s", None)
+    if interval_raw is not None:
+        if isinstance(interval_raw, bool) or not isinstance(interval_raw, (int, float)):
+            raise ConfigError(
+                "mission.repartition_interval_s must be a number or omitted"
+            )
+        interval_raw = float(interval_raw)
     mission = MissionConfig(
         type=MissionType(str(m.get("type", "coverage"))),
         n_targets=int(m.get("n_targets", 30)),
@@ -815,6 +840,8 @@ def _build(raw: dict, config_hash: str) -> Config:
         weight_targets_by_battery=bool(m.get("weight_targets_by_battery", True)),
         no_swap_mode=no_swap_raw,
         experiment_mode=experiment_raw,
+        repartition_enabled=repartition_raw,
+        repartition_interval_s=interval_raw,
     )
 
     do = raw.get("dynamic_obstacles", {})
@@ -1029,6 +1056,51 @@ def _validate(cfg: Config, raw: dict) -> None:
                 "(outcome is derived from physical raster coverage)"
             )
 
+    # EXP-08 (D-8): the coverage raster is the SINGLE source of remaining work,
+    # so a re-partition has nothing to partition without it. Requiring it also
+    # pins the run to exactly one coverage layer (the engine enforces that for
+    # coverage.raster_enabled), which is what lets the re-partition stay on the
+    # primary graph.
+    if cfg.mission.repartition_enabled:
+        if cfg.mission.type is not MissionType.COVERAGE:
+            raise ConfigError(
+                "mission.repartition_enabled requires mission.type = coverage "
+                f"(got {cfg.mission.type.value})"
+            )
+        if not cfg.coverage.raster_enabled:
+            raise ConfigError(
+                "mission.repartition_enabled requires coverage.raster_enabled = true "
+                "(the raster is the only source of remaining work)"
+            )
+    interval = cfg.mission.repartition_interval_s
+    if interval is not None:
+        if not cfg.mission.repartition_enabled:
+            raise ConfigError(
+                "mission.repartition_interval_s requires "
+                "mission.repartition_enabled = true"
+            )
+        if not isfinite(interval) or interval <= 0.0:
+            raise ConfigError(
+                "mission.repartition_interval_s must be finite and > 0 (or omitted)"
+            )
+        # The periodic trigger fires on integer step counts, never on an
+        # accumulated float comparison. An interval that is not a whole number
+        # of ticks is refused rather than silently rounded to one.
+        #
+        # dt_s is checked HERE as well as further down: the general
+        # ``sim.dt_s > 0`` rule runs after this block, so dt_s = 0 would reach
+        # the division as a ZeroDivisionError and dt_s = nan would reach round()
+        # as a ValueError -- both escaping the ConfigError contract every other
+        # malformed field follows.
+        if not isfinite(cfg.sim.dt_s) or cfg.sim.dt_s <= 0.0:
+            raise ConfigError("sim.dt_s must be finite and > 0")
+        steps = interval / cfg.sim.dt_s
+        if abs(steps - round(steps)) > 1e-9 or round(steps) < 1:
+            raise ConfigError(
+                f"mission.repartition_interval_s ({interval}) must be a whole "
+                f"multiple of sim.dt_s ({cfg.sim.dt_s})"
+            )
+
     bz = cfg.battery_zones
     if not (1.0 > bz.high > bz.nominal > bz.critical > 0.0):
         raise ConfigError(
@@ -1137,8 +1209,12 @@ def _validate(cfg: Config, raw: dict) -> None:
     if cfg.failure.hazard_rate_per_hour < 0:
         raise ConfigError("failure.hazard_rate_per_hour must be >= 0")
 
-    if cfg.sim.dt_s <= 0:
-        raise ConfigError("sim.dt_s must be > 0")
+    # isfinite as well as > 0: `nan <= 0` and `inf <= 0` are both False, so a
+    # non-finite timestep passed this check and load_config accepted a value
+    # that cannot define simulation time. Pre-existing gap, closed here for
+    # every config rather than only on the EXP-08 interval path.
+    if not isfinite(cfg.sim.dt_s) or cfg.sim.dt_s <= 0:
+        raise ConfigError("sim.dt_s must be finite and > 0")
     if cfg.sim.max_timesteps <= 0:
         raise ConfigError("sim.max_timesteps must be > 0")
 

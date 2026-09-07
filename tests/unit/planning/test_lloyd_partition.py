@@ -39,7 +39,7 @@ def _decompose(area, poses, settings=SETTINGS, cell_m=10.0, obstacles=(), launch
     env = EnvironmentMap(area, list(obstacles), 0.0)
     raster = CoverageRaster(env.target_space, env.plannable_space, cell_m)
     dec = LloydCvtDecomposer(
-        raster=raster, deploy_poses=poses,
+        raster=raster,
         launch_pose=launch or Pose(area.centroid.x, area.bounds[1], 0.0),
         settings=settings,
     )
@@ -347,7 +347,7 @@ def test_missing_component_information_leaves_the_constraint_inert():
     area = box(0.0, 0.0, 200.0, 100.0)
     raster = CoverageRaster(area, area, 10.0)
     poses = [Pose(50.0, 50.0, 0.0), Pose(150.0, 50.0, 0.0)]
-    dec = LloydCvtDecomposer(raster=raster, deploy_poses=poses,
+    dec = LloydCvtDecomposer(raster=raster,
                              launch_pose=Pose(100.0, 0.0, 0.0), settings=SETTINGS)
     partition = dec.decompose(None, None, [DroneStateView(i, 1.0, p)
                                            for i, p in enumerate(poses)])
