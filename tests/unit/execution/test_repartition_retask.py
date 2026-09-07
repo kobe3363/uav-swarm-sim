@@ -246,12 +246,28 @@ def test_retask_from_coverage_is_a_recorded_transition(cfg):
 
     assert agent.state is S.S1_TRANSIT
     assert (source, S.S1_TRANSIT) in ALLOWED
-    history.finalize(t)
+
+    # Fly the transit for a known number of ticks, so the split between the two
+    # sojourns has an expected value derived here rather than read back.
+    n_ticks = 6
+    for k in range(1, n_ticks + 1):
+        agent.step(DT, t + k * DT, bus)
+    end = t + n_ticks * DT
+    history.finalize(end)
+
     sojourns = [s for s in history.sojourns() if s.agent_id == 0]
-    assert sojourns[-1].state is S.S1_TRANSIT
-    # the coverage sojourn was CLOSED with the re-task as its reason -- the
-    # transit that follows is no longer charged to it
-    assert [s for s in sojourns if s.reason_out == "retask"]
+    closed = [s for s in sojourns if s.reason_out == "retask"]
+    assert len(closed) == 1
+    # the coverage sojourn ends exactly at the re-task ...
+    assert closed[0].state is source
+    assert closed[0].t_out == pytest.approx(t)
+    # ... and every second after it belongs to the transit, not to coverage.
+    # Before EXP-08 the re-task assigned agent.state directly, so this whole
+    # stretch was charged to the S2_MISSION sojourn it interrupted.
+    transit = [s for s in sojourns if s.state is S.S1_TRANSIT and s.t_in >= t]
+    assert transit and transit[0].t_in == pytest.approx(t)
+    assert sum(s.t_out - s.t_in for s in sojourns
+               if s.state is source and s.t_in >= t) == pytest.approx(0.0)
 
 
 def test_retask_while_already_transiting_records_no_self_loop(cfg):
