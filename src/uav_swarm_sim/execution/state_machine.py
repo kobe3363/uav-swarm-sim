@@ -12,6 +12,15 @@ EXP-04 (``no_swap_mode``): with the flag on, touchdown in S3_RTH goes to the
 terminal S_LANDED state instead of S_SWAP / S0_IDLE -- the drone keeps its own
 battery and never relaunches. S_LANDED has no outgoing edge in the physical
 layer; like S_FAIL, its S0 closure exists only in the SMDP analysis layer.
+
+EXP-08 (``repartition_enabled``): an in-flight re-partition re-tasks a covering
+drone, which then transits to its new zone. That adds two edges to the designed
+structure -- S2_MISSION -> S1_TRANSIT and S_FERRY -> S1_TRANSIT -- and, unlike
+the pre-EXP-08 re-task, the move is applied as a real recorded transition rather
+than by assigning ``agent.state`` behind the recorder's back. The guards in
+``step`` do not produce these edges: they are driven by the engine
+(``Agent.retask``), which is why they are listed in ALLOWED but appear in no
+branch below. The thesis FSM figure needs both.
 """
 from __future__ import annotations
 
@@ -40,6 +49,10 @@ class AgentContext:
     swap_done: bool = False
     obs_return_state: AgentState = AgentState.S1_TRANSIT
     on_connector: bool = False  # active coverage leg is a camera-off connector (S2<->S_FERRY toggle)
+    # EXP-08: the agent has announced ZONE_COMPLETE and the engine has one tick
+    # to hand it a new zone. Defers ONLY the coverage_complete -> S3_RTH edge;
+    # every safety and energy guard is evaluated ahead of it and is unaffected.
+    repartition_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,8 +62,19 @@ class Transition:
     reason: str
 
 
-# The designed transition structure (physical layer). The SMDP estimator checks
-# the observed chain against this and adds the synthetic S_FAIL -> S0 closure.
+# The designed transition structure (physical layer).
+#
+# NOTE on what does and does not consume this set. The SMDP estimator adds the
+# synthetic S_FAIL -> S0 closure (metrics/smdp_estimator.py), but it does NOT
+# check the observed chain against ALLOWED -- nothing in ``src`` reads this set
+# at all; only the unit tests do, and they check the transitions the machine
+# PRODUCES. Until EXP-08 that gap was invisible and load-bearing: re-tasking a
+# live agent replaced its state by direct assignment, bypassing both the
+# recorder and this table, so an observed chain that this table forbids was
+# never noticed. The comment used to claim the estimator enforced it; a comment
+# asserting a mechanism that does not exist is the same "the output lies" defect
+# class this table is meant to guard against, so it is corrected here rather
+# than left standing.
 ALLOWED: set[tuple[AgentState, AgentState]] = {
     (S.S0_IDLE, S.S1_TRANSIT),
     (S.S1_TRANSIT, S.S2_MISSION),
@@ -61,10 +85,19 @@ ALLOWED: set[tuple[AgentState, AgentState]] = {
     (S.S2_MISSION, S.S_OBS),
     (S.S2_MISSION, S.S_FAIL),
     (S.S2_MISSION, S.S_FERRY),
+    # EXP-08 (mission.repartition_enabled): a re-partition hands a covering
+    # drone a DIFFERENT zone, and it transits to the new zone before covering
+    # it. Both halves of the coverage phase can be re-tasked -- keying this on
+    # S2_MISSION alone would make eligibility depend on _cov_idx parity, i.e. on
+    # whether the drone happens to be on a strip or on the connector between
+    # two. These two edges exist only under the flag; a legacy run never
+    # produces them.
+    (S.S2_MISSION, S.S1_TRANSIT),
     (S.S_FERRY, S.S2_MISSION),
     (S.S_FERRY, S.S3_RTH),
     (S.S_FERRY, S.S_OBS),
     (S.S_FERRY, S.S_FAIL),
+    (S.S_FERRY, S.S1_TRANSIT),   # EXP-08 re-task, see above
     (S.S3_RTH, S.S_OBS),
     (S.S3_RTH, S.S_SWAP),
     (S.S3_RTH, S.S0_IDLE),
@@ -162,6 +195,15 @@ class StateMachine:
             if s is S.S_FERRY and not ctx.on_connector:
                 return Transition(s, S.S2_MISSION, "ferry_end")
             if ctx.coverage_complete:
+                # EXP-08: hold the automatic return for exactly one tick while a
+                # re-partition decides whether there is more work for this drone.
+                # Reached only under mission.repartition_enabled, and only AFTER
+                # the guards above -- a threat, the dynamic RTH decision and both
+                # battery nets all still fire immediately, so the hold can never
+                # keep a drone airborne that should be going home. If no re-task
+                # arrives, the flag is cleared and this edge fires next tick.
+                if ctx.repartition_pending:
+                    return None
                 return Transition(s, S.S3_RTH, "coverage_complete")
             return None
 
