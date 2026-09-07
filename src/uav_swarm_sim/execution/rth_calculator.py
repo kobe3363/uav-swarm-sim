@@ -295,7 +295,8 @@ class RthCalculator:
                 self.n_map_hits += 1
                 return e_map
             self.n_map_fallbacks += 1
-        route = self._motion.plan(from_pose, self._base, ManeuverType.CRUISE)
+        route = self._motion.plan(from_pose, self._base if base is None else base,
+                                  ManeuverType.CRUISE)
         e = self._em.path_energy(route)
         if self._env is not None and not self._env.path_clear(route):
             e *= 1.5  # obstacle detour penalty (CostDB folded into a factor here)

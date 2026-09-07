@@ -92,7 +92,7 @@ def test_execution_coherent_must_be_a_real_boolean(mission):
     """A quoted YAML "false" is truthy in Python; the mission mode flags all
     reject non-booleans, and this one must not be the exception that silently
     switches the executor on."""
-    with pytest.raises(ConfigError, match="rth.execution_coherent must be a boolean"):
+    with pytest.raises(ConfigError, match=r"rth\.execution_coherent must be a boolean"):
         engine(dict(mission, **{"rth.execution_coherent": "false"}))
 
 
@@ -101,7 +101,7 @@ def test_coherent_execution_refuses_exp08_repartition(mission):
     and the one-tick re-task hold is set. Without it a finished drone goes to
     S3_RTH, which eligible_executors excludes, so zone-completion
     re-partitioning would silently never fire. Refused, not run as a no-op."""
-    with pytest.raises(ConfigError, match="does not support mission.repartition_enabled"):
+    with pytest.raises(ConfigError, match=r"does not support mission\.repartition_enabled"):
         engine(dict(mission, **{"mission.repartition_enabled": True}))
 
 

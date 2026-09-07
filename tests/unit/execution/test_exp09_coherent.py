@@ -258,6 +258,22 @@ def test_depletion_clamp_never_reports_more_energy_than_the_battery_held(kit):
     assert a.energy_consumed_j == pytest.approx(held, rel=1e-9)
 
 
+def test_blocked_rth_hover_cannot_report_more_than_the_battery_held(kit):
+    """A drone whose return is blocked hovers to depletion BY DESIGN, so the
+    final tick always has less charge than one hover step costs. drain()
+    floors the level at 0 while energy_consumed_j does not, so the charge
+    must be capped -- exactly as CoherentFlight.tick already caps holding."""
+    a = agent(kit, calculator(kit))
+    a.state = S.S3_RTH
+    a._rth_blocked = True
+    tick = kit.em.segment_energy(M.HOVER, 1.0)
+    held = tick / 3  # less than one hover tick remains
+    a.battery.drain(a.battery.level_j - held)
+    a._tick_dynamics(1.0, 0.0)
+    assert a.battery.level_j == 0
+    assert a.energy_consumed_j == pytest.approx(held, rel=1e-9)
+
+
 def work_agent(k, rth):
     a = agent(k, rth)
     poses = [Pose(100, 500, 0), Pose(200, 500, 0),

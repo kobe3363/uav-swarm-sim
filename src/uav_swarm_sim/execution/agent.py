@@ -490,7 +490,13 @@ class Agent:
 
     def _tick_dynamics(self, dt: float, t: float) -> None:
         if self._rth_blocked and self.state.is_airborne:
-            e = self.em.segment_energy(ManeuverType.HOVER, dt)
+            # Capped at what the battery actually holds: drain() floors the level
+            # at 0 but energy_consumed_j does not, so an uncapped charge would
+            # report more energy than was supplied on the final tick of every
+            # blocked-RTH depletion -- which is the designed end of this path.
+            # CoherentFlight.tick's holding branch already caps the same way.
+            e = min(self.battery.level_j,
+                    self.em.segment_energy(ManeuverType.HOVER, dt))
             self.battery.drain(e)
             self.energy_consumed_j += e
             return
