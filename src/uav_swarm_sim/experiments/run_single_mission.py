@@ -30,7 +30,8 @@ from ..metrics.smdp_estimator import estimate
 from ..metrics.stationary_distribution import stationary
 from ..metrics.efficiency_score import efficiency
 from ..metrics.gpx_exporter import write_gpx
-from ..metrics.run_output import RunContext, build_plan, build_results_single
+from ..metrics.run_output import (
+    RunContext, build_mission_contract, build_plan, build_results_single)
 
 
 
@@ -120,10 +121,19 @@ def main(argv=None) -> int:
             "n_map_fallbacks": eng.rth.n_map_fallbacks,
         }
 
+    # EXP-11: raw mission data contract, attached only when opted in so the
+    # flag-off results.json key set is byte-identical (additive-key rule).
+    mission_contract = None
+    if cfg.mission.contract_export:
+        mission_contract = build_mission_contract(
+            result, capacity_j=cfg.fleet.battery_capacity_j,
+            decomposer_class=type(eng.decomposer).__name__)
+
     # results.json
     sim.write_results(build_results_single(result, est, identity=identity, wall_time_s=wall,
                                            convergence=report_to_json(conv),
-                                           rth_arming=rth_arming))
+                                           rth_arming=rth_arming,
+                                           mission_contract=mission_contract))
 
     # artifacts (all into the simulation folder)
     viz.plot_environment(eng.env, None, sim.path("environment.png"))

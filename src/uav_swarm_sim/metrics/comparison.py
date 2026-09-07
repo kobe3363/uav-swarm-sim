@@ -17,6 +17,7 @@ from ..infrastructure.profiling import phase
 from ..infrastructure.rng import RngFactory
 from ..infrastructure.simulation_engine import SimulationEngine
 from .monte_carlo import MCResult, SingleRunResult, run, single_run_from_history
+from .run_output import build_mission_contract
 
 
 @dataclass
@@ -44,13 +45,20 @@ def _runner(cfg: Config, rng: RngFactory, algo: DecompositionAlgo | None, planne
         sink.total_energy_j.append(m.total_energy_j)
         sink.planning_time_s.append(m.planning_time_s)
         sink.replan_time_s.extend(m.replan_times_s)
+        # EXP-11: attach the per-replication raw contract only when opted in.
+        contract = None
+        if cfg.mission.contract_export:
+            contract = build_mission_contract(
+                result, capacity_j=cfg.fleet.battery_capacity_j,
+                decomposer_class=type(eng.decomposer).__name__)
         # single source of truth for the history -> SingleRunResult reduction
         with phase("smdp_reduce"):
             return single_run_from_history(result.history, metrics=m, outcome=result.outcome,
                                            aborted=result.aborted,
                                            initial_soc_by_drone=result.initial_soc_by_drone,
                                            energy_balance_t0=result.energy_balance_t0,
-                                           partition_diagnostics=result.partition_diagnostics)
+                                           partition_diagnostics=result.partition_diagnostics,
+                                           contract=contract)
     return run_once
 
 

@@ -381,6 +381,14 @@ class MissionConfig:
     # of ``sim.dt_s``: the trigger is evaluated on integer step counts, never by
     # comparing accumulated floats.
     repartition_interval_s: float | None = None
+    # EXP-11: opt-in raw mission data contract in results.json (final SoC,
+    # coverage masks, per-drone workload inputs, safety records). Serialization
+    # only -- it changes no trajectory, energy, RNG or outcome. Default OFF =>
+    # the results.json key set (and ``schema``) is byte-identical to pre-change.
+    # Deliberately kept ABSENT from every config/*.yaml: config_hash hashes the
+    # raw merged YAML, so a default-present key would shift identity for every
+    # run and break flag-off byte-identity (incl. the cross-commit golden).
+    contract_export: bool = False
 
 
 @dataclass(frozen=True)
@@ -847,6 +855,10 @@ def _build(raw: dict, config_hash: str) -> Config:
     repartition_raw = m.get("repartition_enabled", False)
     if not isinstance(repartition_raw, bool):
         raise ConfigError("mission.repartition_enabled must be a boolean")
+    # EXP-11: same strict-boolean rule; default-absent so config_hash is unchanged.
+    contract_raw = m.get("contract_export", False)
+    if not isinstance(contract_raw, bool):
+        raise ConfigError("mission.contract_export must be a boolean")
     interval_raw = m.get("repartition_interval_s", None)
     if interval_raw is not None:
         if isinstance(interval_raw, bool) or not isinstance(interval_raw, (int, float)):
@@ -865,6 +877,7 @@ def _build(raw: dict, config_hash: str) -> Config:
         experiment_mode=experiment_raw,
         repartition_enabled=repartition_raw,
         repartition_interval_s=interval_raw,
+        contract_export=contract_raw,
     )
 
     do = raw.get("dynamic_obstacles", {})

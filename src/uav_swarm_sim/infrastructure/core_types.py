@@ -451,3 +451,17 @@ class MissionResult:
     # airborne drone came to a raw obstacle; None if obstacle-free), "n_hard" and
     # "n_soft" (violation-record counts by severity). None with the flag off.
     safety_minima: dict | None = None
+    # EXP-11: raw raster coverage AREAS for the data contract (fracs already live
+    # in ``coverage_frac``/``target_coverage_frac`` -- not duplicated here). Keys:
+    # "source" ("raster" | "segment_proxy"), "a_target_m2", "a_plannable_m2",
+    # "target_covered_area_m2", "plannable_covered_area_m2". With no raster the
+    # source is "segment_proxy" and the four areas are None -- a proxy frac is
+    # never dressed up as a raster measurement. None only for direct legacy
+    # constructions outside SimulationEngine.
+    coverage_measurements: dict | None = None
+    # EXP-11: per-drone END-OF-RUN battery, read from the live Battery at result
+    # build (exact, not the sample-resolution history trace): (agent_id,
+    # final_level_j, final_soc), ordered by contiguous drone id, parallel to
+    # ``initial_soc_by_drone``. Includes lost drones -- the cut moment is labeled
+    # in the contract, never filtered.
+    final_battery_by_drone: tuple[tuple[int, float, float], ...] = ()

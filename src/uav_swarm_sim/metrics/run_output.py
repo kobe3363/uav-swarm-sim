@@ -27,6 +27,7 @@ import math
 import platform
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -37,12 +38,13 @@ from uuid import uuid4
 
 import numpy as np
 
-from ..infrastructure.enums import Outcome
+from ..infrastructure.enums import AgentState, Outcome
 from .convergence import ci_half_width
 
 PLAN_SCHEMA = "uav-swarm-sim/plan/v2"
 RESULTS_SCHEMA = "uav-swarm-sim/results/v2"
 RUN_SCHEMA = "uav-swarm-sim/run/v1"
+CONTRACT_SCHEMA = "uav-swarm-sim/contract/v1"
 
 
 # --------------------------------------------------------------------------- #
@@ -355,6 +357,162 @@ def _energy_balance_json(estimates: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# EXP-11 mission data contract                                                 #
+# --------------------------------------------------------------------------- #
+_CUT_MOMENT = {
+    AgentState.S_LANDED: "landed",
+    AgentState.S_FAIL: "failed",
+    AgentState.S_SWAP: "swapping",
+    AgentState.S0_IDLE: "idle_on_ground",
+}
+
+
+def build_mission_contract(result, *, capacity_j: float,
+                           decomposer_class: str | None) -> dict:
+    """EXP-11 raw mission data contract (``contract/v1``).
+
+    Serializes the RAW inputs to the six supervisor metrics (coverage, total
+    energy, duration, min final SoC, workload balance, safety) so each can be
+    recomputed post hoc without re-running the sim. It computes NO work metric:
+    no workload formula, no min-SoC policy, no summary scalar, no safety->outcome
+    wiring. Every per-drone value lives once in ``per_agent``; the six category
+    blocks name the columns they consume (``fields``) instead of copying values.
+
+    Units by suffix: ``_j`` joules, ``_m2`` m^2, ``_s`` seconds, ``_m`` metres,
+    ``_soc``/``_frac`` dimensionless [0,1]. ``None`` means NOT MEASURED, never
+    zero. Types are stable: ``float`` for physical quantities, ``int`` for counts.
+    """
+    m = result.metrics
+    consumed = dict(m.per_agent_energy_j)
+    length_m = dict(m.per_agent_length_m)
+    initial_soc = tuple(result.initial_soc_by_drone)
+    final = {aid: (lvl, soc) for aid, lvl, soc in result.final_battery_by_drone}
+
+    ids = sorted(final)
+    # positional->keyed join guard: initial_soc_by_drone[i] belongs to agent i.
+    # Holds today (ids are the 0..n-1 loop index); a future id scheme would
+    # silently shift every drone's initial SoC, so assert rather than trust.
+    assert ids == list(range(len(initial_soc))), (
+        "contract per_agent join: agent ids must be 0..n-1 aligned with "
+        f"initial_soc_by_drone (ids={ids}, n_soc={len(initial_soc)})"
+    )
+
+    # one pass over the history: last state, swap count, airborne time per drone
+    last_state: dict[int, AgentState] = {}
+    last_t_out: dict[int, float] = {}
+    n_swaps: dict[int, int] = defaultdict(int)
+    airborne_s: dict[int, float] = defaultdict(float)
+    for s in result.history.sojourns():
+        if s.state is AgentState.S_SWAP:
+            n_swaps[s.agent_id] += 1
+        if s.state.is_airborne:
+            airborne_s[s.agent_id] += s.duration
+        if s.agent_id not in last_t_out or s.t_out >= last_t_out[s.agent_id]:
+            last_t_out[s.agent_id] = s.t_out
+            last_state[s.agent_id] = s.state
+
+    photo_count: dict[int, int] = defaultdict(int)
+    for e in result.photo_events:
+        photo_count[e.agent_id] += 1
+
+    per_agent: dict[str, dict] = {}
+    for aid in ids:
+        final_level_j, final_soc = final[aid]
+        st = last_state.get(aid)  # no sojourn => never left the ground
+        cut = _CUT_MOMENT.get(st, "idle_on_ground") if st is not None \
+            else "idle_on_ground"
+        if st is not None and st not in _CUT_MOMENT:
+            cut = "airborne_at_end"  # only airborne states remain here
+        per_agent[str(aid)] = {
+            "consumed_j": float(consumed.get(aid, 0.0)),
+            "initial_soc": float(initial_soc[aid]),
+            "initial_level_j": float(initial_soc[aid] * capacity_j),
+            "final_level_j": float(final_level_j),
+            "final_soc": float(final_soc),
+            "n_swaps": int(n_swaps.get(aid, 0)),
+            "length_m": float(length_m.get(aid, 0.0)),
+            "airborne_s": float(airborne_s.get(aid, 0.0)),
+            "photo_count": int(photo_count.get(aid, 0)),
+            "cut_moment": cut,
+        }
+
+    # --- energy reconciliation (B1) ---------------------------------------- #
+    # Per-drone identity: consumed = (L0 - Lf) + Σ(cap - L_before_swap) + clamp.
+    # The swap-recharge term is NOT recoverable from n_swaps*cap (reset() refills
+    # from the landed level), so the clamp residual is authoritative ONLY when no
+    # swap occurred; with swaps we report n_swaps and refuse to invent a residual.
+    total_swaps = sum(n_swaps.values())
+    sum_per_agent_j = float(sum(consumed.values()))
+    if total_swaps == 0:
+        sum_l0 = float(sum(s * capacity_j for s in initial_soc))
+        sum_lf = float(sum(final[a][0] for a in ids))
+        reconciliation = {
+            "reconcilable": True,
+            "sum_per_agent_j": sum_per_agent_j,
+            "clamp_residual_j": sum_per_agent_j - (sum_l0 - sum_lf),
+            "swap_recharge_j": 0.0,
+        }
+    else:
+        reconciliation = {
+            "reconcilable": False,
+            "sum_per_agent_j": sum_per_agent_j,
+            "clamp_residual_j": None,
+            "swap_recharge_j": None,
+            "n_swaps_total": total_swaps,
+        }
+
+    # --- safety (B3): "not recorded" must not read as "clean mission" ------- #
+    sm = result.safety_minima
+    if sm is None:
+        safety = {"recorded": False, "n_hard": None, "n_soft": None,
+                  "min_separation_m": None, "min_obstacle_clearance_m": None,
+                  "violations": None}
+    else:
+        safety = {
+            "recorded": True,
+            "n_hard": int(sm["n_hard"]),
+            "n_soft": int(sm["n_soft"]),
+            "min_separation_m": sm["min_separation_m"],
+            "min_obstacle_clearance_m": sm["min_obstacle_clearance_m"],
+            "violations": [_jsonable(v) for v in result.safety_violations],
+        }
+
+    cov = dict(result.coverage_measurements or {"source": "segment_proxy"})
+    cov["target_coverage_frac"] = result.target_coverage_frac
+    cov["plannable_coverage_frac"] = result.coverage_frac
+
+    outcome = result.outcome
+    return {
+        "contract_schema": CONTRACT_SCHEMA,
+        "per_agent": per_agent,
+        "coverage": cov,
+        "energy": {
+            "total_consumed_j": float(m.total_energy_j),
+            "reconciliation": reconciliation,
+            "fields": ["consumed_j", "initial_level_j", "final_level_j", "n_swaps"],
+        },
+        "duration": {
+            "mission_duration_s": float(m.duration_s),
+            "fields": ["airborne_s"],
+        },
+        # no chosen scalar: final_soc + cut_moment per drone is the raw material,
+        # the consumer picks population and inclusion policy.
+        "min_final_soc": {"fields": ["final_soc", "cut_moment"]},
+        "workload": {"fields": ["length_m", "consumed_j", "airborne_s", "photo_count"]},
+        "safety": safety,
+        "outcome": {
+            "outcome": outcome.value if hasattr(outcome, "value") else str(outcome),
+            "terminal_reason": result.terminal_reason,
+            "airborne_at_end": list(result.airborne_at_end),
+            "losses": [list(x) for x in result.losses],
+            "retired_agents": list(result.retired_agents),
+            "n_photos_fleet": len(result.photo_events),
+            "decomposer_class": decomposer_class,
+        },
+    }
+
+
 def build_results_mc(mc, *, identity: dict, wall_time_s: float,
                      variant=None) -> dict:
     """The OUTCOME of a Monte-Carlo simulation batch: how many replications ran
@@ -439,12 +597,21 @@ def build_results_mc(mc, *, identity: dict, wall_time_s: float,
             for replication, run in enumerate(mc.runs, start=1)
             if getattr(run, "energy_balance_t0", None) is not None
         ]
+    # EXP-11: per-replication raw contract, present only when the runner attached
+    # one (mission.contract_export on). Flag off => key absent, byte-identical.
+    if any(getattr(run, "contract", None) is not None for run in mc.runs):
+        out["mission_contract"] = [
+            {"replication": replication, **run.contract}
+            for replication, run in enumerate(mc.runs, start=1)
+            if getattr(run, "contract", None) is not None
+        ]
     return out
 
 
 def build_results_single(result, est, *, identity: dict, wall_time_s: float,
                          convergence: dict | None = None,
-                         rth_arming: dict | None = None) -> dict:
+                         rth_arming: dict | None = None,
+                         mission_contract: dict | None = None) -> dict:
     """The OUTCOME of a single mission (the visual-demo case): terminal outcome,
     its SMDP, and the single-run metrics.
 
@@ -494,6 +661,10 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
     }
     if rth_arming is not None:
         out["rth_arming"] = rth_arming
+    # EXP-11: additive and present only when mission.contract_export is on, so a
+    # flag-off run's key set (and ``schema``) is byte-identical.
+    if mission_contract is not None:
+        out["mission_contract"] = mission_contract
     if getattr(result, "partition_diagnostics", None) is not None:
         out["partition"] = result.partition_diagnostics.to_json()
     if getattr(result, "energy_balance_t0", None) is not None:
