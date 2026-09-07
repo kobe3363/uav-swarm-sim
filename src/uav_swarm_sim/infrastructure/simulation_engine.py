@@ -668,15 +668,25 @@ class SimulationEngine:
             if self._dynfield is not None:
                 self._dynfield.step(dt)
                 self.sensing.step(self.fleet.active(), self._dynfield, t, self.bus)
+            pre_airborne = None
             if self.violations is not None:
                 self.violations.snapshot(self.fleet.active())
+                # Agents flying at the START of this tick: they execute a final
+                # movement even if the step lands (S_LANDED) or fails (S_FAIL)
+                # them, dropping them from airborne() before the observe below.
+                pre_airborne = self.fleet.airborne()
             for a in self.fleet.active():
                 a.step(dt, t, self.bus)
                 self.history.record_battery(a.id, t, a.battery.frac)
             if self.violations is not None:
-                # After the executed step: record breaches that actually happened
-                # this tick, over the airborne fleet (post-tick poses).
-                self.violations.observe(self.fleet.airborne(), t)
+                # Observe the UNION of the pre-step airborne set and the post-step
+                # airborne set (post-tick poses), so a breach on a drone's final
+                # executed movement -- the tick it lands or fails -- is still
+                # recorded and not merely closed as it leaves the set. Agents that
+                # were already grounded before the tick are in neither set.
+                observed = {a.id: a for a in pre_airborne}
+                observed.update({a.id: a for a in self.fleet.airborne()})
+                self.violations.observe(list(observed.values()), t)
             # proactive scanning is expensive: drain LIDAR power while active
             scan_w = self.sensing.scan_power_w()
             if scan_w > 0.0:

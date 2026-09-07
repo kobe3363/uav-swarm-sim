@@ -224,6 +224,28 @@ def test_in_place_turn_reconvergence_is_soft():
     assert v[0].limit_m_s == 0.0
 
 
+def test_zero_command_soft_episode_closes_on_compliant_flight():
+    # A soft episode opened on an in-place turn (commanded 0) must CLOSE once the
+    # drone resumes compliant flight at a positive command -- recovery is judged
+    # against the current tick, not the stored limit=0 -- and a later breach must
+    # then be a NEW record (SafetyViolation contract).
+    rec = _rec(v_cruise=21.0)
+    a = _Agent(0)
+    turn = Path.from_segments([inplace_turn_segment(Pose(0, 0, 0), math.pi / 2, 1.0,
+                                                    ManeuverType.TURN)])
+    cruise = Path.from_segments([straight_segment(Pose(6, 0, 0), 12.0,
+                                                  ManeuverType.CRUISE, 12.0)])
+    _speed_tick(rec, a, turn, (0, 0), (6, 0), 0.0)     # soft opens (limit 0)
+    _speed_tick(rec, a, cruise, (6, 0), (18, 0), 1.0)  # compliant 12 m/s -> closes
+    _speed_tick(rec, a, turn, (18, 0), (24, 0), 2.0)   # fresh soft breach
+    rec.finalize(2.0)
+    v = _by_kind(rec.result()[0], "speed")
+    assert len(v) == 2                                  # two distinct records, not one stale
+    assert v[0].ended_reason == "recovered"
+    assert v[0].t_start == 0.0 and v[0].t_end == 0.0
+    assert all(ep.severity == "soft" for ep in v)
+
+
 def test_multi_segment_peak_is_not_hidden_by_the_average():
     rec = _rec(v_cruise=21.0)
     a = _Agent(0)

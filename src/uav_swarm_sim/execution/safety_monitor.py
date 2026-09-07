@@ -442,9 +442,22 @@ class ViolationRecorder:
                     self._extend(key, "speed", severity, (aid,), t, v_act,
                                  reduce=max, limit=limit)
                 elif key in self._open:
-                    ep = self._open[key]
-                    lo = ep.limit * (1.0 - _HYST_FRAC) if ep.limit and ep.limit > 0 else _EPS_ABS
-                    if v_act <= lo:
+                    # Recovery is judged against the CURRENT tick's threshold, not
+                    # the stored open-limit: the episode closes as soon as the
+                    # executed speed no longer exceeds what THIS tick commands
+                    # (i.e. the drone is compliant), so a later breach opens a
+                    # fresh record. Keying recovery off the stored limit stranded a
+                    # zero-command in-place-turn soft episode open forever -- its
+                    # stored limit is 0, so it only closed at a standstill -- even
+                    # after the drone resumed compliant flight at a positive
+                    # command. No hysteresis gap is applied here (unlike
+                    # separation): a per-tick commanded speed that jumps between
+                    # legs would let a below-limit band trap the episode, and
+                    # recovery speed ramps smoothly so threshold chatter does not
+                    # arise in practice.
+                    cur_limit = self._v_env_h if severity == "hard" else v_peak
+                    thr = max(cur_limit * (1.0 + _SPEED_TOL_FRAC), _EPS_ABS)
+                    if v_act <= thr:
                         self._finish(key, "recovered")
 
     def _classify_speed(self, v_act, v_cmd):
