@@ -188,8 +188,8 @@ class Repartitioner:
         self._spec = spec
         self._coverage = coverage
         self._altitude_m = altitude_m
-        self._plan_transit = plan_transit          # (a, b) -> Path (engine's)
-        self._entry_pose = entry_pose              # (plan, zone) -> Pose (engine's)
+        self._plan_transit = plan_transit    # (from, to) -> Path (engine's)
+        self._entry_pose = entry_pose        # (plan, legacy_entry) -> Pose (engine's)
         self._rth = rth
         self._rng_stream = rng_stream
         self.revision = 0
@@ -253,9 +253,19 @@ class Repartitioner:
         fingerprint = (n_before, frozenset(a.id for a in executors))
         if fingerprint == self._last_applied:
             # Neither the work nor the executor set has moved since the last
-            # applied revision, so this one would reproduce it exactly while
+            # applied revision, so this one would reproduce it very nearly while
             # resetting everyone's progress. Both components change only through
-            # a real physical event, which is what bounds the loop.
+            # a real physical event, which is what bounds repeated triggers.
+            #
+            # Deliberately conservative, and the cost is worth stating: the
+            # drones' POSES are not in the fingerprint, so a revision that would
+            # differ only because everyone has moved is refused. Including poses
+            # would make the fingerprint change every tick and remove the bound
+            # entirely. In practice the guard almost never bites while anyone is
+            # covering -- cells are being credited every tick, so n_before falls
+            # continuously -- and it bites exactly when nothing is being covered
+            # (everyone transiting or idle), which is when a re-partition would
+            # be pure churn.
             return _record(NO_PROGRESS)
 
         views = [a.view() for a in executors]

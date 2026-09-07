@@ -935,7 +935,10 @@ class SimulationEngine:
 
         # ---- apply: assignment only, no computation ---------------------- #
         self.partition = partition
-        self.plans = plans
+        # Merge rather than replace: a drone that was not an executor is still
+        # flying the plan it already had, and dropping its entry would lose that.
+        # (The legacy Redistributor merges for the same reason.)
+        self.plans = {**self.plans, **plans}
         self.replan_times.append(attempt.record.plan_time_s)
         for agent, plan, transit in staged:
             agent.retask(plan, transit, t, self.bus)
