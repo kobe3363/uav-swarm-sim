@@ -48,10 +48,26 @@ class RouteUnavailable(ValueError):
 
 
 def geometry_key(env):
-    """Identity of the static geometry, including clearance (not object identity)."""
+    """Identity of the static geometry, including clearance (not object identity).
+
+    Memoized per EnvironmentMap: coherent execution calls path_clear for every
+    active leg on every tick, and WKB serialization plus SHA-256 over the whole
+    survey and buffered union is not free. EnvironmentMap builds both geometries
+    once and hands back the same objects, so the cache is keyed on their
+    identity and rebuilds the moment either reference changes -- the returned
+    key is always the one the uncached expression would produce.
+    """
     obs = env.buffered_obstacles
-    return (hashlib.sha256(env.area.wkb).digest(),
-            None if obs is None else hashlib.sha256(obs.wkb).digest())
+    cached = getattr(env, "_geometry_key_cache", None)
+    if cached is not None and cached[0] is env.area and cached[1] is obs:
+        return cached[2]
+    key = (hashlib.sha256(env.area.wkb).digest(),
+           None if obs is None else hashlib.sha256(obs.wkb).digest())
+    try:
+        env._geometry_key_cache = (env.area, obs, key)
+    except AttributeError:
+        pass  # frozen/slotted stubs simply go uncached
+    return key
 
 
 def _require_endpoints(a, b, region):
@@ -298,7 +314,11 @@ def _path_clear(path: Path, env, ds: float = 1.0, *, region=None) -> bool:
         coords = [p.as_xy() for p in pts]
         if not coords:
             continue
-        shape = Point(coords[0]) if seg.length_m == 0 else LineString(coords)
+        # len(coords) < 2 is the crash guard: a positive-length segment shorter
+        # than float resolution samples to a single coincident pose, and
+        # LineString raises on one coordinate.
+        shape = (Point(coords[0]) if seg.length_m == 0 or len(coords) < 2
+                 else LineString(coords))
         if accepted_region is not None and not accepted_region.covers(shape):
             return False
         if core is not None and core.intersects(shape):

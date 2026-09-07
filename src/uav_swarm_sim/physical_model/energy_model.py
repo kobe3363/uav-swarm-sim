@@ -117,6 +117,22 @@ class EnergyModel:
             raise ValueError("distance_energy requires speed > 0")
         return self.power(m, formation_factor) * dist_m / speed
 
+    def potential_power_w(self, seg) -> float:
+        """The constant potential-term power [W] of one segment: the same
+        ``mass*g*dz/duration_s`` rate ``path_interval_energy`` integrates.
+
+        Exposed so that a caller which must TRUNCATE a segment at the
+        battery's limit can derive the affordable duration from the very
+        integral that charges it. Clamping on propulsion power alone would
+        pick a cut point the battery cannot pay for: ``Battery.drain``
+        floors the level at 0 but ``energy_consumed_j`` does not, so the
+        reported total would exceed the energy the battery supplied.
+        """
+        if seg.duration_s <= 0:
+            return 0.0
+        dz = max(0.0, seg.end.z - seg.start.z)
+        return self._spec.mass_kg * _G * dz / seg.duration_s
+
     def path_interval_energy(
         self, path: Path, start_s: float, end_s: float, sensor_power_w: float = 0.0,
     ) -> float:
@@ -133,7 +149,6 @@ class EnergyModel:
                 total += self.segment_energy(seg.maneuver, overlap)
                 if seg.maneuver is ManeuverType.COVERAGE:
                     total += self.sensor_energy(overlap, sensor_power_w)
-                dz = max(0.0, seg.end.z - seg.start.z)
-                total += self._spec.mass_kg * _G * dz * overlap / seg.duration_s
+                total += self.potential_power_w(seg) * overlap
             elapsed += seg.duration_s
         return total

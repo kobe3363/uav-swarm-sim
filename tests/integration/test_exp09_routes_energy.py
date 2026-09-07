@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from shapely.geometry import box, mapping
 
-from uav_swarm_sim.infrastructure.config import load_config
+from uav_swarm_sim.infrastructure.config import ConfigError, load_config
 from uav_swarm_sim.infrastructure.enums import AgentState as S, DecompositionAlgo, Outcome
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
@@ -86,6 +86,23 @@ def physical_signature(result):
                  sojourns=[asdict(s) for s in result.history.sojourns()],
                  photos=[asdict(p) for p in result.photo_events])
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=lambda v: v.value)
+
+
+def test_execution_coherent_must_be_a_real_boolean(mission):
+    """A quoted YAML "false" is truthy in Python; the mission mode flags all
+    reject non-booleans, and this one must not be the exception that silently
+    switches the executor on."""
+    with pytest.raises(ConfigError, match="rth.execution_coherent must be a boolean"):
+        engine(dict(mission, **{"rth.execution_coherent": "false"}))
+
+
+def test_coherent_execution_refuses_exp08_repartition(mission):
+    """Coherent execution replaces Agent.step, where ZONE_COMPLETE is announced
+    and the one-tick re-task hold is set. Without it a finished drone goes to
+    S3_RTH, which eligible_executors excludes, so zone-completion
+    re-partitioning would silently never fire. Refused, not run as a no-op."""
+    with pytest.raises(ConfigError, match="does not support mission.repartition_enabled"):
+        engine(dict(mission, **{"mission.repartition_enabled": True}))
 
 
 def test_flag_off_byte_identity(mission):

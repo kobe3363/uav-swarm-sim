@@ -791,11 +791,14 @@ def _build(raw: dict, config_hash: str) -> Config:
         route=bool(emr.get("route", False)),
         zone_demotion=bool(emr.get("zone_demotion", False)),
     )
+    coherent_raw = rt.get("execution_coherent", False)
+    if not isinstance(coherent_raw, bool):
+        raise ConfigError("rth.execution_coherent must be a boolean")
     rth = RTHConfig(
         check_interval_s=float(_require(rt, "check_interval_s", "rth")),
         reserve_frac=float(_require(rt, "reserve_frac", "rth")),
         energy_map=energy_map,
-        execution_coherent=bool(rt.get("execution_coherent", False)),
+        execution_coherent=coherent_raw,
         emergency_frac=(float(rt["emergency_frac"]) if rt.get("emergency_frac") is not None else None),
     )
     si = _require(raw, "sim", "")
@@ -1263,6 +1266,15 @@ def _validate(cfg: Config, raw: dict) -> None:
             raise ConfigError("rth.execution_coherent requires a static coverage mission")
         if cfg.env.obstacle_floor_m != 0 or cfg.env.obstacle_ceil_range_m is not None:
             raise ConfigError("rth.execution_coherent requires ground-based unbounded obstacles")
+        # EXP-08 interaction: coherent execution replaces Agent.step, which is
+        # where ZONE_COMPLETE is announced and the one-tick re-task hold is set.
+        # A drone finishing its zone therefore goes straight to S3_RTH, and
+        # eligible_executors excludes that state -- zone-completion
+        # re-partitioning would silently never happen and requested work would
+        # be left unassigned. Rejected here rather than run as a quiet no-op.
+        if cfg.mission.repartition_enabled:
+            raise ConfigError(
+                "rth.execution_coherent does not support mission.repartition_enabled")
 
     t0, t1 = cfg.tier_thresholds
     if not (0 < t0 < t1):

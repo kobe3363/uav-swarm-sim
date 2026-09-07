@@ -693,7 +693,11 @@ class Agent:
                 try:
                     self._transit = self._resume_transit()
                     self._launch_ready = True
-                except RouteUnavailable:
+                except RouteUnavailable as exc:
+                    # The remaining coverage legs are abandoned here. Record the
+                    # cause: without it the agent simply settles and the run ends
+                    # with no trace of why the work was dropped.
+                    self.report_rth_infeasible(t, bus, None, str(exc))
                     self.plan = None
                     self._launch_ready = False
             self._set_legs([])
@@ -916,9 +920,14 @@ class Agent:
         self._threat_cleared = True
 
     def report_rth_infeasible(self, t, bus, deficit_j, reason):
-        """Diagnostic only. Unknown route cost uses null, never invented joules."""
-        if any(e.payload["reason"] == reason for e in self.rth_infeasible_events):
-            return
+        """Diagnostic only. Unknown route cost uses null, never invented joules.
+
+        Every OCCURRENCE is recorded, not merely every distinct reason: a
+        swap cycle starts a fresh sortie on a full battery and can re-enter
+        the same infeasibility later, with a different time and deficit. A
+        reason-keyed guard would silently drop those. The call sites are
+        S3_RTH entries, not per-tick, so this cannot flood.
+        """
         event = Event(EventType.RTH_INFEASIBLE, t, {
             "agent_id": self.id, "deficit_j": deficit_j, "reason": reason,
         })

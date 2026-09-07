@@ -10,7 +10,7 @@ from uav_swarm_sim.execution.agent import Agent
 from uav_swarm_sim.execution.rth_calculator import RthCalculator
 from uav_swarm_sim.execution.state_machine import AgentContext, StateMachine, Transition
 from uav_swarm_sim.infrastructure.config import load_config, ConfigError
-from uav_swarm_sim.infrastructure.core_types import Path, Pose, CoveragePlan, Waypoint
+from uav_swarm_sim.infrastructure.core_types import Path, PathSegment, Pose, CoveragePlan, Waypoint
 from uav_swarm_sim.infrastructure.enums import AgentState as S, BatteryZone, ManeuverType as M
 from uav_swarm_sim.physical_model.battery import Battery
 from uav_swarm_sim.physical_model.drone_specs import build_spec
@@ -221,6 +221,41 @@ def test_old_tick_bias_has_a_measured_positive_sign(kit):
     assert kit.em.path_interval_energy(land, 0, land.total_duration_s) == pytest.approx(exact)
     # The requested 100 m/.5 s case happens to be aligned: zero tail bias.
     assert math.ceil((100 / 8) / 0.5) * 0.5 * 106.6 == pytest.approx(1332.5)
+
+
+def test_multirotor_takeoff_carries_no_potential_term(kit):
+    """Scope check for the clamp below: multirotor TAKEOFF/LAND carry the
+    altitude in the DURATION at dz=0, and coherent mode is validated to a
+    single layer, so no potential term arises in a supported coherent flight.
+    The m*g*dz term belongs to the inter-layer CLIMB segments."""
+    from uav_swarm_sim.physical_model.vertical_segments import takeoff_profile
+    seg = takeoff_profile(kit.spec, kit.em, 100, at=Pose(0, 500, 0)).as_path().segments[0]
+    assert seg.start.z == seg.end.z == 0.0
+    assert kit.em.potential_power_w(seg) == 0.0
+
+
+def test_depletion_clamp_never_reports_more_energy_than_the_battery_held(kit):
+    """The truncation must use the SAME integral that charges the segment.
+
+    path_interval_energy bills mass*g*dz/duration on a climbing segment.
+    Clamping on propulsion power alone cuts at a point the battery cannot pay
+    for: Battery.drain floors the level at 0 but energy_consumed_j does not,
+    so the reported total would exceed the energy the battery supplied. No
+    such segment occurs in the currently validated single-layer scope; this
+    pins the arithmetic so that widening the scope cannot break the books."""
+    a = agent(kit, calculator(kit))
+    climb = Path((PathSegment(M.CLIMB, 0.0, 10.0,
+                              Pose(0, 500, 0, 0.0), Pose(0, 500, 0, 50.0), 0.0),))
+    seg = climb.segments[0]
+    rate = kit.em.power(M.CLIMB) + kit.em.potential_power_w(seg)
+    assert kit.em.potential_power_w(seg) > 0
+    a.state = S.S1_TRANSIT
+    a._set_legs([climb])
+    held = 0.5 * rate  # exactly half a second of climb left
+    a.battery.drain(a.battery.level_j - held)
+    a._coherent.tick(5.0, 0.0)
+    assert a.battery.level_j == 0
+    assert a.energy_consumed_j == pytest.approx(held, rel=1e-9)
 
 
 def work_agent(k, rth):

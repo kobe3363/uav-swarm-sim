@@ -231,8 +231,15 @@ class CoherentFlight:
                 power = a.em.power(seg.maneuver)
                 if productive and seg.maneuver is M.COVERAGE:
                     power += a._sensor_power_w
-                if power > 0 and power * (hi - lo) > a.battery.level_j:
-                    hi = lo + a.battery.level_j / power
+                # The affordable duration must come from the SAME integral that
+                # charges it: path_interval_energy also bills the potential term
+                # on a climbing segment, so clamping on propulsion power alone
+                # would cut at a point the battery cannot pay for (drain floors
+                # at 0, energy_consumed_j does not -> reported energy would
+                # exceed what the battery supplied).
+                rate = power + a.em.potential_power_w(seg)
+                if rate > 0 and rate * (hi - lo) > a.battery.level_j:
+                    hi = lo + a.battery.level_j / rate
                     end = hi
                     used = end - a._t
                 elapsed = hi - lo
@@ -258,7 +265,10 @@ class CoherentFlight:
                 elif seg.maneuver is M.LAND:
                     self.altitude_m = max(0.0, self.altitude_m - a.spec.v_descent * elapsed)
                 if a.battery.level_j <= 1e-9:
-                    a.battery.drain(a.battery.level_j)
+                    # Symmetry: whatever residual is drained is also reported.
+                    residual = a.battery.level_j
+                    a.battery.drain(residual)
+                    a.energy_consumed_j += residual
                     break
             cursor += seg.duration_s
         a._t = end

@@ -261,7 +261,7 @@ class RthCalculator:
         except ValueError:
             self.n_route_fallbacks += 1
             return None
-        path = self._routed_path(from_pose, self._base, centers)
+        path = self._routed_path(from_pose, self._base if base is None else base, centers)
         if path is None:
             self.n_route_fallbacks += 1
         return path

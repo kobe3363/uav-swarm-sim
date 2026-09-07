@@ -128,6 +128,22 @@ EXP-07 Lloyd algorithms are absent at the pinned base. Shared route/energy APIs
 are tested independently; no substitute partitioner is introduced. No EXP-08,
 EXP-10, EXP-13, power-table, reporting-bin, or protected-preset changes.
 
+## Interaction with EXP-08 re-partitioning (rebase onto EXP-08)
+
+`rth.execution_coherent: true` together with `mission.repartition_enabled:
+true` is **rejected at configuration load**. Coherent execution replaces
+`Agent.step`, and that method is where EXP-08 announces `ZONE_COMPLETE` and
+sets the one-tick re-task hold. Without it a drone that finishes its zone
+goes straight to `S3_RTH`, which `eligible_executors` excludes -- so
+**zone-completion** re-partitioning would never fire and the work it was
+meant to hand over would be left unassigned. The other EXP-08 triggers
+(interval, failure, retirement) are untouched by this flag; only the
+zone-completion path depends on the bypassed announcement. The combination
+is refused rather than run as a silent no-op. This constraint did not exist
+at the pinned base -- EXP-08 postdates it -- and lifting it means routing
+the announcement and hold through `CoherentFlight`, which is a separate
+task, not a rebase fix.
+
 The historical study01 replication 1 has a staging point
 `(955.5694218007066, 7.237592922942396)` inside the clearance buffer, 0.52080258 m
 from free space, while outside the raw obstacle. Therefore:
