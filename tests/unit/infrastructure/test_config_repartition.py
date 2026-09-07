@@ -124,3 +124,14 @@ def test_a_broken_timestep_is_a_config_error_not_an_arithmetic_crash(config_path
     with pytest.raises(ConfigError):
         _on(config_path, **{"sim.dt_s": bad_dt,
                             "mission.repartition_interval_s": 60.0})
+
+
+@pytest.mark.parametrize("bad_dt", [float("nan"), float("inf")])
+def test_a_non_finite_timestep_is_refused_even_with_no_interval(config_path, bad_dt):
+    """Pre-existing gap, not an EXP-08 one: the general rule was `dt_s <= 0`, and
+    both `nan <= 0` and `inf <= 0` are False, so load_config accepted a timestep
+    that cannot define simulation time whenever no interval was configured.
+    (Found in review of this PR.)
+    """
+    with pytest.raises(ConfigError, match="sim.dt_s must be finite"):
+        load_config(config_path, overrides={"sim.dt_s": bad_dt})

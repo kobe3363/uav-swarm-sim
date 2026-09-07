@@ -1209,8 +1209,12 @@ def _validate(cfg: Config, raw: dict) -> None:
     if cfg.failure.hazard_rate_per_hour < 0:
         raise ConfigError("failure.hazard_rate_per_hour must be >= 0")
 
-    if cfg.sim.dt_s <= 0:
-        raise ConfigError("sim.dt_s must be > 0")
+    # isfinite as well as > 0: `nan <= 0` and `inf <= 0` are both False, so a
+    # non-finite timestep passed this check and load_config accepted a value
+    # that cannot define simulation time. Pre-existing gap, closed here for
+    # every config rather than only on the EXP-08 interval path.
+    if not isfinite(cfg.sim.dt_s) or cfg.sim.dt_s <= 0:
+        raise ConfigError("sim.dt_s must be finite and > 0")
     if cfg.sim.max_timesteps <= 0:
         raise ConfigError("sim.max_timesteps must be > 0")
 
