@@ -1108,6 +1108,18 @@ def _validate(cfg: Config, raw: dict) -> None:
                 "mission.repartition_enabled requires coverage.raster_enabled = true "
                 "(the raster is the only source of remaining work)"
             )
+    # EXP-11: the contract's coverage block reports raster area masks (or an
+    # honestly-labeled segment proxy when no raster is built). Under
+    # mission.type = target_visit, ``coverage_frac`` is visited/total targets --
+    # a completion ratio, not an area measure -- so exporting it as
+    # ``plannable_coverage_frac`` would mislabel it. Restrict the flag to coverage
+    # missions (raster NOT required: the no-raster coverage proxy is legitimate
+    # and labeled ``source="segment_proxy"``).
+    if cfg.mission.contract_export and cfg.mission.type is not MissionType.COVERAGE:
+        raise ConfigError(
+            "mission.contract_export requires mission.type = coverage "
+            f"(got {cfg.mission.type.value})"
+        )
     interval = cfg.mission.repartition_interval_s
     if interval is not None:
         if not cfg.mission.repartition_enabled:

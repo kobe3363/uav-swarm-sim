@@ -97,6 +97,7 @@ def test_no_swap_reconciles_with_zero_residual():
     assert rec["clamp_residual_j"] == pytest.approx(0.0, abs=1e-9)
     assert rec["clamp_residual_j"] >= -1e-9  # never negative
     assert rec["swap_recharge_j"] == 0.0
+    assert rec["n_swaps_total"] == 0  # key present in BOTH branches (stable schema)
 
 
 def test_floored_battery_reports_positive_clamp_residual():
@@ -209,6 +210,21 @@ def test_coverage_proxy_has_none_areas_and_labeled_source():
     assert cov["target_coverage_frac"] is None
 
 
+def test_coverage_none_measurements_still_complete_schema():
+    # a result with no measurement object at all must still expose all area keys
+    # (as None), so a key-based consumer never hits a KeyError.
+    r = _result(
+        per_agent_energy={0: 1.0}, per_agent_length={0: 1.0}, initial_soc=(1.0,),
+        final_battery=((0, 500.0, 0.5),), spans={0: [(S.S_LANDED, 0, 1)]},
+        coverage_measurements=None, coverage_frac=0.5, target_coverage_frac=None,
+    )
+    cov = _build(r)["coverage"]
+    assert cov["source"] == "segment_proxy"
+    for k in ("a_target_m2", "a_plannable_m2", "target_covered_area_m2",
+              "plannable_covered_area_m2"):
+        assert cov[k] is None
+
+
 # --------------------------------------------------------------------------- #
 # photos                                                                       #
 # --------------------------------------------------------------------------- #
@@ -280,7 +296,7 @@ def test_alignment_assertion_rejects_non_contiguous_ids():
         initial_soc=(1.0, 1.0), final_battery=((0, 5.0, 0.5), (2, 5.0, 0.5)),
         spans={0: [(S.S_LANDED, 0, 1)], 2: [(S.S_LANDED, 0, 1)]},
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         _build(r)
 
 

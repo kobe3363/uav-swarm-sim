@@ -392,11 +392,13 @@ def build_mission_contract(result, *, capacity_j: float,
     ids = sorted(final)
     # positional->keyed join guard: initial_soc_by_drone[i] belongs to agent i.
     # Holds today (ids are the 0..n-1 loop index); a future id scheme would
-    # silently shift every drone's initial SoC, so assert rather than trust.
-    assert ids == list(range(len(initial_soc))), (
-        "contract per_agent join: agent ids must be 0..n-1 aligned with "
-        f"initial_soc_by_drone (ids={ids}, n_soc={len(initial_soc)})"
-    )
+    # silently shift every drone's initial SoC. A real raise (not assert) so the
+    # guard survives ``python -O`` / PYTHONOPTIMIZE.
+    if ids != list(range(len(initial_soc))):
+        raise ValueError(
+            "contract per_agent join: agent ids must be 0..n-1 aligned with "
+            f"initial_soc_by_drone (ids={ids}, n_soc={len(initial_soc)})"
+        )
 
     # one pass over the history: last state, swap count, airborne time per drone
     last_state: dict[int, AgentState] = {}
@@ -452,6 +454,7 @@ def build_mission_contract(result, *, capacity_j: float,
             "sum_per_agent_j": sum_per_agent_j,
             "clamp_residual_j": sum_per_agent_j - (sum_l0 - sum_lf),
             "swap_recharge_j": 0.0,
+            "n_swaps_total": 0,
         }
     else:
         reconciliation = {
@@ -478,7 +481,12 @@ def build_mission_contract(result, *, capacity_j: float,
             "violations": [_jsonable(v) for v in result.safety_violations],
         }
 
-    cov = dict(result.coverage_measurements or {"source": "segment_proxy"})
+    # Keep the coverage shape complete even when no measurement object was built:
+    # a key-based consumer must read None, never hit a KeyError.
+    cov = dict(result.coverage_measurements or {
+        "source": "segment_proxy", "a_target_m2": None, "a_plannable_m2": None,
+        "target_covered_area_m2": None, "plannable_covered_area_m2": None,
+    })
     cov["target_coverage_frac"] = result.target_coverage_frac
     cov["plannable_coverage_frac"] = result.coverage_frac
 

@@ -40,3 +40,13 @@ def test_config_hash_unchanged_when_flag_absent(config_path):
 def test_refuses_a_non_boolean(config_path, bad):
     with pytest.raises(ConfigError, match="contract_export must be a boolean"):
         load_config(config_path, overrides={"mission.contract_export": bad})
+
+
+def test_refused_for_target_visit_missions(config_path):
+    """coverage_frac means visited/total targets under target_visit, so exporting
+    it as plannable_coverage_frac would mislabel it -- reject the combination."""
+    with pytest.raises(ConfigError,
+                       match=r"contract_export requires mission\.type = coverage"):
+        load_config(config_path, overrides={
+            "mission.type": "target_visit", "mission.contract_export": True,
+        })

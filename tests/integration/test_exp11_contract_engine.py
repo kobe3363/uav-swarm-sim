@@ -56,11 +56,12 @@ def result(config_path):
 def test_final_battery_matches_live_and_trace_for_survivors(result):
     cfg, eng, res = result
     final = {aid: (lvl, soc) for aid, lvl, soc in res.final_battery_by_drone}
+    survivors = {a.id for a in eng.fleet.active()}  # public accessor, no _failed
     for a in eng.fleet.agents.values():
         # engine field is the exact live battery reading
         assert final[a.id][1] == pytest.approx(a.battery.frac)
         # independent cross-check: survivors' last recorded trace sample equals it
-        if a.id not in eng.fleet._failed:
+        if a.id in survivors:
             trace = res.history.battery_trace(a.id)
             assert trace and trace[-1][1] == pytest.approx(final[a.id][1], abs=1e-9)
 
