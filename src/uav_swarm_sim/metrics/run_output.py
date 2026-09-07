@@ -498,4 +498,11 @@ def build_results_single(result, est, *, identity: dict, wall_time_s: float,
         out["partition"] = result.partition_diagnostics.to_json()
     if getattr(result, "energy_balance_t0", None) is not None:
         out["energy_balance"] = _energy_balance_json(result.energy_balance_t0)
+    # EXP-08: additive, and present only when a re-partition actually ran, so a
+    # legacy run's output is byte-identical. Every ATTEMPT is listed, including
+    # the ones deliberately not applied.
+    if getattr(result, "repartitions", ()):
+        out["repartitions"] = [dict(r) for r in result.repartitions]
+    if getattr(result, "repartition_hold", None) is not None:
+        out["repartition_hold"] = dict(result.repartition_hold)
     return out

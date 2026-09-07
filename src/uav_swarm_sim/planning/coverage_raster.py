@@ -155,6 +155,37 @@ class CoverageRaster:
             np.flatnonzero(keep),
         )
 
+    def plannable_cells_within(self, geometry) -> tuple[np.ndarray, np.ndarray]:
+        """Plannable cell indices whose SURFACE POINT lies inside ``geometry``,
+        split into ``(uncovered, covered)``.
+
+        The EXP-08 re-partition guards need three answers about a proposed set of
+        zones -- did any already-covered cell get re-issued, did two zones claim
+        the same cell, and did a zone claim a cell that was not in the snapshot --
+        and all three are questions about cell MEMBERSHIP, not about area. One
+        STRtree query answers them exactly and in log time, using the same tree
+        and the same ``covers`` predicate ``record_segment`` uses below.
+
+        The alternative -- unioning every uncovered cell into one polygon and
+        doing geometry algebra against it -- costs a union over hundreds of
+        thousands of parts per re-partition and answers a fuzzier question.
+
+        Known and deliberate limit, stated rather than left for the reader to
+        work out: the surface point is a POINT. Membership is therefore exact
+        when the geometry's edges are cell edges -- true of the grid
+        partitioners, whose zones are unions of whole cells -- but a zone edge
+        that runs THROUGH a cell makes the answer depend on which side of the
+        edge that one point happens to fall, and a point landing exactly on a
+        shared edge reads as inside BOTH neighbours (``covers`` includes the
+        boundary). That is fine for the two questions the EXP-08 guards ask of
+        it -- "is any covered cell inside this zone" and "was this cell in the
+        snapshot", where being inside some zone is the whole question -- and it
+        is why the "no ground is owned twice" guard is an AREA test instead.
+        """
+        hits = self._plannable_tree.query(geometry, predicate="covers")
+        covered = self._plannable_covered[hits]
+        return hits[~covered], hits[covered]
+
     def record_segment(
         self,
         old_pose: Pose,

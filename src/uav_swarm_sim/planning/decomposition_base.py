@@ -88,6 +88,26 @@ class Decomposer(ABC):
     # in kind.
     partitions_raster_work: bool = False
 
+    def with_rng(self, rng) -> "Decomposer":
+        """An equivalent decomposer bound to a different RNG stream (EXP-08).
+
+        Default: return self. Every decomposer here except the k-means heuristic
+        is deterministic given its inputs, so "the same decomposer on another
+        stream" IS the same object and re-partitioning with it consumes nothing.
+
+        ``KMeansHeuristicDecomposer`` overrides this. It draws inside every
+        ``decompose`` call and a numpy Generator is stateful, so re-partitioning
+        with the run's own instance would consume from the stream the t=0
+        partition used and make the replication-keyed init variance -- a
+        characteristic this project keeps and reports -- depend on how many
+        re-partitions happened to fire. It hands back a sibling on its own
+        stream instead.
+
+        Declared on the ABC so the engine ASKS rather than testing classes. The
+        isinstance branch EXP-08 removes must not be replaced by another one.
+        """
+        return self
+
     @abstractmethod
     def decompose(
         self,

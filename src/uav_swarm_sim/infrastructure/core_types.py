@@ -387,3 +387,9 @@ class MissionResult:
     # recorded rather than dropped, so a run can never be read as "no
     # re-partition happened" when in fact one was refused.
     repartitions: tuple[dict, ...] = ()
+    # EXP-08: what the one-tick re-task hold cost this run. The hold is applied
+    # by one rule to both arms, but it is NOT paired -- two arms can finish a
+    # different NUMBER of zones, so their totals differ. Reported so the size of
+    # that asymmetry is visible instead of assumed negligible. None with the flag
+    # off (no drone is ever held).
+    repartition_hold: dict | None = None

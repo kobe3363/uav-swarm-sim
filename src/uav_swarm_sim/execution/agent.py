@@ -159,6 +159,12 @@ class Agent:
         self._zone_complete_published = False
         self._repartition_hold = False
         self._rth_reason: str | None = None
+        # The hold is a modelling choice applied by one rule to both arms, but it
+        # is NOT paired: two arms can finish a different NUMBER of zones, so the
+        # total hold cost differs between them. It is therefore measured per
+        # drone and reported, never left to be assumed negligible.
+        self.repartition_hold_ticks = 0
+        self.repartition_hold_energy_j = 0.0
 
         # EM-01 Stage 2 (rth.energy_map.decide): per-sortie arming threshold
         # (seam 7b) + battery-quantized decide cadence (design doc section 7).
@@ -471,9 +477,15 @@ class Agent:
             # physically true instead of free (CLAUDE.md rule 4).
             if self._repartition_on and self.state in (AgentState.S2_MISSION,
                                                        AgentState.S_FERRY):
+                # ManeuverType.HOVER at the platform's existing hover power, via
+                # the same P*dt call S0_IDLE uses. This is the existing model
+                # applied to a state the drone is genuinely in -- not new flight
+                # physics, and not a new coefficient.
                 e = self.em.segment_energy(ManeuverType.HOVER, dt)
                 self.battery.drain(e)
                 self.energy_consumed_j += e
+                self.repartition_hold_ticks += 1
+                self.repartition_hold_energy_j += e
             return
         leg = self._legs[self._leg_idx]
         photo_on = (
