@@ -78,10 +78,13 @@ def test_smoke_both_arms_run_and_manifests_pair(cfg_factory):
         # AC-1: paired physical inputs -> identical fingerprint across arms at k
         assert (cvt[k].manifest["fingerprint_sha256"]
                 == energy[k].manifest["fingerprint_sha256"])
-    # the two arms are genuinely different runs (decomposer differs), so at least
-    # one physical outcome/energy should not be forced equal -- sanity that we
-    # actually ran two arms, not one twice.
-    assert cvt[1].contract is not None and energy[1].contract is not None
+    # assert the RESOLVED decomposer identity, not just contract presence:
+    # ProtocolRecord.algo only echoes the requested arg, so a presence check could
+    # pass even if both arms resolved the same decomposer.
+    assert cvt[1].contract is not None
+    assert energy[1].contract is not None
+    assert cvt[1].contract["outcome"]["decomposer_class"] == "LloydCvtDecomposer"
+    assert energy[1].contract["outcome"]["decomposer_class"] == "LloydEnergyDecomposer"
 
 
 def test_smoke_arm_order_is_invariant(cfg_factory):

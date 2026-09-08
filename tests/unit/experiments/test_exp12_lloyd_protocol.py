@@ -81,9 +81,11 @@ def test_smoke_flag_lands_in_the_record():
 # 3. fail-fast config validation                                              #
 # --------------------------------------------------------------------------- #
 def test_validate_config_fails_fast_without_raster():
-    # default.yaml with no raster/energy_balance overrides -> validation refuses.
+    # default.yaml is mission.type=coverage with no raster override, so validation
+    # refuses specifically on the raster branch (matched, so the branch is truly
+    # exercised -- a bare SystemExit could also come from another check).
     cfg = build_cfg("config/default.yaml", 3)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match=r"coverage\.raster_enabled"):
         validate_config(cfg)
 
 
