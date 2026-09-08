@@ -16,6 +16,16 @@ def overrides(area):
     return {
         "fleet.n_drones": 1, "failure.hazard_rate_per_hour": 0.0,
         "env.geojson_path": str(area), "env.obstacle_density_per_km2": 0.0,
+        # EXP-13 leak shield: the base M4E config now sets obstacle_generation_mode=target
+        # (density ignored) and planning.energy_balance.enabled=true. This test's scenarios
+        # (and the cross-commit legacy golden below) assume a clean, obstacle-free area with
+        # the EXP-06 proxy off, so pin both back to the pre-change world here.
+        #   was  -> inherited target mode + energy_balance on
+        #   now  -> poisson (0 obstacles at density 0.0) + energy_balance off
+        #   why  -> this file tests coherent-flight energy, not obstacle generation or the
+        #           t=0 proxy; the one test that needs the proxy overrides it True explicitly.
+        "env.obstacle_generation_mode": "poisson",
+        "planning.energy_balance.enabled": False,
         "env.coverage_altitude_m": 100.0, "launch.candidate_sites": [[0, 0]],
         "platforms.MULTIROTOR.v_coverage": 10.0, "platforms.MULTIROTOR.v_cruise": 10.0,
         "sensor.photogrammetry.enabled": True,
@@ -106,11 +116,22 @@ def test_coherent_execution_refuses_exp08_repartition(mission):
 
 
 def test_flag_off_byte_identity(mission):
-    settings = dict(mission)
-    for key in ("rth.execution_coherent", "rth.emergency_frac", "rth.energy_map.zone_demotion"):
-        settings.pop(key)
-    absent = physical_signature(engine(settings).run())
-    explicit = physical_signature(engine(dict(settings, **{
+    # EXP-13: the base M4E config now defaults execution_coherent/zone_demotion ON,
+    # so reach the pre-EXP-09 legacy world by pinning them OFF explicitly.
+    #   was  -> pop the keys, inheriting the pre-change base default (False)
+    #   now  -> pin execution_coherent=False, zone_demotion=False, emergency_frac=None
+    #   why  -> the golden is the legacy (flag-off) physics; popping would now inherit
+    #           the protocol's ON values and reach the coherent path instead. The
+    #           "omit == default False" property is a loader property tested elsewhere.
+    # (The shielded overrides already pin obstacle poisson + energy_balance off, so the
+    #  resolved inputs match the golden's exactly.)
+    legacy = dict(mission, **{
+        "rth.execution_coherent": False,
+        "rth.energy_map.zone_demotion": False,
+        "rth.emergency_frac": None,
+    })
+    absent = physical_signature(engine(legacy).run())
+    explicit = physical_signature(engine(dict(legacy, **{
         "rth.execution_coherent": False, "rth.emergency_frac": None,
     })).run())
     assert explicit == absent

@@ -19,13 +19,27 @@ from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
 
 
 def _overrides(area):
+    # EXP-13 leak shield: the base M4E config is now the full protocol (target
+    # obstacles, no-swap, coherent routing, zone demotion, free-space routing,
+    # energy balance, camera payload draw, and safety recording ON). This file
+    # tests the EXP-10 recorder on a plain DEFAULT-mode swap-mission, so restore
+    # that pre-change world here; record_violations is set per-arm by each test.
+    #   was  -> inherited the whole protocol (recorder ON, no-swap coherent run)
+    #   now  -> default-mode swap mission, recorder controlled per-arm
+    #   why  -> inheriting no_swap+coherent would move the recorder onto the
+    #           terminal-landing path and could make its violation counts vacuous.
     return {
         "fleet.n_drones": 3, "failure.hazard_rate_per_hour": 0.0,
         "env.geojson_path": str(area), "env.obstacle_density_per_km2": 0.0,
+        "env.obstacle_generation_mode": "poisson",
         "env.coverage_altitude_m": 100.0, "launch.candidate_sites": [[0, 0]],
         "platforms.MULTIROTOR.v_coverage": 10.0, "platforms.MULTIROTOR.v_cruise": 12.0,
-        "sensor.photogrammetry.enabled": True,
+        "sensor.photogrammetry.enabled": True, "sensor.sensor_power_w": 0.0,
         "coverage.raster_enabled": True, "coverage.raster_cell_m": 5.0,
+        "coverage.transit_free_space": False, "coverage.ferry_free_space": False,
+        "mission.no_swap_mode": False,
+        "rth.execution_coherent": False, "rth.energy_map.zone_demotion": False,
+        "planning.energy_balance.enabled": False,
         "sim.dt_s": 0.5, "sim.max_timesteps": 2000,
     }
 
@@ -60,17 +74,25 @@ def _physical_signature(result):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=lambda v: v.value)
 
 
-def test_flag_off_is_default_and_byte_identical(area):
-    absent = _run(area)
-    explicit = _run(area, **{"safety.record_violations": False})
-    assert _physical_signature(absent) == _physical_signature(explicit)
+def test_recorder_default_is_off_in_default_config():
+    """The 'default is OFF' guarantee is a CODE property, asserted against the
+    default config (the M4E protocol config deliberately turns the recorder ON)."""
+    assert load_config("config/default.yaml").safety.record_violations is False
+
+
+def test_flag_off_is_inert_and_byte_identical(area):
+    # record_violations pinned False on BOTH arms so the off/off contrast is real
+    # under the EXP-13 base (which sets it True); see _overrides shield note.
+    off_a = _run(area, **{"safety.record_violations": False})
+    off_b = _run(area, **{"safety.record_violations": False})
+    assert _physical_signature(off_a) == _physical_signature(off_b)
     # inert defaults when the recorder is never built
-    assert absent.safety_violations == ()
-    assert absent.safety_minima is None
+    assert off_a.safety_violations == ()
+    assert off_a.safety_minima is None
 
 
 def test_flag_on_does_not_change_physics_and_attaches_surface(area):
-    off = _run(area)
+    off = _run(area, **{"safety.record_violations": False})
     on = _run(area, **{"safety.record_violations": True})
     # identical physics/energy/RNG: recording is purely observational
     assert _physical_signature(on) == _physical_signature(off)
