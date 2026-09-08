@@ -804,7 +804,12 @@ class SimulationEngine:
                              rth_infeasible_events=tuple(e for a in self.fleet.agents.values()
                                                         for e in a.rth_infeasible_events),
                              safety_violations=safety_violations,
-                             safety_minima=safety_minima)
+                             safety_minima=safety_minima,
+                             coverage_measurements=self._coverage_measurements(),
+                             final_battery_by_drone=tuple(
+                                 (a.id, a.battery.level_j, a.battery.frac)
+                                 for a in sorted(self.fleet.agents.values(),
+                                                 key=lambda a: a.id)))
 
     def _photo_events(self):
         """Stable fleet-wide event order for EXP-01 and the later EXP-11 schema."""
@@ -1308,6 +1313,28 @@ class SimulationEngine:
         if self.coverage_raster is not None:
             return self.coverage_raster.target_coverage_frac
         return None
+
+    def _coverage_measurements(self) -> dict:
+        """EXP-11: raw raster coverage AREAS for the data contract. With a raster
+        the four measured areas are reported; without one the coverage figure is
+        the leg/segment proxy, so the areas are None and the source is labeled as
+        such -- the proxy frac is never serialized as a raster measurement."""
+        r = self.coverage_raster
+        if r is None:
+            return {
+                "source": "segment_proxy",
+                "a_target_m2": None,
+                "a_plannable_m2": None,
+                "target_covered_area_m2": None,
+                "plannable_covered_area_m2": None,
+            }
+        return {
+            "source": "raster",
+            "a_target_m2": r.target_area_m2,
+            "a_plannable_m2": r.plannable_area_m2,
+            "target_covered_area_m2": r.target_covered_area_m2,
+            "plannable_covered_area_m2": r.plannable_covered_area_m2,
+        }
 
     def _coverage_complete_frac(self) -> float:
         if self.coverage_raster is None:

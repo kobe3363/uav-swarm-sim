@@ -34,6 +34,10 @@ class SingleRunResult:
     initial_soc_by_drone: tuple[float, ...] = ()
     energy_balance_t0: dict | None = None
     partition_diagnostics: object | None = None
+    # EXP-11: per-replication raw mission data contract, carried through so the
+    # MC serializer (and EXP-12 paired runner) find one record per replication.
+    # None unless mission.contract_export is on. No aggregation here.
+    contract: dict | None = None
 
 
 @dataclass
@@ -104,6 +108,7 @@ def single_run_from_history(
     initial_soc_by_drone: tuple[float, ...] = (),
     energy_balance_t0: dict | None = None,
     partition_diagnostics: object | None = None,
+    contract: dict | None = None,
 ) -> SingleRunResult:
     """Adapter: history -> SMDP estimate -> stationary pi -> efficiency -> SingleRunResult.
 
@@ -124,6 +129,7 @@ def single_run_from_history(
             outcome=outcome, initial_soc_by_drone=initial_soc_by_drone,
             energy_balance_t0=energy_balance_t0,
             partition_diagnostics=partition_diagnostics,
+            contract=contract,
         )
     pi_map = {s: float(pi_time[i]) for i, s in enumerate(est.states)}
     return SingleRunResult(
@@ -131,4 +137,5 @@ def single_run_from_history(
         aborted=aborted, outcome=outcome, initial_soc_by_drone=initial_soc_by_drone,
         energy_balance_t0=energy_balance_t0,
         partition_diagnostics=partition_diagnostics,
+        contract=contract,
     )
