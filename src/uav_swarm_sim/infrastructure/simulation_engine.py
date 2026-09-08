@@ -278,13 +278,18 @@ class SimulationEngine:
         self.planning_time_s = self.layer_graphs.planning_time_s
 
         # launch site optimization (on layer 0 / primary graph)
-        # Launch siting is a per-scenario decision, NOT a per-replication Monte-
-        # Carlo draw: the pad must be identical across replications so paired-seed
-        # variance reflects environment/failure draws only (matches the standalone
-        # analytical scripts, which all site with stream(STREAM_LAUNCH_SAMPLING, 0)).
-        # Pinning to replication 0 makes tgc_basic/weighted/classic byte-
-        # deterministic under lambda=0 clean; obstacles (STREAM_OBSTACLES) and
-        # failures (STREAM_FAILURES) still vary per replication as intended.
+        # The launch SAMPLING RNG is pinned to replication 0: the candidate SAMPLE
+        # set is therefore identical across replications AND across decomposition
+        # algorithms, so launch sampling adds no Monte-Carlo noise of its own and
+        # the pad is identical across tgc_basic/weighted/classic at a given
+        # replication (the paired guarantee; matches the standalone analytical
+        # scripts, which all site with stream(STREAM_LAUNCH_SAMPLING, 0)).
+        # NOTE: this pins the sample, NOT the chosen pad. With >= 2 candidates the
+        # SELECTED pad still varies across replications, because the feasibility
+        # gate + score depend on the per-replication obstacle realization
+        # (STREAM_OBSTACLES) and initial SoC; only a single explicit
+        # launch.candidate_sites pad is constant across replications. Obstacles
+        # and failures (STREAM_FAILURES) vary per replication as intended.
         launch_rng = self.rng.stream(STREAM_LAUNCH_SAMPLING, 0)
         with phase("build.launch_opt"):
             self.launch_pose, self.site_scores = optimize_launch(
