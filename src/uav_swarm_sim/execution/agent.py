@@ -363,6 +363,13 @@ class Agent:
             self._coherent.accept_plan_revision(prepared.revision,
                                                 prepared.coherent_transit_legs or ())
 
+        # These ground states launch through ``launch_legs`` after their own
+        # lifecycle transition.  A staged airborne connector is therefore not
+        # executable and must not leak into a later avoidance return.
+        if (self._coherent is not None
+                and source in (AgentState.S_SWAP, AgentState.S0_IDLE)):
+            self._coherent.discard_pending_retask_legs()
+
         if source in (AgentState.S2_MISSION, AgentState.S_FERRY):
             self._apply_transition(
                 Transition(source, AgentState.S1_TRANSIT, "retask"), t, bus

@@ -10,7 +10,7 @@ from uav_swarm_sim.execution.agent import Agent
 from uav_swarm_sim.execution.rth_calculator import RthCalculator
 from uav_swarm_sim.execution.state_machine import AgentContext, StateMachine, Transition
 from uav_swarm_sim.infrastructure.config import load_config, ConfigError
-from uav_swarm_sim.infrastructure.core_types import Path, PathSegment, Pose, CoveragePlan, Waypoint
+from uav_swarm_sim.infrastructure.core_types import Path, PathSegment, Pose, CoveragePlan, Waypoint, Zone
 from uav_swarm_sim.infrastructure.enums import (
     AgentState as S, BatteryZone, ManeuverType as M, PlatformType,
 )
@@ -370,6 +370,46 @@ def test_swap_retask_validates_post_swap_capacity_without_mutating_battery(kit):
     prepared = a.prepare_retask(plan, kit.motion.plan(a.pose, target, M.CRUISE), revision=1)
     assert prepared.revision == 1
     assert a.battery.level_j == 1.0
+
+
+@pytest.mark.parametrize("state", [S.S_SWAP, S.S0_IDLE])
+def test_ground_retask_discards_staged_airborne_connector(kit, state):
+    """Ground lifecycle launches from its own base; stale connectors cannot leak."""
+    a = work_agent(kit, calculator(kit))
+    a.state = state
+    target = Pose(300.0, 500.0, 0.0)
+    plan = CoveragePlan(0, [Waypoint(target, M.COVERAGE, 10),
+                            Waypoint(Pose(400.0, 500.0, 0.0), M.COVERAGE, 10)], 0, 0)
+    prepared = a.prepare_retask(plan, kit.motion.plan(a.pose, target, M.CRUISE), revision=1)
+    assert prepared.coherent_transit_legs
+    a.commit_retask(prepared, 0.0, SimpleNamespace(publish=lambda event: None))
+    assert a._coherent._pending_retask_legs == ()
+
+
+def test_failure_preempts_repartition_hold(kit):
+    a = work_agent(kit, calculator(kit))
+    a._repartition_hold = True
+    a._failure = True
+    a.step(0.5, 4.0, SimpleNamespace(publish=lambda event: None))
+    assert a.state is S.S_FAIL
+    assert not a._repartition_hold
+
+
+def test_live_agl_at_coverage_altitude_has_no_synthetic_takeoff_charge(kit):
+    from uav_swarm_sim.planning.energy_balance import (
+        DroneEnergyState, build_energy_balance_context, estimate_path,
+    )
+
+    rth = calculator(kit)
+    ctx = build_energy_balance_context(
+        kit.cfg, kit.em, kit.spec, kit.motion, environment(),
+        lambda pose, alt: rth.return_energy(pose, altitude_m=alt),
+    )
+    state = DroneEnergyState(0, Pose(200.0, 500.0, 0.0), 200000.0, True,
+                             Pose(0.0, 500.0, 0.0), 100.0)
+    zone = Zone(0, [], box(250.0, 450.0, 400.0, 550.0), Pose(250.0, 450.0, 0.0))
+    estimate = estimate_path(ctx, state, zone, None)
+    assert estimate.e_takeoff_deducted_j == 0.0
 
 
 @pytest.mark.parametrize("interval", [0.1, 5.0, 1000.0])

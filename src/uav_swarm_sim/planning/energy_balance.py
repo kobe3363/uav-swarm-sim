@@ -184,9 +184,16 @@ def _budget(ctx, drone, altitude_m, e_ferry_j, e_rth_j) -> tuple[float, float, f
     # Airborne residual climb is not another launch: remove fixed-wing ground
     # roll from the profile while retaining the same CLIMB path/power the
     # coherent executor will fly.  At zero remaining height this is exactly 0.
-    takeoff = takeoff_profile(ctx.spec, ctx.em, climb_m, at=drone.pose).energy_j
     if drone.airborne:
-        takeoff -= ctx.spec.ground_roll_energy_j
+        # Do not synthesize (and then subtract) a ground-roll-only profile at
+        # zero remainder.  Apart from being clearer, this keeps the estimate
+        # correct for a platform whose zero-height profile later changes.
+        takeoff = (0.0 if climb_m <= 0.0 else
+                   takeoff_profile(ctx.spec, ctx.em, climb_m,
+                                   at=drone.pose).energy_j
+                   - ctx.spec.ground_roll_energy_j)
+    else:
+        takeoff = takeoff_profile(ctx.spec, ctx.em, climb_m, at=drone.pose).energy_j
     remaining = drone.level_j - takeoff
     budget = remaining - (e_ferry_j + e_rth_j + ctx.reserve_j)
     _finite(e_takeoff_deducted_j=takeoff, e_remaining_j=remaining, budget_j=budget)

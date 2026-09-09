@@ -325,8 +325,7 @@ class Repartitioner:
                 # Validation includes coherent continuity, every productive
                 # endpoint's individual RTH, and the immediate energy bundle.
                 # It is deliberately complete before any agent is touched.
-                prepared = (agent.prepare_retask(plan, transit, self.revision)
-                            if hasattr(agent, "prepare_retask") else (plan, transit))
+                prepared = agent.prepare_retask(plan, transit, self.revision)
                 plans[agent.id] = plan
                 staged.append((agent, prepared))
         except RouteUnavailable as exc:
@@ -345,10 +344,6 @@ class Repartitioner:
             area_before_m2=area_before, area_assigned_m2=area_assigned,
             plan_time_s=plan_time,
         )
-        # Preserve the established no-progress guard for direct callers of
-        # ``attempt``.  The engine still commits only candidates that all
-        # passed preparation, before it applies their staged state.
-        self._last_applied = fingerprint
         return RepartitionAttempt(record, (partition, plans, tuple(staged)), fingerprint)
 
     def mark_applied(self, attempt: RepartitionAttempt) -> None:

@@ -118,6 +118,15 @@ class CoherentFlight:
         self.rejected_reason = None
         self.holding = False
 
+    def discard_pending_retask_legs(self) -> None:
+        """Drop an airborne connector that cannot apply after ground lifecycle.
+
+        A retask accepted while swapping or still idle resumes through the
+        normal ground launch path.  Keeping the staged airborne connector would
+        let a later unrelated S_OBS -> S1 transition fly stale geometry.
+        """
+        self._pending_retask_legs = ()
+
     def transition_legs(self, source):
         """Legs for S1 entry: launch only from ground, never after a retask."""
         if source is S.S0_IDLE:
@@ -201,6 +210,12 @@ class CoherentFlight:
         # it did not, spend exactly one physical hover tick before the ordinary
         # FSM return.  RTH/threat pre-emption stays above this convenience hold.
         if a._repartition_hold:
+            # A failure is terminal and must pre-empt the one-step convenience
+            # hold just as it pre-empts ordinary mission movement below.
+            if a._failure and a.state.is_airborne:
+                a._repartition_hold = False
+                a._apply_transition(Transition(a.state, S.S_FAIL, "failure"), t, bus)
+                return
             emergency = a.rth.emergency_frac
             if emergency is None:
                 emergency = a.battery._zones.critical
