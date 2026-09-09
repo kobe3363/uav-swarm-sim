@@ -408,6 +408,22 @@ def aggregate(
     return counts, area, centroids
 
 
+def aggregate_geometries(
+    labels: np.ndarray, cells: EligibleCells, n: int
+) -> list:
+    """Full per-drone work geometry for physical entry validation only.
+
+    Lloyd's assignment and centroid update deliberately remain array arithmetic.
+    Building polygon unions is opt-in through the energy policy so the uniform
+    CVT arm neither pays for nor depends on this physical representation.
+    """
+    return [
+        shapely.coverage_union_all(cells.geometries[labels == i])
+        if bool((labels == i).any()) else Polygon()
+        for i in range(n)
+    ]
+
+
 class UniformWeightPolicy:
     """LLOYD_CVT: weights pinned to zero, forever.
 
@@ -420,11 +436,15 @@ class UniformWeightPolicy:
     geometry (ferry, RTH, area).
     """
     name = "uniform"
+    requires_zone_geometry = False
 
     def initial(self, n: int) -> np.ndarray:
         return np.zeros(n, dtype=float)
 
-    def update(self, weights: np.ndarray, counts, area, centroids, sites) -> np.ndarray:
+    def update(
+        self, weights: np.ndarray, counts, area, centroids, sites,
+        zone_geometries=None,
+    ) -> np.ndarray:
         return weights
 
     def balanced(self) -> bool:
@@ -433,7 +453,9 @@ class UniformWeightPolicy:
     def per_drone(self, drone_ids: list[int]) -> dict:
         return {}
 
-    def refresh(self, area: np.ndarray, centroids: np.ndarray) -> None:
+    def refresh(
+        self, area: np.ndarray, centroids: np.ndarray, zone_geometries=None,
+    ) -> None:
         """Re-read the final zones without changing the weights. No-op here."""
 
     def excluded(self, n: int) -> np.ndarray:
@@ -465,7 +487,13 @@ class LloydPartitioner:
         non-finite centroid are exactly what an empty zone is, so the estimator
         anchors at each drone's own pose and the numbers come out consistent.
         """
-        self.weight_policy.refresh(np.zeros(n), np.full((n, 2), np.nan))
+        geometries = (
+            [Polygon() for _ in range(n)]
+            if self.weight_policy.requires_zone_geometry else None
+        )
+        self.weight_policy.refresh(
+            np.zeros(n), np.full((n, 2), np.nan), geometries,
+        )
 
     def run(
         self, cells: EligibleCells, drone_poses: np.ndarray, drone_comp: np.ndarray,
@@ -510,7 +538,13 @@ class LloydPartitioner:
             moved = np.isfinite(centroids).all(axis=1)     # an empty zone stays put
             previous = sites
             sites = np.where(moved[:, None], centroids, sites)
-            weights = self.weight_policy.update(weights, counts, area, centroids, sites)
+            geometries = (
+                aggregate_geometries(labels, cells, n)
+                if self.weight_policy.requires_zone_geometry else None
+            )
+            weights = self.weight_policy.update(
+                weights, counts, area, centroids, sites, geometries,
+            )
             shift = float(np.max(np.hypot(*(sites - previous).T)))
             if shift <= self.settings.site_tolerance_m and self.weight_policy.balanced():
                 converged = True
@@ -524,7 +558,11 @@ class LloydPartitioner:
         # final zones -- read-only, no further weight update -- so the reported
         # demand, budget and slack describe the zones actually returned.
         _, final_area, final_centroids = aggregate(labels, cells, n)
-        self.weight_policy.refresh(final_area, final_centroids)
+        final_geometries = (
+            aggregate_geometries(labels, cells, n)
+            if self.weight_policy.requires_zone_geometry else None
+        )
+        self.weight_policy.refresh(final_area, final_centroids, final_geometries)
         return labels, sites, weights, converged, iterations, shift, cells
 
 
@@ -705,6 +743,7 @@ class EnergyWeightPolicy:
     reaches it is reported as ``clamped``.
     """
     name = "energy_slack"
+    requires_zone_geometry = True
 
     def __init__(self, ctx, states, altitude_m: float, settings: PartitionConfig,
                  capacity_j: float, fallback_poses) -> None:
@@ -773,10 +812,20 @@ class EnergyWeightPolicy:
         """
         return self._grounded.copy()
 
-    def _estimate_all(self, area: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+    def _estimate_all(
+        self, area: np.ndarray, centroids: np.ndarray, zone_geometries=None,
+    ) -> np.ndarray:
         from .energy_balance import estimate_fast_from_area
 
         estimates, slack = [], np.zeros(len(self._states))
+        geometries = (
+            list(zone_geometries)
+            if zone_geometries is not None else [None] * len(self._states)
+        )
+        if len(geometries) != len(self._states):
+            raise ValueError(
+                "zone_geometries must contain one geometry per drone state"
+            )
         for i, state in enumerate(self._states):
             centroid = centroids[i]
             finite = bool(np.isfinite(centroid).all())
@@ -784,14 +833,18 @@ class EnergyWeightPolicy:
                 self._ctx, state, alt=self._alt, area_m2=float(area[i]),
                 centroid_xy=(float(centroid[0]), float(centroid[1])) if finite else (0.0, 0.0),
                 fallback_pose=self._fallbacks[i],
+                work_geometry=geometries[i],
             ))
             slack[i] = estimates[-1].budget_j - estimates[-1].demand_j
         self._estimates = estimates
         self._slack = slack
         return slack
 
-    def update(self, weights: np.ndarray, counts, area, centroids, sites) -> np.ndarray:
-        slack = self._estimate_all(area, centroids)
+    def update(
+        self, weights: np.ndarray, counts, area, centroids, sites,
+        zone_geometries=None,
+    ) -> np.ndarray:
+        slack = self._estimate_all(area, centroids, zone_geometries)
         if math.isinf(self._clamp):
             mean_zone_area = float(area.sum()) / max(1, len(area))
             self._clamp = self._settings.weight_clamp_factor * max(mean_zone_area, 1.0)
@@ -811,10 +864,12 @@ class EnergyWeightPolicy:
         # clamp, and no way to produce a row with no finite cost.
         return np.clip(updated, -self._clamp, self._clamp)
 
-    def refresh(self, area: np.ndarray, centroids: np.ndarray) -> None:
+    def refresh(
+        self, area: np.ndarray, centroids: np.ndarray, zone_geometries=None,
+    ) -> None:
         """Re-estimate against the final zones. Read-only: weights are untouched,
         so this cannot move the partition it is describing."""
-        self._estimate_all(area, centroids)
+        self._estimate_all(area, centroids, zone_geometries)
 
     def balanced(self) -> bool:
         if not self._estimates:

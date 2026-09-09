@@ -135,7 +135,16 @@ def test_t11_ferry_obstacle(energy_case, enabled):
         assert e.status is S.FERRY_BLOCKED
         assert e.demand_budget_ratio is None
         assert e.e_ferry_j == pytest.approx(c.em.path_energy(independent), rel=1e-9)
-        assert e.e_ferry_j > estimate_fast(ctx, c.drone, c.zone, None).e_ferry_j
+        fast = estimate_fast(ctx, c.drone, c.zone, None)
+        fast_anchor = Pose(400, 60, math.atan2(40, 400))
+        independent_fast = route_transit(
+            c.drone.pose, fast_anchor, c.motion, env,
+            enabled=True, operating_area=ctx.coverage.operating_area,
+            margin_m=ctx.coverage.operating_margin_m,
+        )
+        assert fast.e_ferry_j == pytest.approx(
+            c.em.path_energy(independent_fast), rel=1e-9,
+        )
     else:
         assert e.status is S.FERRY_BLOCKED
         assert e.demand_budget_ratio is None
