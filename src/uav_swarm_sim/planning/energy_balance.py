@@ -23,12 +23,13 @@ from enum import Enum
 import math
 from typing import Callable, Literal
 
-from shapely.geometry import Polygon
+import shapely
+from shapely.geometry import Point, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
+from shapely.ops import nearest_points, unary_union
 
 from ..infrastructure.config import Config, CoverageConfig
-from ..infrastructure.core_types import Pose, Zone
+from ..infrastructure.core_types import Path, Pose, Zone
 from ..infrastructure.enums import ManeuverType
 from ..physical_model.drone_specs import PlatformSpec
 from ..physical_model.energy_model import EnergyModel
@@ -39,7 +40,7 @@ from .coverage_path import boustrophedon
 from .energy_map import EnergyMap
 from .environment_map import EnvironmentMap
 from .launch_site_optimizer import _coverage_geometry
-from .visibility_router import route_transit, _path_clear, flyable_region
+from .visibility_router import RouteUnavailable, route_transit, _path_clear, flyable_region
 
 
 class EnergyBalanceStatus(Enum):
@@ -95,6 +96,14 @@ class ZoneEnergyEstimate:
     n_strips: float
     anchor_pose: Pose
     exit_pose: Pose
+
+
+@dataclass(frozen=True)
+class ResolvedZoneEntry:
+    """A physical entry pose and the exact validated ferry path that reaches it."""
+
+    anchor_pose: Pose
+    ferry_path: Path
 
 
 def build_energy_balance_context(
@@ -169,6 +178,169 @@ def _ferry(ctx, drone, anchor):
     )
 
 
+def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
+    """Positive-area polygonal parts in a geometry, in canonical order."""
+    if isinstance(geometry, Polygon):
+        parts = [geometry] if geometry.area > 1e-9 else []
+    else:
+        parts = []
+        for part in getattr(geometry, "geoms", ()):
+            parts.extend(_polygon_parts(part))
+
+    def key(part: Polygon):
+        normal = shapely.normalize(part)
+        return (*map(float, part.bounds), float(part.area), normal.wkb)
+
+    return sorted(parts, key=key)
+
+
+def resolve_reachable_zone_entry(
+    ctx,
+    drone,
+    work_geometry: BaseGeometry | None,
+    centroid_xy,
+    fallback_pose: Pose,
+) -> ResolvedZoneEntry:
+    """Resolve the mathematical centroid to a physical, reachable zone entry.
+
+    Lloyd's area centroid remains the mass point used by the partitioner. This
+    function is only the physical seam: with obstacle-aware transit enabled it
+    checks every polygonal work component against the router's exact flyable
+    region and requires a validated route from the supplied *current* drone
+    pose. A reachable point in one component never certifies another one.
+
+    Candidate order is deterministic. A directly reachable centroid is retained;
+    otherwise the current-pose-nearest point and the part's point-on-surface are
+    considered. Direct routes are preferred, avoiding an expensive detour when
+    the same zone has an immediately reachable legal entry. Within that class,
+    the successful candidate nearest the mathematical centroid is selected, with
+    canonical component order breaking ties. A visibility-route fallback is
+    attempted only when no direct candidate exists.
+
+    No environment, disabled obstacle-aware transit, and empty work retain the
+    historical fast-estimate anchor behavior.
+    """
+    if work_geometry is None or work_geometry.is_empty:
+        anchor = fallback_pose if work_geometry is not None else Pose(
+            float(centroid_xy[0]),
+            float(centroid_xy[1]),
+            math.atan2(
+                float(centroid_xy[1]) - drone.pose.y,
+                float(centroid_xy[0]) - drone.pose.x,
+            ),
+        )
+        return ResolvedZoneEntry(anchor, _ferry(ctx, drone, anchor))
+
+    cx, cy = map(float, centroid_xy)
+    if ctx.env is None or not ctx.coverage.transit_free_space:
+        anchor = Pose(cx, cy, math.atan2(cy - drone.pose.y, cx - drone.pose.x))
+        return ResolvedZoneEntry(anchor, _ferry(ctx, drone, anchor))
+
+    region = flyable_region(
+        ctx.env.area,
+        ctx.env.buffered_obstacles,
+        ctx.coverage.operating_area,
+        ctx.coverage.operating_margin_m,
+    )
+    accepted_region = region.buffer(1e-8)
+    centroid = Point(cx, cy)
+    current = Point(drone.pose.as_xy())
+    region_parts = _polygon_parts(accepted_region)
+    start_parts = [part for part in region_parts if part.covers(current)]
+    if not start_parts:
+        raise RouteUnavailable("endpoint_outside_free_space")
+    start_region = start_parts[0]
+
+    options: list[tuple[int, float, int, int, ResolvedZoneEntry]] = []
+    parts = _polygon_parts(work_geometry)
+    if not parts:
+        raise RouteUnavailable("zone_has_no_polygonal_work")
+
+    for component_index, component in enumerate(parts):
+        outside_area = float(component.difference(start_region).area)
+        tolerance = max(1e-9, float(component.area) * 1e-12)
+        if outside_area > tolerance:
+            raise RouteUnavailable(
+                f"zone_component_unreachable:{component_index}:"
+                f"outside_start_component_area_m2={outside_area:.12g}"
+            )
+
+        safe_parts = _polygon_parts(component.intersection(start_region))
+        if not safe_parts:
+            raise RouteUnavailable(
+                f"zone_component_unreachable:{component_index}:empty"
+            )
+
+        component_candidates: list[tuple[float, int, Pose, Path | None]] = []
+        for safe_index, safe in enumerate(safe_parts):
+            points: list[Point] = []
+            if safe.covers(centroid):
+                points.append(centroid)
+            near = nearest_points(safe, current)[0]
+            if not points or not points[-1].equals(near):
+                points.append(near)
+            surface = safe.representative_point()
+            if not any(point.equals(surface) for point in points):
+                points.append(surface)
+
+            for candidate_index, candidate in enumerate(points):
+                anchor = Pose(
+                    float(candidate.x),
+                    float(candidate.y),
+                    math.atan2(candidate.y - drone.pose.y, candidate.x - drone.pose.x),
+                )
+                chord = ctx.motion.plan(
+                    replace(drone.pose, z=anchor.z), anchor, ManeuverType.CRUISE,
+                )
+                direct = chord if _path_clear(chord, ctx.env, region=region) else None
+                rank = safe_index * 3 + candidate_index
+                distance2 = (anchor.x - cx) ** 2 + (anchor.y - cy) ** 2
+                component_candidates.append((distance2, rank, anchor, direct))
+
+        direct = [candidate for candidate in component_candidates
+                  if candidate[3] is not None]
+        failed: set[tuple[float, float]] = set()
+        last_error: RouteUnavailable | None = None
+        resolved: ResolvedZoneEntry | None = None
+        chosen_distance = math.inf
+        chosen_rank = 0
+        route_class = 1
+        if direct:
+            direct.sort(key=lambda item: (item[0], item[1]))
+            for distance2, rank, anchor, _ in direct:
+                try:
+                    resolved = ResolvedZoneEntry(anchor, _ferry(ctx, drone, anchor))
+                    chosen_distance, chosen_rank, route_class = distance2, rank, 0
+                    break
+                except RouteUnavailable as exc:
+                    last_error = exc
+                    failed.add(anchor.as_xy())
+
+        if resolved is None:
+            component_candidates.sort(key=lambda item: (item[0], item[1]))
+            for distance2, rank, anchor, _ in component_candidates:
+                if anchor.as_xy() in failed:
+                    continue
+                try:
+                    resolved = ResolvedZoneEntry(anchor, _ferry(ctx, drone, anchor))
+                    chosen_distance, chosen_rank = distance2, rank
+                    break
+                except RouteUnavailable as exc:
+                    last_error = exc
+
+        if resolved is None:
+            reason = str(last_error) if last_error is not None else "no_valid_endpoint"
+            raise RouteUnavailable(
+                f"zone_component_unreachable:{component_index}:{reason}"
+            ) from last_error
+        options.append(
+            (route_class, chosen_distance, component_index, chosen_rank, resolved)
+        )
+
+    options.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    return options[0][4]
+
+
 def _estimate(ctx, drone, method, alt, area, n_strips, anchor, exit_pose,
               ferry, strips, connectors, camera, ferry_path):
     rth = ctx.return_energy(exit_pose, alt)
@@ -237,7 +409,8 @@ def coverage_energy_density_j_per_m2(ctx, altitude_m: float) -> float:
 
 
 def estimate_fast_from_area(
-    ctx, drone, *, alt: float, area_m2: float, centroid_xy, fallback_pose: Pose
+    ctx, drone, *, alt: float, area_m2: float, centroid_xy, fallback_pose: Pose,
+    work_geometry: BaseGeometry | None = None,
 ) -> ZoneEnergyEstimate:
     """The fast estimate's arithmetic, given the remaining area and its centroid.
 
@@ -252,19 +425,43 @@ def estimate_fast_from_area(
     """
     swath = ctx.spec.coverage_line_spacing_m(alt)
     strip_length, _, turn_distance = _coverage_geometry(area_m2, swath)
-    if area_m2:
-        cx, cy = centroid_xy
-        anchor = Pose(cx, cy, math.atan2(cy - drone.pose.y, cx - drone.pose.x))
-    else:
-        anchor = fallback_pose
+    if work_geometry is not None and not math.isclose(
+        float(work_geometry.area), area_m2, rel_tol=1e-9, abs_tol=1e-6
+    ):
+        raise ValueError(
+            "work_geometry area must match area_m2: "
+            f"{float(work_geometry.area)!r} != {area_m2!r}"
+        )
+    resolved = resolve_reachable_zone_entry(
+        ctx,
+        drone,
+        work_geometry if area_m2 else Polygon(),
+        centroid_xy,
+        fallback_pose,
+    )
+    anchor = resolved.anchor_pose
+    routed_ferry = bool(
+        area_m2
+        and work_geometry is not None
+        and ctx.env is not None
+        and ctx.coverage.transit_free_space
+    )
+    ferry_energy = (
+        ctx.em.path_energy(resolved.ferry_path)
+        if routed_ferry
+        else ctx.em.distance_energy(
+            math.dist(drone.pose.as_xy(), anchor.as_xy()),
+            ManeuverType.CRUISE,
+            ctx.spec.v_cruise,
+        )
+    )
     return _estimate(
         ctx, drone, "fast", alt, area_m2, math.sqrt(area_m2) / swath, anchor, anchor,
-        ctx.em.distance_energy(math.dist(drone.pose.as_xy(), anchor.as_xy()),
-                               ManeuverType.CRUISE, ctx.spec.v_cruise),
+        ferry_energy,
         ctx.em.distance_energy(strip_length, ManeuverType.COVERAGE, ctx.spec.v_coverage),
         ctx.em.distance_energy(turn_distance, ManeuverType.TURN, ctx.spec.v_cruise),
         ctx.em.sensor_energy(strip_length / ctx.spec.v_coverage, ctx.sensor_power_w),
-        _ferry(ctx, drone, anchor),
+        resolved.ferry_path,
     )
 
 
@@ -278,6 +475,7 @@ def estimate_fast(ctx, drone, zone, raster: CoverageRaster | None) -> ZoneEnergy
         ctx, drone, alt=alt, area_m2=area,
         centroid_xy=(centroid.x, centroid.y) if area else (0.0, 0.0),
         fallback_pose=zone.entry_pose,
+        work_geometry=geometry,
     )
 
 
