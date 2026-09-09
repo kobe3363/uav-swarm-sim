@@ -36,9 +36,9 @@ def mission(tmp_path):
     return overrides(area)
 
 
-def engine(settings):
+def engine(settings, algo=DecompositionAlgo.TGC_BASIC):
     cfg = load_config("config/djimatrice4e.yaml", overrides=settings)
-    return SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), algo=DecompositionAlgo.TGC_BASIC)
+    return SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), algo=algo)
 
 
 @pytest.mark.parametrize("map_on", [False, True])
@@ -96,13 +96,28 @@ def test_execution_coherent_must_be_a_real_boolean(mission):
         engine(dict(mission, **{"rth.execution_coherent": "false"}))
 
 
-def test_coherent_execution_refuses_exp08_repartition(mission):
-    """Coherent execution replaces Agent.step, where ZONE_COMPLETE is announced
-    and the one-tick re-task hold is set. Without it a finished drone goes to
-    S3_RTH, which eligible_executors excludes, so zone-completion
-    re-partitioning would silently never fire. Refused, not run as a no-op."""
-    with pytest.raises(ConfigError, match=r"does not support mission\.repartition_enabled"):
-        engine(dict(mission, **{"mission.repartition_enabled": True}))
+@pytest.mark.parametrize("algo", [DecompositionAlgo.LLOYD_CVT, DecompositionAlgo.LLOYD_ENERGY])
+def test_coherent_execution_repartitions_with_each_lloyd_method(mission, algo):
+    """The formerly refused flag combination must execute a real revision.
+
+    A short fixed trigger makes this independent of which drone completes its
+    initial zone first.  It proves more than config acceptance: the resulting
+    record exposes the chosen Lloyd implementation rather than a TGC fallback.
+    """
+    settings = dict(mission, **{
+        "fleet.n_drones": 2,
+        "launch.candidate_sites": [[0, 0], [0, 120]],
+        "mission.repartition_enabled": True,
+        "mission.repartition_interval_s": 10.0,
+        "planning.energy_balance.enabled": algo is DecompositionAlgo.LLOYD_ENERGY,
+    })
+    eng = engine(settings, algo=algo)
+    result = eng.run()
+    assert result.repartitions
+    assert any(record["applied"] for record in result.repartitions)
+    assert {record["algorithm"] for record in result.repartitions} == {algo.value}
+    assert all("WeightedTgc" not in record["decomposer_class"]
+               for record in result.repartitions)
 
 
 def test_flag_off_byte_identity(mission):

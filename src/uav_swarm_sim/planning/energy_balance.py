@@ -56,6 +56,12 @@ class DroneEnergyState:
     pose: Pose
     level_j: float
     airborne: bool
+    # The immutable physical home and the live coherent altitude are carried
+    # with the state rather than recovered from a shared launch pose.
+    base: Pose | None = None
+    # Legacy airborne callers had no coherent-flight AGL and therefore had
+    # already accounted for take-off energy.
+    agl_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,9 @@ class EnergyBalanceContext:
     emap: EnergyMap | None = None
     transit_graph_cache: dict | None = None
     execution_coherent: bool = False
+    # Optional REV-02 seam.  Existing callers retain the two-argument return
+    # callback; coherent live planning supplies the real drone/base pair.
+    return_energy_for_drone: Callable[[DroneEnergyState, Pose, float | None], float] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,11 +119,13 @@ def build_energy_balance_context(
     cfg: Config, em: EnergyModel, spec: PlatformSpec, motion: MotionModel,
     env: EnvironmentMap | None, return_energy: Callable[[Pose, float | None], float],
     emap: EnergyMap | None = None, graph_cache: dict | None = None,
+    return_energy_for_drone: Callable[[DroneEnergyState, Pose, float | None], float] | None = None,
 ) -> EnergyBalanceContext:
     return EnergyBalanceContext(
         em, spec, motion, env, cfg.coverage, cfg.sensor.sensor_power_w,
         tuple(cfg.layers.altitudes_m), cfg.rth.reserve_frac * spec.battery_capacity_j,
         return_energy, emap, graph_cache, cfg.rth.execution_coherent,
+        return_energy_for_drone,
     )
 
 
@@ -161,7 +172,16 @@ def _inputs(ctx, drone, zone):
 
 def _budget(ctx, drone, altitude_m, e_ferry_j, e_rth_j) -> tuple[float, float, float]:
     """The only assembly point for takeoff, remaining charge and denominator."""
-    takeoff = 0.0 if drone.airborne else takeoff_profile(ctx.spec, ctx.em, altitude_m).energy_j
+    # A live coherent drone can be part-way through takeoff when an event-driven
+    # repartition arrives.  Charge only the unflown vertical remainder; a drone
+    # already at its coverage AGL is never charged takeoff again.
+    if not drone.airborne:
+        climb_m = altitude_m
+    elif drone.agl_m is None:
+        climb_m = 0.0
+    else:
+        climb_m = max(0.0, altitude_m - drone.agl_m)
+    takeoff = takeoff_profile(ctx.spec, ctx.em, climb_m, at=drone.pose).energy_j
     remaining = drone.level_j - takeoff
     budget = remaining - (e_ferry_j + e_rth_j + ctx.reserve_j)
     _finite(e_takeoff_deducted_j=takeoff, e_remaining_j=remaining, budget_j=budget)
@@ -342,8 +362,10 @@ def resolve_reachable_zone_entry(
 
 
 def _estimate(ctx, drone, method, alt, area, n_strips, anchor, exit_pose,
-              ferry, strips, connectors, camera, ferry_path):
-    rth = ctx.return_energy(exit_pose, alt)
+               ferry, strips, connectors, camera, ferry_path):
+    rth = (ctx.return_energy_for_drone(drone, exit_pose, alt)
+           if ctx.return_energy_for_drone is not None
+           else ctx.return_energy(exit_pose, alt))
     demand = strips + connectors + camera
     _finite(e_ferry_j=ferry, e_strips_j=strips, e_connectors_j=connectors,
             e_camera_j=camera, e_rth_j=rth, demand_j=demand,

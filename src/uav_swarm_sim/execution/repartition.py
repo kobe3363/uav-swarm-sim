@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from ..infrastructure.core_types import CoveragePlan, Partition
 from ..infrastructure.enums import AgentState
 from ..planning.coverage_path import boustrophedon
+from ..planning.visibility_router import RouteUnavailable
 
 # Areas are compared after float summation over many clipped cells.
 _AREA_REL_TOL = 1e-9
@@ -57,6 +58,7 @@ APPLIED = "applied"
 NO_ELIGIBLE_EXECUTOR = "no_eligible_executor"
 NO_REMAINING_WORK = "no_remaining_work"
 NO_PROGRESS = "no_progress"
+CANDIDATE_REJECTED = "candidate_rejected"
 
 
 @dataclass
@@ -79,6 +81,7 @@ class RepartitionRecord:
     area_before_m2: float = 0.0
     area_assigned_m2: float = 0.0
     plan_time_s: float = 0.0
+    rejection: str | None = None
 
     def to_json(self) -> dict:
         return {
@@ -100,6 +103,7 @@ class RepartitionRecord:
             "area_before_m2": self.area_before_m2,
             "area_assigned_m2": self.area_assigned_m2,
             "plan_time_s": self.plan_time_s,
+            "rejection": self.rejection,
         }
 
 
@@ -108,8 +112,8 @@ class RepartitionAttempt:
     """Result of one attempt. ``staged`` is None unless it is to be applied."""
 
     record: RepartitionRecord
-    staged: tuple[Partition, dict[int, CoveragePlan],
-                  tuple[tuple[object, CoveragePlan, object], ...]] | None = None
+    staged: tuple[Partition, dict[int, CoveragePlan], tuple[tuple[object, object], ...]] | None = None
+    fingerprint: tuple[int, frozenset[int]] | None = None
 
 
 def eligible_executors(fleet) -> list:
@@ -227,13 +231,17 @@ class Repartitioner:
         n_before = len(snapshot)
         area_before = float(snapshot.areas_m2.sum())
 
-        def _record(reason):
+        algorithm = getattr(self._dec.name, "value", str(self._dec.name))
+
+        def _record(reason, *, rejection: str | None = None, plan_time: float = 0.0):
             # A refused attempt assigned nothing, so ALL the remaining work is
             # what it left unassigned. Reporting 0 there would read as "nothing
             # was left over", which is the opposite of what happened.
             return RepartitionAttempt(RepartitionRecord(
                 revision=self.revision, t_s=float(t), causes=causes,
                 reason=reason, applied=False,
+                algorithm=algorithm, decomposer_class=type(self._dec).__name__,
+                rng_stream=self._rng_stream, rejection=rejection, plan_time_s=plan_time,
                 executors=tuple(a.id for a in executors),
                 excluded=_exclusion_report(fleet, executors),
                 cells_before=n_before, cells_assigned=0,
@@ -295,28 +303,36 @@ class Repartitioner:
         # Staging: build every plan and every transit BEFORE anything is applied.
         plans: dict[int, CoveragePlan] = {}
         staged = []
-        for agent in executors:
-            zone = partition.zones.get(agent.id)
-            if zone is None:
-                raise AssertionError(
-                    f"re-partition returned no zone for eligible executor "
-                    f"{agent.id}; an empty zone is legal, a missing one is not"
-                )
-            zone.layer = agent.layer
-            sweep_t0 = time.perf_counter()
-            plan = boustrophedon(zone, self._spec, self._motion, self._em,
-                                 env=self._env, coverage=self._coverage,
-                                 altitude_m=self._altitude_m)
-            plan_time += time.perf_counter() - sweep_t0
-            entry = self._entry_pose(plan, zone.entry_pose)
-            transit = self._plan_transit(agent.pose, entry)
-            plans[agent.id] = plan
-            staged.append((agent, plan, transit))
+        try:
+            for agent in executors:
+                zone = partition.zones.get(agent.id)
+                if zone is None:
+                    raise AssertionError(
+                        f"re-partition returned no zone for eligible executor "
+                        f"{agent.id}; an empty zone is legal, a missing one is not"
+                    )
+                zone.layer = agent.layer
+                sweep_t0 = time.perf_counter()
+                plan = boustrophedon(zone, self._spec, self._motion, self._em,
+                                     env=self._env, coverage=self._coverage,
+                                     altitude_m=self._altitude_m)
+                plan_time += time.perf_counter() - sweep_t0
+                entry = self._entry_pose(plan, zone.entry_pose)
+                transit = self._plan_transit(agent.pose, entry)
+                # Validation includes coherent continuity, every productive
+                # endpoint's individual RTH, and the immediate energy bundle.
+                # It is deliberately complete before any agent is touched.
+                prepared = (agent.prepare_retask(plan, transit, self.revision)
+                            if hasattr(agent, "prepare_retask") else (plan, transit))
+                plans[agent.id] = plan
+                staged.append((agent, prepared))
+        except RouteUnavailable as exc:
+            return _record(CANDIDATE_REJECTED, rejection=str(exc), plan_time=plan_time)
 
         record = RepartitionRecord(
             revision=self.revision, t_s=float(t), causes=causes, reason=APPLIED,
             applied=True,
-            algorithm=getattr(self._dec.name, "value", str(self._dec.name)),
+            algorithm=algorithm,
             decomposer_class=type(self._dec).__name__,
             rng_stream=self._rng_stream,
             executors=tuple(a.id for a in executors),
@@ -326,8 +342,16 @@ class Repartitioner:
             area_before_m2=area_before, area_assigned_m2=area_assigned,
             plan_time_s=plan_time,
         )
+        # Preserve the established no-progress guard for direct callers of
+        # ``attempt``.  The engine still commits only candidates that all
+        # passed preparation, before it applies their staged state.
         self._last_applied = fingerprint
-        return RepartitionAttempt(record, (partition, plans, tuple(staged)))
+        return RepartitionAttempt(record, (partition, plans, tuple(staged)), fingerprint)
+
+    def mark_applied(self, attempt: RepartitionAttempt) -> None:
+        """Advance the progress guard only after the engine commits the revision."""
+        if attempt.fingerprint is not None:
+            self._last_applied = attempt.fingerprint
 
     # ------------------------------------------------------------------ #
     # invariants -- every one a raise, never an assert                    #

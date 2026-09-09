@@ -23,6 +23,8 @@ class CoherentFlight:
         self.return_plan = None
         self.rejected_reason: str | None = None
         self.assignment_error: str | None = None
+        self.plan_revision = 0
+        self._pending_retask_legs: tuple = ()
 
     def energy(self, path, start=0.0, *, camera=False):
         a = self.a
@@ -39,21 +41,81 @@ class CoherentFlight:
         a._cov_legs = []
         a._set_legs([])
 
-    def validate_assignment(self):
+    def _validate_paths(self, transit, coverage_legs, *, start_pose=None):
         a = self.a
-        paths = [a._transit, *a._cov_legs]
-        previous = a.pose
+        paths = [transit, *coverage_legs]
+        previous = a.pose if start_pose is None else start_pose
         for i, path in enumerate(paths):
             if path is None or not a.rth.path_clear(path, productive=i > 0 and (i - 1) % 2 == 0):
                 raise RouteUnavailable("assignment_buffer_blocked")
-            if path.start_pose is not None and math.dist(previous.as_xy(), path.start_pose.as_xy()) > 1e-6:
+            if path.start_pose is not None and (
+                math.dist(previous.as_xy(), path.start_pose.as_xy()) > 1e-6
+                or abs(normalize_angle(previous.heading - path.start_pose.heading)) > 1e-6
+            ):
                 raise RouteUnavailable("assignment_discontinuous")
             previous = path.end_pose or previous
         # Check connectivity and real return costs at every productive endpoint;
         # a later runtime skip must never be needed to repair the plan.
-        for path in a._cov_legs[::2]:
+        for path in coverage_legs[::2]:
             a.rth.return_plan(path.end_pose or a.pose, base=a.base,
                               altitude_m=a.coverage_altitude_m)
+
+    def validate_assignment(self):
+        self._validate_paths(self.a._transit, self.a._cov_legs)
+
+    def validate_retask(self, transit, coverage_legs, revision: int):
+        """Return executable incoming legs or reject the candidate untouched."""
+        a = self.a
+        if revision <= self.plan_revision:
+            raise RouteUnavailable("stale_plan_revision")
+        remaining_takeoff = []
+        if a.state.is_airborne:
+            remaining_altitude = max(0.0, a.coverage_altitude_m - self.altitude_m)
+            if remaining_altitude > 1e-8:
+                remaining_takeoff = [takeoff_profile(
+                    a.spec, a.em, remaining_altitude, at=a.pose,
+                ).as_path()]
+        else:
+            remaining_takeoff = [takeoff_profile(
+                a.spec, a.em, a.coverage_altitude_m, at=a.pose,
+            ).as_path()]
+        incoming = [*remaining_takeoff, transit]
+        # The vertical profile has the same XY/heading at both endpoints, so the
+        # transit still begins at the real pose, without a synthetic teleport.
+        self._validate_paths(transit, coverage_legs, start_pose=a.pose)
+        first = coverage_legs[0] if coverage_legs else Path()
+        endpoint = first.end_pose or transit.end_pose or a.pose
+        required = (
+            sum(self.energy(path) for path in incoming)
+            + self.energy(first, camera=True)
+            + a.rth.return_energy(endpoint, altitude_m=a.coverage_altitude_m, base=a.base)
+            + a.rth.reserve_j
+        )
+        if a.battery.level_j < required:
+            raise RouteUnavailable("retask_energy_budget")
+        return incoming
+
+    def accept_plan_revision(self, revision: int, incoming_legs) -> None:
+        """Invalidate only plan-local execution state after staged acceptance."""
+        self.plan_revision = revision
+        self._pending_retask_legs = tuple(incoming_legs)
+        self.return_plan = None
+        self.assignment_error = None
+        self.rejected_reason = None
+        self.holding = False
+
+    def transition_legs(self, source):
+        """Legs for S1 entry: launch only from ground, never after a retask."""
+        if source is S.S0_IDLE:
+            return self.launch_legs()
+        return self.retask_transit_legs(source)
+
+    def retask_transit_legs(self, source):
+        if self._pending_retask_legs:
+            legs = list(self._pending_retask_legs)
+            self._pending_retask_legs = ()
+            return legs
+        return [self.a._transit] if self.a._transit is not None else []
 
     def bundle(self):
         """Remaining current strip OR connector plus the following strip.
@@ -120,12 +182,49 @@ class CoherentFlight:
         return [self.return_plan.path]
 
     def step(self, dt, t, bus):
+        a = self.a
+        # The engine had one full tick to accept the published completion.  If
+        # it did not, spend exactly one physical hover tick before the ordinary
+        # FSM return.  RTH/threat pre-emption stays above this convenience hold.
+        if a._repartition_hold:
+            emergency = a.rth.emergency_frac
+            if emergency is None:
+                emergency = a.battery._zones.critical
+            reason = "terminal_battery" if a.battery.frac < emergency else None
+            try:
+                if reason is None and a.battery.level_j < (
+                    a.rth.return_energy(a.pose, altitude_m=self.altitude_m, base=a.base)
+                    + a.rth.reserve_j
+                ):
+                    reason = "rth_energy"
+            except RouteUnavailable:
+                reason = "rth_energy"
+            if reason is not None:
+                a._repartition_hold = False
+                a._apply_transition(Transition(a.state, S.S3_RTH, reason), t, bus)
+                return
+            if a._threat:
+                a._repartition_hold = False
+                a._apply_transition(Transition(a.state, S.S_OBS, "obstacle_threat"), t, bus)
+                return
+            a._tick_dynamics(dt, t)
+            a._repartition_hold = False
+            ctx = a._make_ctx()
+            ctx.rth_decision = False
+            transition = a.sm.step(ctx)
+            if transition is not None:
+                a._apply_transition(transition, t + dt, bus)
+            return
         remaining = dt
         while remaining > 1e-10:
             a = self.a
             before = (a.state, a._leg_idx, a._cov_idx, a._t)
             used = self._step_once(remaining, t + dt - remaining, bus)
             if used is None or not a.state.is_airborne:
+                break
+            if a._repartition_hold:
+                # Do not consume the hold inside this same simulation tick; the
+                # engine must drain ZONE_COMPLETE and stage the revision first.
                 break
             remaining -= used
             if used == 0 and before == (a.state, a._leg_idx, a._cov_idx, a._t):
@@ -199,6 +298,7 @@ class CoherentFlight:
             return
         if a.state is S.S_OBS and a._phase_done():
             a._threat_cleared = True
+        a._announce_zone_complete(t + (used or 0), bus)
         ctx = a._make_ctx()
         ctx.rth_decision = False  # handled above before consuming any energy
         if self.holding:

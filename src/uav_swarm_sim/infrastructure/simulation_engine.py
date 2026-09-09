@@ -203,6 +203,11 @@ class SimulationEngine:
                     self.cfg, self.em, self.spec, self.motion, self.env,
                     lambda pose, alt: self.rth.return_energy(pose, altitude_m=alt),
                     emap=self.energy_map, graph_cache=self._transit_graph_cache,
+                    return_energy_for_drone=lambda drone, pose, alt: self.rth.return_energy(
+                        pose, altitude_m=alt,
+                        base=(drone.base if drone.base is not None
+                              else self.deploy_poses[drone.drone_id]),
+                    ),
                 ),
                 altitude_m=self.layers.altitude(0),
                 capacity_j=capacity_j,
@@ -403,7 +408,8 @@ class SimulationEngine:
                 cfg.coverage.raster_cell_m,
             )
         init_views = [
-            DroneStateView(i, self.initial_soc_by_drone[i], self.deploy_poses[i])
+            DroneStateView(i, self.initial_soc_by_drone[i], self.deploy_poses[i],
+                           base=self.deploy_poses[i], agl_m=0.0)
             for i in range(cfg.fleet.n_drones)
         ]
         self.assignment = {}          # drone_id -> list[(x, y)] (target mode only)
@@ -551,6 +557,11 @@ class SimulationEngine:
                 cfg, self.em, self.spec, self.motion, self.env,
                 lambda pose, alt: rth.return_energy(pose, altitude_m=alt),
                 emap=self.energy_map, graph_cache=self._transit_graph_cache,
+                return_energy_for_drone=lambda drone, pose, alt: rth.return_energy(
+                    pose, altitude_m=alt,
+                    base=(drone.base if drone.base is not None
+                          else self.deploy_poses[drone.drone_id]),
+                ),
             )
             self.energy_balance_t0: dict[int, dict[str, ZoneEnergyEstimate]] = {}
             # Return queries increment diagnostics; t=0 estimates must not
@@ -561,14 +572,11 @@ class SimulationEngine:
                     zone = self.partition.zones.get(agent.id)
                     if zone is None:
                         continue
-                    if cfg.rth.execution_coherent:
-                        if agent.plan is None:
-                            continue
-                        from dataclasses import replace
-                        ctx = replace(ctx, return_energy=lambda pose, alt, base=agent.base:
-                                      rth.return_energy(pose, altitude_m=alt, base=base))
+                    if cfg.rth.execution_coherent and agent.plan is None:
+                        continue
                     state = DroneEnergyState(
                         agent.id, self.deploy_poses[agent.id], agent.battery.level_j, False,
+                        agent.base, 0.0,
                     )
                     estimates = {}
                     for method, estimate in (("fast", estimate_fast), ("path", estimate_path)):
@@ -1027,8 +1035,9 @@ class SimulationEngine:
         # (The legacy Redistributor merges for the same reason.)
         self.plans = {**self.plans, **plans}
         self.replan_times.append(attempt.record.plan_time_s)
-        for agent, plan, transit in staged:
-            agent.retask(plan, transit, t, self.bus)
+        for agent, prepared in staged:
+            agent.commit_retask(prepared, t, self.bus)
+        self.repartitioner.mark_applied(attempt)
 
     def _repartition_hold_summary(self) -> dict | None:
         """What the one-tick re-task hold cost, per run and per drone.

@@ -16,7 +16,7 @@ from uav_swarm_sim.physical_model.battery import Battery
 from uav_swarm_sim.physical_model.drone_specs import build_spec
 from uav_swarm_sim.physical_model.energy_model import EnergyModel
 from uav_swarm_sim.physical_model.motion_model import make_motion_model
-from uav_swarm_sim.physical_model.vertical_segments import landing_profile
+from uav_swarm_sim.physical_model.vertical_segments import landing_profile, takeoff_profile
 from uav_swarm_sim.planning.energy_map import build_energy_map
 from uav_swarm_sim.planning.environment_map import EnvironmentMap
 from uav_swarm_sim.planning.obstacle_generator import Obstacle
@@ -286,6 +286,55 @@ def work_agent(k, rth):
     return a
 
 
+def test_retask_commits_only_plan_local_state_and_keeps_remaining_climb(kit):
+    """A coherent revision starts from the physical aircraft, never a new one."""
+    a = work_agent(kit, calculator(kit))
+    # Simulate an event during take-off: the next plan may charge only the
+    # 55-m remainder, and commit must not rewrite any accumulated telemetry.
+    a._coherent.altitude_m = 45.0
+    a.pose = Pose(137.0, 500.0, 0.0)
+    a.battery.drain(1234.0)
+    a.energy_consumed_j = 1234.0
+    a.flown_m = 37.0
+    old = (a.pose, a._coherent.altitude_m, a.battery.level_j,
+           a.energy_consumed_j, a.flown_m, tuple(a.photo_events))
+    next_pose = Pose(300.0, 500.0, 0.0)
+    plan = CoveragePlan(0, [Waypoint(next_pose, M.COVERAGE, 10),
+                            Waypoint(Pose(400, 500, 0), M.COVERAGE, 10)], 0, 0)
+    transit = kit.motion.plan(a.pose, next_pose, M.CRUISE)
+    a._coherent.return_plan = object()  # cache belonging to the replaced plan
+
+    prepared = a.prepare_retask(plan, transit, revision=1)
+    assert prepared.coherent_transit_legs is not None
+    expected_climb = takeoff_profile(a.spec, a.em, 55.0, at=a.pose).as_path()
+    assert prepared.coherent_transit_legs[0].total_duration_s == pytest.approx(
+        expected_climb.total_duration_s
+    )
+    a.commit_retask(prepared, 10.0, SimpleNamespace(publish=lambda event: None))
+
+    assert a.plan_revision == a._coherent.plan_revision == 1
+    assert (a.pose, a._coherent.altitude_m, a.battery.level_j,
+            a.energy_consumed_j, a.flown_m, tuple(a.photo_events)) == old
+    assert a.state is S.S1_TRANSIT
+    assert a._legs[0].total_duration_s == pytest.approx(expected_climb.total_duration_s)
+    assert a._coherent.return_plan is None
+
+
+def test_infeasible_coherent_retask_is_rejected_before_state_changes(kit):
+    a = work_agent(kit, calculator(kit))
+    a.battery._level = 1.0
+    before = (a.plan, a.plan_revision, a.pose, a.state, tuple(a._legs),
+              a.battery.level_j, a.energy_consumed_j)
+    next_pose = Pose(300.0, 500.0, 0.0)
+    plan = CoveragePlan(0, [Waypoint(next_pose, M.COVERAGE, 10),
+                            Waypoint(Pose(400, 500, 0), M.COVERAGE, 10)], 0, 0)
+    transit = kit.motion.plan(a.pose, next_pose, M.CRUISE)
+    with pytest.raises(RouteUnavailable, match="retask_energy_budget"):
+        a.prepare_retask(plan, transit, revision=1)
+    assert (a.plan, a.plan_revision, a.pose, a.state, tuple(a._legs),
+            a.battery.level_j, a.energy_consumed_j) == before
+
+
 @pytest.mark.parametrize("interval", [0.1, 5.0, 1000.0])
 @pytest.mark.parametrize("dt", [0.1, 0.5, 30.0])
 def test_bundle_admission_precedes_movement_even_with_long_dt(kit, interval, dt):
@@ -405,6 +454,41 @@ def test_exp06_path_contract_uses_real_return_even_when_grid_says_infinite(kit):
         358200 - 1989 - estimate.e_ferry_j - estimate.e_rth_j - 17910)
     assert estimate.demand_j == pytest.approx(
         estimate.e_strips_j + estimate.e_connectors_j + estimate.e_camera_j)
+
+
+def test_live_energy_context_uses_agent_base_agl_and_one_reserve(kit):
+    """Planning sees the same personal RTH destination as coherent execution."""
+    from uav_swarm_sim.infrastructure.core_types import Zone
+    from uav_swarm_sim.planning.energy_balance import (
+        DroneEnergyState, build_energy_balance_context, estimate_path,
+    )
+
+    rth = calculator(kit)
+    personal_base = Pose(400, 500, math.pi)
+    calls = []
+    ctx = build_energy_balance_context(
+        kit.cfg, kit.em, kit.spec, kit.motion, environment(),
+        lambda pose, alt: (_ for _ in ()).throw(AssertionError("shared base callback used")),
+        return_energy_for_drone=lambda drone, pose, alt: calls.append(
+            (drone.base, pose, alt)
+        ) or rth.return_energy(pose, altitude_m=alt, base=drone.base),
+    )
+    state = DroneEnergyState(0, Pose(600, 500, 0), 200000.0, True,
+                             personal_base, 45.0)
+    zone = Zone(0, [], box(650, 450, 850, 550), Pose(650, 450, 0))
+    estimate = estimate_path(ctx, state, zone, None)
+
+    assert calls and all(base == personal_base for base, _, _ in calls)
+    assert estimate.e_takeoff_deducted_j == pytest.approx(
+        takeoff_profile(kit.spec, kit.em, 55.0, at=state.pose).energy_j
+    )
+    assert estimate.e_rth_j == pytest.approx(
+        rth.return_energy(estimate.exit_pose, base=personal_base)
+    )
+    assert estimate.budget_j == pytest.approx(
+        state.level_j - estimate.e_takeoff_deducted_j - estimate.e_ferry_j
+        - estimate.e_rth_j - rth.reserve_j
+    )
 
 
 def test_complete_flight_cache_byte_identity(kit):

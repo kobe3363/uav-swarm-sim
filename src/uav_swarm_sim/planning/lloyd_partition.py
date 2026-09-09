@@ -965,7 +965,10 @@ class LloydEnergyDecomposer(_LloydDecomposer):
         from .energy_balance import DroneEnergyState
 
         states = [
-            DroneEnergyState(d.id, d.pose, d.battery_frac * self._capacity_j, d.airborne)
+            DroneEnergyState(
+                d.id, d.pose, d.battery_frac * self._capacity_j, d.airborne,
+                d.base, d.agl_m,
+            )
             for d in drones
         ]
         # Fallback pose for an EMPTY zone is the drone's own pose, so a drone
