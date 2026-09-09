@@ -268,6 +268,13 @@ class DroneStateView:
     # charge it twice to one already flying), so every t=0 construction keeps
     # the default and stays byte-identical: at t=0 every drone is on the ground.
     airborne: bool = False
+    # REV-02: planning a live re-partition must use the same per-drone home and
+    # actual AGL as coherent execution.  Both are additive defaults so every
+    # pre-REV-02 planner construction remains source-compatible.
+    base: Pose | None = None
+    # ``None`` retains the legacy meaning of an airborne snapshot: take-off
+    # energy has already been charged.  Coherent execution supplies AGL.
+    agl_m: float | None = None
 
 
 @dataclass

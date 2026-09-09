@@ -23,6 +23,12 @@ class CoherentFlight:
         self.return_plan = None
         self.rejected_reason: str | None = None
         self.assignment_error: str | None = None
+        self.plan_revision = 0
+        self._pending_retask_legs: tuple = ()
+        # A climb can be suspended by S_OBS and later resumed at non-zero path
+        # time.  This is keyed by path identity, rather than one global value,
+        # so the avoidance leg cannot overwrite the interrupted climb's AGL.
+        self._vertical_leg_start_agl: dict[int, float] = {}
 
     def energy(self, path, start=0.0, *, camera=False):
         a = self.a
@@ -39,21 +45,104 @@ class CoherentFlight:
         a._cov_legs = []
         a._set_legs([])
 
-    def validate_assignment(self):
+    def _validate_paths(self, transit, coverage_legs, *, start_pose=None):
         a = self.a
-        paths = [a._transit, *a._cov_legs]
-        previous = a.pose
+        paths = [transit, *coverage_legs]
+        previous = a.pose if start_pose is None else start_pose
         for i, path in enumerate(paths):
             if path is None or not a.rth.path_clear(path, productive=i > 0 and (i - 1) % 2 == 0):
                 raise RouteUnavailable("assignment_buffer_blocked")
-            if path.start_pose is not None and math.dist(previous.as_xy(), path.start_pose.as_xy()) > 1e-6:
+            if path.start_pose is not None and (
+                math.dist(previous.as_xy(), path.start_pose.as_xy()) > 1e-6
+                or abs(normalize_angle(previous.heading - path.start_pose.heading)) > 1e-6
+            ):
                 raise RouteUnavailable("assignment_discontinuous")
             previous = path.end_pose or previous
         # Check connectivity and real return costs at every productive endpoint;
         # a later runtime skip must never be needed to repair the plan.
-        for path in a._cov_legs[::2]:
+        for path in coverage_legs[::2]:
             a.rth.return_plan(path.end_pose or a.pose, base=a.base,
                               altitude_m=a.coverage_altitude_m)
+
+    def validate_assignment(self):
+        self._validate_paths(self.a._transit, self.a._cov_legs)
+
+    def _retask_vertical_legs(self):
+        """Unflown vertical phase for a prospective plan, without mutation."""
+        a = self.a
+        if a.state.is_airborne:
+            remaining_altitude = max(0.0, a.coverage_altitude_m - self.altitude_m)
+            # ``as_path`` contains only the airborne CLIMB segment.  The
+            # ground-roll term lives in VerticalProfile.energy and is therefore
+            # never re-executed for this already-airborne continuation.
+            return ([takeoff_profile(a.spec, a.em, remaining_altitude, at=a.pose).as_path()]
+                    if remaining_altitude > 1e-8 else [])
+        return [takeoff_profile(
+                a.spec, a.em, a.coverage_altitude_m, at=a.pose,
+            ).as_path()]
+
+    def retask_origin(self):
+        """Where the new horizontal transit starts after any unflown climb."""
+        legs = self._retask_vertical_legs()
+        return (legs[-1].end_pose if legs and legs[-1].end_pose is not None
+                else self.a.pose)
+
+    def validate_retask(self, transit, coverage_legs, revision: int):
+        """Return executable incoming legs or reject the candidate untouched."""
+        a = self.a
+        if revision <= self.plan_revision:
+            raise RouteUnavailable("stale_plan_revision")
+        vertical = self._retask_vertical_legs()
+        incoming = [*vertical, transit]
+        # A fixed-wing airborne climb moves horizontally, unlike a multirotor.
+        self._validate_paths(transit, coverage_legs, start_pose=self.retask_origin())
+        first = coverage_legs[0] if coverage_legs else Path()
+        endpoint = first.end_pose or transit.end_pose or a.pose
+        required = (
+            sum(self.energy(path) for path in incoming)
+            + self.energy(first, camera=True)
+            + a.rth.return_energy(endpoint, altitude_m=a.coverage_altitude_m, base=a.base)
+            + a.rth.reserve_j
+        )
+        # S_SWAP cannot execute until the existing lifecycle installs a full
+        # pack. Validate that post-swap capacity without mutating live state.
+        available = (a.battery.capacity_j if a.state is S.S_SWAP
+                     else a.battery.level_j)
+        if available < required:
+            raise RouteUnavailable("retask_energy_budget")
+        return incoming
+
+    def accept_plan_revision(self, revision: int, incoming_legs) -> None:
+        """Invalidate only plan-local execution state after staged acceptance."""
+        self.plan_revision = revision
+        self._pending_retask_legs = tuple(incoming_legs)
+        self.return_plan = None
+        self.assignment_error = None
+        self.rejected_reason = None
+        self.holding = False
+        self._vertical_leg_start_agl.clear()
+
+    def discard_pending_retask_legs(self) -> None:
+        """Drop an airborne connector that cannot apply after ground lifecycle.
+
+        A retask accepted while swapping or still idle resumes through the
+        normal ground launch path.  Keeping the staged airborne connector would
+        let a later unrelated S_OBS -> S1 transition fly stale geometry.
+        """
+        self._pending_retask_legs = ()
+
+    def transition_legs(self, source):
+        """Legs for S1 entry: launch only from ground, never after a retask."""
+        if source is S.S0_IDLE:
+            return self.launch_legs()
+        return self.retask_transit_legs(source)
+
+    def retask_transit_legs(self, source):
+        if self._pending_retask_legs:
+            legs = list(self._pending_retask_legs)
+            self._pending_retask_legs = ()
+            return legs
+        return [self.a._transit] if self.a._transit is not None else []
 
     def bundle(self):
         """Remaining current strip OR connector plus the following strip.
@@ -120,12 +209,55 @@ class CoherentFlight:
         return [self.return_plan.path]
 
     def step(self, dt, t, bus):
+        a = self.a
+        # The engine had one full tick to accept the published completion.  If
+        # it did not, spend exactly one physical hover tick before the ordinary
+        # FSM return.  RTH/threat pre-emption stays above this convenience hold.
+        if a._repartition_hold:
+            # A failure is terminal and must pre-empt the one-step convenience
+            # hold just as it pre-empts ordinary mission movement below.
+            if a._failure and a.state.is_airborne:
+                a._repartition_hold = False
+                a._apply_transition(Transition(a.state, S.S_FAIL, "failure"), t, bus)
+                return
+            emergency = a.rth.emergency_frac
+            if emergency is None:
+                emergency = a.battery._zones.critical
+            reason = "terminal_battery" if a.battery.frac < emergency else None
+            try:
+                if reason is None and a.battery.level_j < (
+                    a.rth.return_energy(a.pose, altitude_m=self.altitude_m, base=a.base)
+                    + a.rth.reserve_j
+                ):
+                    reason = "rth_energy"
+            except RouteUnavailable:
+                reason = "rth_energy"
+            if reason is not None:
+                a._repartition_hold = False
+                a._apply_transition(Transition(a.state, S.S3_RTH, reason), t, bus)
+                return
+            if a._threat:
+                a._repartition_hold = False
+                a._apply_transition(Transition(a.state, S.S_OBS, "obstacle_threat"), t, bus)
+                return
+            a._tick_dynamics(dt, t)
+            a._repartition_hold = False
+            ctx = a._make_ctx()
+            ctx.rth_decision = False
+            transition = a.sm.step(ctx)
+            if transition is not None:
+                a._apply_transition(transition, t + dt, bus)
+            return
         remaining = dt
         while remaining > 1e-10:
             a = self.a
             before = (a.state, a._leg_idx, a._cov_idx, a._t)
             used = self._step_once(remaining, t + dt - remaining, bus)
             if used is None or not a.state.is_airborne:
+                break
+            if a._repartition_hold:
+                # Do not consume the hold inside this same simulation tick; the
+                # engine must drain ZONE_COMPLETE and stage the revision first.
                 break
             remaining -= used
             if used == 0 and before == (a.state, a._leg_idx, a._cov_idx, a._t):
@@ -199,6 +331,7 @@ class CoherentFlight:
             return
         if a.state is S.S_OBS and a._phase_done():
             a._threat_cleared = True
+        a._announce_zone_complete(t + (used or 0), bus)
         ctx = a._make_ctx()
         ctx.rth_decision = False  # handled above before consuming any energy
         if self.holding:
@@ -206,6 +339,8 @@ class CoherentFlight:
             ctx.landed_at_base = False
         transition = a.sm.step(ctx)
         if transition is not None:
+            if transition.dst in (S.S3_RTH, S.S_OBS):
+                a._repartition_hold = False
             a._apply_transition(transition, t + (used or 0), bus)
         return used
 
@@ -219,6 +354,9 @@ class CoherentFlight:
         if a._leg_idx >= len(a._legs):
             return 0.0
         path = a._legs[a._leg_idx]
+        leg_key = id(path)
+        if a._t <= 1e-12:
+            self._vertical_leg_start_agl.setdefault(leg_key, self.altitude_m)
         end = min(a._t + dt, path.total_duration_s)
         used = end - a._t
         cursor = 0.0
@@ -260,8 +398,17 @@ class CoherentFlight:
                     a._photo_tracker.advance(old, new, at, elapsed, a._cov_idx)
                     if a._coverage_observer is not None:
                         a._coverage_observer(old, new)
-                if seg.maneuver is M.TAKEOFF:
-                    self.altitude_m = min(a.coverage_altitude_m, self.altitude_m + a.spec.v_climb * elapsed)
+                if seg.maneuver in (M.TAKEOFF, M.CLIMB):
+                    # Fixed-wing climb-out is a sloped CLIMB path, whereas a
+                    # multirotor uses TAKEOFF.  Interpolate from this leg's
+                    # authoritative starting AGL so a partial re-task climb
+                    # reaches exactly coverage altitude without double-counting.
+                    start_agl = self._vertical_leg_start_agl.get(leg_key, self.altitude_m)
+                    self.altitude_m = min(
+                        a.coverage_altitude_m,
+                        start_agl + (a.coverage_altitude_m - start_agl)
+                        * (end / path.total_duration_s),
+                    )
                 elif seg.maneuver is M.LAND:
                     self.altitude_m = max(0.0, self.altitude_m - a.spec.v_descent * elapsed)
                 if a.battery.level_j <= 1e-9:
@@ -277,6 +424,7 @@ class CoherentFlight:
                 a._photo_tracker.finish_pass()
             a._leg_idx += 1
             a._t = 0.0
+            self._vertical_leg_start_agl.pop(leg_key, None)
             if a.state in (S.S2_MISSION, S.S_FERRY):
                 a._cov_idx += 1
         return used

@@ -491,7 +491,7 @@ def build_mission_contract(result, *, capacity_j: float,
     cov["plannable_coverage_frac"] = result.coverage_frac
 
     outcome = result.outcome
-    return {
+    contract = {
         "contract_schema": CONTRACT_SCHEMA,
         "per_agent": per_agent,
         "coverage": cov,
@@ -519,6 +519,13 @@ def build_mission_contract(result, *, capacity_j: float,
             "decomposer_class": decomposer_class,
         },
     }
+    # REV-02: protocol records retain the complete mission contract, so this
+    # additive block carries actual re-partition revisions all the way to the
+    # serialized experiment result.  Flag-off/never-triggered runs keep their
+    # existing contract shape.
+    if getattr(result, "repartitions", ()):
+        contract["repartitions"] = [dict(r) for r in result.repartitions]
+    return contract
 
 
 def build_results_mc(mc, *, identity: dict, wall_time_s: float,

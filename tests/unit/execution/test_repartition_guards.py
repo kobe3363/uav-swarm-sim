@@ -68,6 +68,10 @@ class _Agent:
     def retask(self, plan, transit, t, bus):
         self.retasked.append((plan, transit, t))
 
+    def prepare_retask(self, plan, transit, revision):
+        """Test double for the production side-effect-free prepare phase."""
+        return (plan, transit, revision)
+
 
 class _Fleet:
     def __init__(self, agents):
@@ -209,6 +213,9 @@ def test_a_repeated_trigger_without_progress_produces_one_revision_then_refusals
 
     first = rp.attempt(fleet, 1.0, (("interval", None),))
     assert first.record.applied is True
+    # The no-progress fingerprint advances only after the engine's atomic
+    # commit, never when candidate preparation succeeds by itself.
+    rp.mark_applied(first)
     for k in range(2, 6):
         again = rp.attempt(fleet, float(k), (("interval", None),))
         assert again.record.reason == NO_PROGRESS

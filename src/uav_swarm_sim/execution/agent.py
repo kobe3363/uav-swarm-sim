@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from ..infrastructure.core_types import (
@@ -59,6 +60,17 @@ log = logging.getLogger(__name__)
 class Recorder(Protocol):
     def open(self, agent_id: int, state: AgentState, t: float) -> None: ...
     def close(self, agent_id: int, t: float, reason: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class PreparedRetask:
+    """A fully validated next-plan revision, still detached from live state."""
+
+    revision: int
+    plan: CoveragePlan
+    transit: Path
+    coverage_legs: tuple[Path, ...]
+    coherent_transit_legs: tuple[Path, ...] | None
 
 
 class Agent:
@@ -125,6 +137,9 @@ class Agent:
         self._cov_idx: int = 0
         self._transit: Path | None = None
         self._leg_mode: str = "boustrophedon"
+        # REV-02: initial assignments are revision 0.  A re-partition only
+        # advances this value after every prospective route has been accepted.
+        self.plan_revision: int = 0
 
         # EM-01 Stage 4 (safety.stall_skip): strips forfeited after a stall
         # (original leg indices, even = strip) + the leg-count deficit the
@@ -213,7 +228,8 @@ class Agent:
             except RouteUnavailable as exc:
                 self._coherent.reject(exc)
 
-    def _build_coverage_legs(self, waypoints: list[Waypoint]) -> list[Path]:
+    def _build_coverage_legs(self, waypoints: list[Waypoint],
+                             plan: CoveragePlan | None = None) -> list[Path]:
         legs: list[Path] = []
         if getattr(self, "_leg_mode", "boustrophedon") == "tour":
             # target-visit: cruise straight between consecutive target points
@@ -227,7 +243,7 @@ class Agent:
         # legs so the executed connector matches the analytical E_cover exactly;
         # otherwise fall back to the straight motion.plan(a, b, TURN) chord
         # (byte-identical to the pre-Step-2 behaviour).
-        routed = getattr(self.plan, "connectors", None) or []
+        routed = getattr(plan if plan is not None else self.plan, "connectors", None) or []
         for i in range(len(waypoints) - 1):
             a, b = waypoints[i].pose, waypoints[i + 1].pose
             if i % 2 == 0:
@@ -297,7 +313,81 @@ class Agent:
         AgentState.S_SWAP,
     })
 
-    def retask(self, plan: CoveragePlan, transit: Path, t: float, bus) -> None:
+    def prepare_retask(self, plan: CoveragePlan, transit: Path, revision: int) -> PreparedRetask:
+        """Validate a prospective revision without mutating flight state."""
+        if self._retired:
+            raise ValueError(
+                f"agent {self.id} retired (S_LANDED) and can never be re-tasked"
+            )
+        if self.state not in self.RETASKABLE:
+            raise ValueError(
+                f"agent {self.id} cannot be re-tasked from {self.state.value}"
+            )
+        if revision <= self.plan_revision:
+            raise ValueError(
+                f"agent {self.id} received stale plan revision {revision} "
+                f"(current {self.plan_revision})"
+            )
+        coverage_legs = tuple(self._build_coverage_legs(plan.waypoints, plan))
+        coherent_legs = None
+        if self._coherent is not None:
+            coherent_legs = tuple(self._coherent.validate_retask(
+                transit, coverage_legs, revision,
+            ))
+        return PreparedRetask(revision, plan, transit, coverage_legs, coherent_legs)
+
+    def commit_retask(self, prepared: PreparedRetask, t: float, bus) -> None:
+        """Apply a ``prepare_retask`` result.  This method performs no planning."""
+        if prepared.revision <= self.plan_revision:
+            raise ValueError(
+                f"agent {self.id} received stale plan revision {prepared.revision} "
+                f"(current {self.plan_revision})"
+            )
+        if self.state not in self.RETASKABLE or self._retired:
+            raise ValueError(f"agent {self.id} became ineligible before retask commit")
+        source = self.state
+        if self._photo_tracker is not None:
+            self._photo_tracker.finish_pass()
+        self.plan = prepared.plan
+        self.plan_revision = prepared.revision
+        self._leg_mode = getattr(prepared.plan, "leg_mode", "boustrophedon")
+        self._cov_legs = list(prepared.coverage_legs)
+        self._cov_idx = 0
+        self._skipped_cov = ()
+        self._cov_frac_deficit = 0
+        self._coverage_complete = False
+        self._transit = prepared.transit
+        self._zone_complete_published = False
+        self._repartition_hold = False
+        if self._coherent is not None:
+            self._coherent.accept_plan_revision(prepared.revision,
+                                                prepared.coherent_transit_legs or ())
+
+        # These ground states launch through ``launch_legs`` after their own
+        # lifecycle transition.  A staged airborne connector is therefore not
+        # executable and must not leak into a later avoidance return.
+        if (self._coherent is not None
+                and source in (AgentState.S_SWAP, AgentState.S0_IDLE)):
+            self._coherent.discard_pending_retask_legs()
+
+        if source in (AgentState.S2_MISSION, AgentState.S_FERRY):
+            self._apply_transition(
+                Transition(source, AgentState.S1_TRANSIT, "retask"), t, bus
+            )
+        elif source is AgentState.S1_TRANSIT:
+            self._set_legs(self._coherent.retask_transit_legs(source)
+                           if self._coherent is not None else [prepared.transit])
+            self._rearm_current_sortie()
+        elif source is AgentState.S_OBS:
+            self._obs_return = AgentState.S1_TRANSIT
+            self._obs_legs_saved = None
+        elif source is AgentState.S_SWAP:
+            pass
+        else:
+            self._launch_ready = True
+
+    def retask(self, plan: CoveragePlan, transit: Path, t: float, bus,
+               *, revision: int | None = None) -> None:
         """EXP-08: hand a live agent a different zone, as a RECORDED transition.
 
         This is the re-partition path's replacement for ``adopt_plan``, which is
@@ -322,65 +412,17 @@ class Agent:
         touched: a re-partition changes what a drone will do next, never what it
         has already done.
         """
-        if self._retired:
-            raise ValueError(
-                f"agent {self.id} retired (S_LANDED) and can never be re-tasked"
-            )
-        if self.state not in self.RETASKABLE:
-            raise ValueError(
-                f"agent {self.id} cannot be re-tasked from {self.state.value}"
-            )
-        if self._photo_tracker is not None:
-            self._photo_tracker.finish_pass()
-        source = self.state
-        self.plan = plan
-        self._leg_mode = getattr(plan, "leg_mode", "boustrophedon")
-        self._cov_legs = self._build_coverage_legs(plan.waypoints)
-        self._cov_idx = 0
-        # Skips belong to the plan they were observed on; a re-task starts a
-        # fresh plan (the same rule adopt_plan applies).
-        self._skipped_cov = ()
-        self._cov_frac_deficit = 0
-        self._coverage_complete = False
-        self._transit = transit
-        self._zone_complete_published = False
-        self._repartition_hold = False
-
-        if source in (AgentState.S2_MISSION, AgentState.S_FERRY):
-            # The two edges EXP-08 adds to the designed FSM. Recorded, so the
-            # transit that follows becomes its own sojourn.
-            self._apply_transition(
-                Transition(source, AgentState.S1_TRANSIT, "retask"), t, bus
-            )
-        elif source is AgentState.S1_TRANSIT:
-            # Already transiting: the SORTIE is unchanged, only its destination
-            # moved. No self-loop edge is recorded -- closing and reopening a
-            # sojourn in the same state would invent a transition that did not
-            # happen -- so the arm is amended in place instead of appended.
-            self._set_legs([transit])
-            self._rearm_current_sortie()
-        elif source is AgentState.S_OBS:
-            # Committed to an avoidance micro-plan: let it finish, then leave
-            # through the existing S_OBS -> S1_TRANSIT edge, which picks up the
-            # new transit and arms there. The saved pre-avoidance leg queue is
-            # dropped -- it belongs to a plan this agent no longer has.
-            self._obs_return = AgentState.S1_TRANSIT
-            self._obs_legs_saved = None
-        elif source is AgentState.S_SWAP:
-            # Grounded awaiting a pack. ``_resume_transit`` rebuilds the resume
-            # leg from the NEW plan when SWAP_DONE arrives, and the S0 -> S1
-            # transition arms there; the transit passed here is deliberately
-            # unused, exactly as it is for a swapping agent today.
-            pass
-        else:                                   # S0_IDLE
-            self._launch_ready = True
+        next_revision = self.plan_revision + 1 if revision is None else revision
+        self.commit_retask(self.prepare_retask(plan, transit, next_revision), t, bus)
 
     def view(self) -> DroneStateView:
         # EXP-08: the airborne bit lets a re-partition's energy budget skip the
         # takeoff deduction for a drone that is already flying. At t=0 every
         # agent is S0_IDLE, so this is False and the view is unchanged.
+        agl = (self._coherent.altitude_m if self._coherent is not None
+               else (self.coverage_altitude_m if self.state.is_airborne else 0.0))
         return DroneStateView(self.id, self.battery.frac, self.pose, self.layer,
-                              self.state.is_airborne)
+                              self.state.is_airborne, self.base, agl)
 
     # ------------------------------------------------------------------ #
     # external signals                                                   #
@@ -464,29 +506,29 @@ class Agent:
         # was its cost); the check below may open a fresh one.
         self._repartition_hold = False
 
-        # EXP-08: this drone has just flown the last leg of its zone. Announce
-        # it and hold the automatic return for exactly one tick, so the engine
-        # can re-partition the work that is still uncovered ELSEWHERE and hand
-        # this drone a new zone instead of sending it home with the mission
-        # unfinished. An empty plan announces nothing (D-8: an empty plan credits
-        # no work, and re-announcing one would spin).
-        if (self._repartition_on
-                and not self._zone_complete_published
-                and self._cov_legs
-                and self.state in (AgentState.S2_MISSION, AgentState.S_FERRY)
-                and self._phase_done()):
-            self._zone_complete_published = True
-            self._repartition_hold = True
-            bus.publish(Event(EventType.ZONE_COMPLETE, t, {
-                "agent_id": self.id,
-                "cov_idx": self._cov_idx,
-                "n_cov_legs": len(self._cov_legs),
-            }))
+        self._announce_zone_complete(t, bus)
 
         ctx = self._make_ctx()
         tr = self.sm.step(ctx)
         if tr is not None:
             self._apply_transition(tr, t, bus)
+
+    def _announce_zone_complete(self, t: float, bus) -> bool:
+        """Publish the one-shot re-task hold from either executor path."""
+        if not (self._repartition_on
+                and not self._zone_complete_published
+                and self._cov_legs
+                and self.state in (AgentState.S2_MISSION, AgentState.S_FERRY)
+                and self._phase_done()):
+            return False
+        self._zone_complete_published = True
+        self._repartition_hold = True
+        bus.publish(Event(EventType.ZONE_COMPLETE, t, {
+            "agent_id": self.id,
+            "cov_idx": self._cov_idx,
+            "n_cov_legs": len(self._cov_legs),
+        }))
+        return True
 
     def _tick_dynamics(self, dt: float, t: float) -> None:
         if self._rth_blocked and self.state.is_airborne:
@@ -636,8 +678,11 @@ class Agent:
         dst = tr.dst
         if dst is AgentState.S1_TRANSIT:
             self._launch_ready = False
-            self._set_legs(self._coherent.launch_legs() if self._coherent is not None
-                           else [self._transit] if self._transit is not None else [])
+            self._set_legs(
+                self._coherent.transition_legs(tr.src)
+                if self._coherent is not None
+                else [self._transit] if self._transit is not None else []
+            )
             # EM-01 Stage 2: this branch is every sortie start (initial launch
             # AND post-swap relaunch both come through S0 -> S1). No-op flag-off.
             self._arm_sortie()
