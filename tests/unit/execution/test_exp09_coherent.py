@@ -360,6 +360,31 @@ def test_fixed_wing_remaining_climb_connects_to_retask_transit(kit):
     assert a._coherent.altitude_m == pytest.approx(100.0)
 
 
+def test_interrupted_fixed_wing_climb_retains_its_original_agl(kit):
+    """An S_OBS detour cannot overwrite the start AGL of a suspended climb."""
+    a = work_agent(kit, calculator(kit))
+    a.spec = replace(a.spec, platform=PlatformType.FIXED_WING,
+                     climb_angle_rad=math.radians(12), ground_roll_energy_j=800.0)
+    a._coherent.altitude_m = 45.0
+    a.pose = Pose(137.0, 500.0, 0.0)
+    origin = a._coherent.retask_origin()
+    target = Pose(origin.x + 100.0, origin.y, origin.heading)
+    plan = CoveragePlan(0, [Waypoint(target, M.COVERAGE, 10),
+                            Waypoint(Pose(target.x + 100.0, target.y, target.heading),
+                                     M.COVERAGE, 10)], 0, 0)
+    prepared = a.prepare_retask(plan, kit.motion.plan(origin, target, M.CRUISE), revision=1)
+    a.commit_retask(prepared, 0.0, SimpleNamespace(publish=lambda event: None))
+
+    climb = a._legs[0]
+    a._coherent.tick(climb.total_duration_s * 0.5, 0.0)
+    saved = (a._legs, a._leg_idx, a._t)
+    a._set_legs([kit.motion.plan(a.pose, Pose(a.pose.x + 10, a.pose.y, a.pose.heading), M.CRUISE)])
+    a._coherent.tick(0.1, 0.0)  # replacement avoidance leg gets its own AGL key
+    a._legs, a._leg_idx, a._t = saved
+    a._coherent.tick(climb.total_duration_s * 0.25, 0.0)
+    assert a._coherent.altitude_m == pytest.approx(45.0 + 55.0 * 0.75)
+
+
 def test_swap_retask_validates_post_swap_capacity_without_mutating_battery(kit):
     a = work_agent(kit, calculator(kit))
     a.state = S.S_SWAP

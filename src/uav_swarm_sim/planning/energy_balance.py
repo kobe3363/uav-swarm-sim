@@ -30,7 +30,7 @@ from shapely.ops import nearest_points, unary_union
 
 from ..infrastructure.config import Config, CoverageConfig
 from ..infrastructure.core_types import Path, Pose, Zone
-from ..infrastructure.enums import ManeuverType
+from ..infrastructure.enums import ManeuverType, PlatformType
 from ..physical_model.drone_specs import PlatformSpec
 from ..physical_model.energy_model import EnergyModel
 from ..physical_model.motion_model import MotionModel
@@ -191,7 +191,8 @@ def _budget(ctx, drone, altitude_m, e_ferry_j, e_rth_j) -> tuple[float, float, f
         takeoff = (0.0 if climb_m <= 0.0 else
                    takeoff_profile(ctx.spec, ctx.em, climb_m,
                                    at=drone.pose).energy_j
-                   - ctx.spec.ground_roll_energy_j)
+                   - (ctx.spec.ground_roll_energy_j
+                      if ctx.spec.platform is PlatformType.FIXED_WING else 0.0))
     else:
         takeoff = takeoff_profile(ctx.spec, ctx.em, climb_m, at=drone.pose).energy_j
     remaining = drone.level_j - takeoff

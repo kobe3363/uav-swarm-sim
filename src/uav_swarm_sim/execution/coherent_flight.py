@@ -25,7 +25,10 @@ class CoherentFlight:
         self.assignment_error: str | None = None
         self.plan_revision = 0
         self._pending_retask_legs: tuple = ()
-        self._vertical_leg_start_agl: float | None = None
+        # A climb can be suspended by S_OBS and later resumed at non-zero path
+        # time.  This is keyed by path identity, rather than one global value,
+        # so the avoidance leg cannot overwrite the interrupted climb's AGL.
+        self._vertical_leg_start_agl: dict[int, float] = {}
 
     def energy(self, path, start=0.0, *, camera=False):
         a = self.a
@@ -117,6 +120,7 @@ class CoherentFlight:
         self.assignment_error = None
         self.rejected_reason = None
         self.holding = False
+        self._vertical_leg_start_agl.clear()
 
     def discard_pending_retask_legs(self) -> None:
         """Drop an airborne connector that cannot apply after ground lifecycle.
@@ -350,8 +354,9 @@ class CoherentFlight:
         if a._leg_idx >= len(a._legs):
             return 0.0
         path = a._legs[a._leg_idx]
+        leg_key = id(path)
         if a._t <= 1e-12:
-            self._vertical_leg_start_agl = self.altitude_m
+            self._vertical_leg_start_agl.setdefault(leg_key, self.altitude_m)
         end = min(a._t + dt, path.total_duration_s)
         used = end - a._t
         cursor = 0.0
@@ -398,8 +403,7 @@ class CoherentFlight:
                     # multirotor uses TAKEOFF.  Interpolate from this leg's
                     # authoritative starting AGL so a partial re-task climb
                     # reaches exactly coverage altitude without double-counting.
-                    start_agl = (self._vertical_leg_start_agl
-                                 if self._vertical_leg_start_agl is not None else self.altitude_m)
+                    start_agl = self._vertical_leg_start_agl.get(leg_key, self.altitude_m)
                     self.altitude_m = min(
                         a.coverage_altitude_m,
                         start_agl + (a.coverage_altitude_m - start_agl)
@@ -420,7 +424,7 @@ class CoherentFlight:
                 a._photo_tracker.finish_pass()
             a._leg_idx += 1
             a._t = 0.0
-            self._vertical_leg_start_agl = None
+            self._vertical_leg_start_agl.pop(leg_key, None)
             if a.state in (S.S2_MISSION, S.S_FERRY):
                 a._cov_idx += 1
         return used
