@@ -407,9 +407,13 @@ class SimulationEngine:
                 self.env.plannable_space,
                 cfg.coverage.raster_cell_m,
             )
+        # At t=0 no agent has a live airborne state yet: the planner's
+        # per-drone return callback falls back to deploy_poses.  Keep this
+        # legacy constructor shape so instrumentation that captures the
+        # original four-field planning view remains compatible; live Agent.view
+        # supplies authoritative base and AGL for every later repartition.
         init_views = [
-            DroneStateView(i, self.initial_soc_by_drone[i], self.deploy_poses[i],
-                           base=self.deploy_poses[i], agl_m=0.0)
+            DroneStateView(i, self.initial_soc_by_drone[i], self.deploy_poses[i])
             for i in range(cfg.fleet.n_drones)
         ]
         self.assignment = {}          # drone_id -> list[(x, y)] (target mode only)
