@@ -743,7 +743,14 @@ class EnergyWeightPolicy:
     reaches it is reported as ``clamped``.
     """
     name = "energy_slack"
-    requires_zone_geometry = True
+
+    @property
+    def requires_zone_geometry(self) -> bool:
+        """Whether this policy will use routed physical zone entries."""
+        return bool(
+            self._ctx.env is not None
+            and self._ctx.coverage.transit_free_space
+        )
 
     def __init__(self, ctx, states, altitude_m: float, settings: PartitionConfig,
                  capacity_j: float, fallback_poses) -> None:

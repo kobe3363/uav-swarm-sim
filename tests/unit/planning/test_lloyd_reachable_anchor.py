@@ -4,10 +4,13 @@ from __future__ import annotations
 from dataclasses import replace
 import math
 
+import numpy as np
 import pytest
 from shapely.geometry import MultiPolygon, Point, box
 
 import uav_swarm_sim.planning.energy_balance as balance
+import uav_swarm_sim.planning.lloyd_partition as lloyd
+from uav_swarm_sim.infrastructure.config import PartitionConfig
 from uav_swarm_sim.infrastructure.core_types import Pose
 from uav_swarm_sim.planning.energy_balance import (
     EnergyBalanceStatus,
@@ -15,6 +18,11 @@ from uav_swarm_sim.planning.energy_balance import (
     resolve_reachable_zone_entry,
 )
 from uav_swarm_sim.planning.environment_map import EnvironmentMap
+from uav_swarm_sim.planning.lloyd_partition import (
+    EligibleCells,
+    EnergyWeightPolicy,
+    LloydPartitioner,
+)
 from uav_swarm_sim.planning.obstacle_generator import Obstacle
 from uav_swarm_sim.planning.visibility_router import (
     RouteUnavailable,
@@ -168,3 +176,56 @@ def test_geometry_area_mismatch_is_rejected_instead_of_losing_work(energy_case):
             fallback_pose=energy_case.drone.pose,
             work_geometry=work,
         )
+
+
+def test_energy_policy_skips_zone_unions_when_routing_cannot_use_them(
+    energy_case, monkeypatch,
+):
+    settings = PartitionConfig(
+        init_sites="deploy_poses", max_iterations=1, site_tolerance_m=0.0,
+    )
+
+    def policy(context):
+        return EnergyWeightPolicy(
+            context,
+            [energy_case.drone],
+            100.0,
+            settings,
+            energy_case.spec.battery_capacity_j,
+            [energy_case.drone.pose],
+        )
+
+    without_environment = policy(energy_case.ctx)
+    assert without_environment.requires_zone_geometry is False
+
+    env = EnvironmentMap(box(0.0, 0.0, 100.0, 100.0), [], buffer_m=0.0)
+    disabled_context = replace(
+        energy_case.ctx,
+        env=env,
+        coverage=replace(energy_case.ctx.coverage, transit_free_space=False),
+    )
+    assert policy(disabled_context).requires_zone_geometry is False
+    assert policy(_routing_context(energy_case, env)).requires_zone_geometry is True
+
+    geometries = np.empty(1, dtype=object)
+    geometries[0] = box(10.0, 10.0, 20.0, 20.0)
+    cells = EligibleCells(
+        geometries=geometries,
+        centroids_xy=np.array([[15.0, 15.0]]),
+        areas_m2=np.array([100.0]),
+        component=np.array([0], dtype=np.int32),
+        n_rth_unreachable=0,
+        n_no_eligible_owner=0,
+    )
+
+    def unexpected_union(*_args, **_kwargs):
+        pytest.fail("disabled routing must not aggregate zone geometry")
+
+    monkeypatch.setattr(lloyd, "aggregate_geometries", unexpected_union)
+    labels, *_ = LloydPartitioner(settings, without_environment).run(
+        cells,
+        np.array([[energy_case.drone.pose.x, energy_case.drone.pose.y]]),
+        np.array([0], dtype=np.int32),
+        energy_case.drone.pose,
+    )
+    assert labels.tolist() == [0]
