@@ -566,7 +566,7 @@ class SimulationEngine:
             self.energy_balance_t0: dict[int, dict[str, ZoneEnergyEstimate]] = {}
             # Return queries increment diagnostics; t=0 estimates must not
             # change the execution's map-hit/fallback observations.
-            map_counts = rth.n_map_hits, rth.n_map_fallbacks
+            map_counts = rth.n_map_hits, rth.n_map_fallbacks, rth.n_route_fallbacks
             try:
                 for agent in agents:
                     zone = self.partition.zones.get(agent.id)
@@ -595,7 +595,7 @@ class SimulationEngine:
                             )
                     self.energy_balance_t0[agent.id] = estimates
             finally:
-                rth.n_map_hits, rth.n_map_fallbacks = map_counts
+                rth.n_map_hits, rth.n_map_fallbacks, rth.n_route_fallbacks = map_counts
 
         self.fleet = Fleet(agents)
         self.formation.register_departure(agents)
@@ -610,6 +610,7 @@ class SimulationEngine:
         self.repartitioner = None
         self._repartition_records: list = []
         self._repartition_causes: list = []
+        self._repartition_trigger_times: list[float] = []
         self._repartition_period_steps = None
         if self._repartition_on and self._mission_type is not MissionType.TARGET_VISIT:
             interval = cfg.mission.repartition_interval_s
@@ -712,18 +713,7 @@ class SimulationEngine:
                 if abs(t - at) < dt / 2:
                     self.bus.publish(Event(EventType.NEW_TASK, t, {"polygon": poly}))
             self._route_events(t)
-            if self.repartitioner is not None:
-                # EXP-08: ONE revision per tick, after the whole event drain, so
-                # several causes landing on the same tick produce one partition
-                # rather than a chain of meaningless intermediates. The periodic
-                # cause is appended last and is evaluated on integer step counts
-                # -- never on an accumulated float.
-                if (self._repartition_period_steps is not None and step > 0
-                        and step % self._repartition_period_steps == 0):
-                    self._repartition_causes.append(("interval", None))
-                if self._repartition_causes:
-                    self._run_repartition(t, tuple(self._repartition_causes))
-                self._repartition_causes = []
+            self._drain_repartition(t, step)
             # log every agent's (x, y, state) after the tick settles, for 2D replay
             for a in self.fleet.agents.values():
                 self.history.record_position(a.id, t, a.pose.x, a.pose.y, a.state)
@@ -876,7 +866,7 @@ class SimulationEngine:
                 if self.repartitioner is not None:
                     # The kill above has already left the fleet, so the executor
                     # set this cause is collected for is the surviving one.
-                    self._repartition_causes.append(("failure", aid))
+                    self._queue_repartition("failure", aid, e.t)
                 else:
                     self._redistribute(e, t)
             elif e.type is EventType.NEW_TASK:
@@ -925,15 +915,31 @@ class SimulationEngine:
                 # reset every survivor's progress to redistribute an unchanged
                 # pool.
                 if self.repartitioner is not None and released:
-                    self._repartition_causes.append(
-                        ("uav_retired", e.payload.get("agent_id")))
+                    self._queue_repartition("uav_retired", e.payload.get("agent_id"), e.t)
             elif e.type is EventType.ZONE_COMPLETE:
                 # EXP-08: a drone flew the last leg of its zone and the FSM is
                 # holding its return for this one tick. If the revision below
                 # gives it cells it is re-tasked; if not, it returns next tick.
-                self._repartition_causes.append(("zone_complete",
-                                                 e.payload.get("agent_id")))
+                self._queue_repartition("zone_complete", e.payload.get("agent_id"), e.t)
             # OBSTACLE_THREAT is informational (signal already set by the monitor)
+
+    def _queue_repartition(self, reason: str, agent_id: int | None, at: float) -> None:
+        """Queue one coalesced trigger while retaining its physical timestamp."""
+        self._repartition_causes.append((reason, agent_id))
+        self._repartition_trigger_times.append(float(at))
+
+    def _drain_repartition(self, t: float, step: int) -> None:
+        """Apply at most one revision, dated at the latest physical trigger."""
+        if self.repartitioner is None:
+            return
+        if (self._repartition_period_steps is not None and step > 0
+                and step % self._repartition_period_steps == 0):
+            self._queue_repartition("interval", None, t)
+        if self._repartition_causes:
+            effective_t = max(self._repartition_trigger_times, default=t)
+            self._run_repartition(effective_t, tuple(self._repartition_causes))
+        self._repartition_causes = []
+        self._repartition_trigger_times = []
 
     def _redistribute(self, e: Event, t: float) -> None:
         if self.repartitioner is not None:

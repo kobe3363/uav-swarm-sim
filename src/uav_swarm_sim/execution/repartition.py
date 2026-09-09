@@ -318,7 +318,10 @@ class Repartitioner:
                                      altitude_m=self._altitude_m)
                 plan_time += time.perf_counter() - sweep_t0
                 entry = self._entry_pose(plan, zone.entry_pose)
-                transit = self._plan_transit(agent.pose, entry)
+                origin = (agent._coherent.retask_origin()
+                          if getattr(agent, "_coherent", None) is not None
+                          else agent.pose)
+                transit = self._plan_transit(origin, entry)
                 # Validation includes coherent continuity, every productive
                 # endpoint's individual RTH, and the immediate energy bundle.
                 # It is deliberately complete before any agent is touched.

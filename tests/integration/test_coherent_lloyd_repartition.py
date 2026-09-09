@@ -8,7 +8,8 @@ from shapely.geometry import box, mapping
 
 from uav_swarm_sim.execution.agent import Agent
 from uav_swarm_sim.infrastructure.config import load_config
-from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo
+from uav_swarm_sim.infrastructure.core_types import Event
+from uav_swarm_sim.infrastructure.enums import AgentState, DecompositionAlgo, EventType
 from uav_swarm_sim.infrastructure.rng import RngFactory
 from uav_swarm_sim.infrastructure.simulation_engine import SimulationEngine
 from uav_swarm_sim.metrics.run_output import build_mission_contract
@@ -135,3 +136,14 @@ def test_infeasible_candidate_is_rejected_before_any_coherent_agent_changes(area
                    a.battery.level_j, a.energy_consumed_j)
              for aid, a in engine.fleet.agents.items()}
     assert after == before
+
+
+def test_subtick_zone_complete_uses_physical_completion_time_for_revision(area):
+    engine = _engine(area, DecompositionAlgo.LLOYD_CVT)
+    engine._build()
+    observed = []
+    engine._run_repartition = lambda t, causes: observed.append((t, causes))
+    engine.bus.publish(Event(EventType.ZONE_COMPLETE, 7.25, {"agent_id": 0}))
+    engine._route_events(7.0)
+    engine._drain_repartition(7.0, 1)
+    assert observed == [(7.25, (("zone_complete", 0),))]

@@ -25,6 +25,7 @@ class CoherentFlight:
         self.assignment_error: str | None = None
         self.plan_revision = 0
         self._pending_retask_legs: tuple = ()
+        self._vertical_leg_start_agl: float | None = None
 
     def energy(self, path, start=0.0, *, camera=False):
         a = self.a
@@ -63,26 +64,35 @@ class CoherentFlight:
     def validate_assignment(self):
         self._validate_paths(self.a._transit, self.a._cov_legs)
 
+    def _retask_vertical_legs(self):
+        """Unflown vertical phase for a prospective plan, without mutation."""
+        a = self.a
+        if a.state.is_airborne:
+            remaining_altitude = max(0.0, a.coverage_altitude_m - self.altitude_m)
+            # ``as_path`` contains only the airborne CLIMB segment.  The
+            # ground-roll term lives in VerticalProfile.energy and is therefore
+            # never re-executed for this already-airborne continuation.
+            return ([takeoff_profile(a.spec, a.em, remaining_altitude, at=a.pose).as_path()]
+                    if remaining_altitude > 1e-8 else [])
+        return [takeoff_profile(
+                a.spec, a.em, a.coverage_altitude_m, at=a.pose,
+            ).as_path()]
+
+    def retask_origin(self):
+        """Where the new horizontal transit starts after any unflown climb."""
+        legs = self._retask_vertical_legs()
+        return (legs[-1].end_pose if legs and legs[-1].end_pose is not None
+                else self.a.pose)
+
     def validate_retask(self, transit, coverage_legs, revision: int):
         """Return executable incoming legs or reject the candidate untouched."""
         a = self.a
         if revision <= self.plan_revision:
             raise RouteUnavailable("stale_plan_revision")
-        remaining_takeoff = []
-        if a.state.is_airborne:
-            remaining_altitude = max(0.0, a.coverage_altitude_m - self.altitude_m)
-            if remaining_altitude > 1e-8:
-                remaining_takeoff = [takeoff_profile(
-                    a.spec, a.em, remaining_altitude, at=a.pose,
-                ).as_path()]
-        else:
-            remaining_takeoff = [takeoff_profile(
-                a.spec, a.em, a.coverage_altitude_m, at=a.pose,
-            ).as_path()]
-        incoming = [*remaining_takeoff, transit]
-        # The vertical profile has the same XY/heading at both endpoints, so the
-        # transit still begins at the real pose, without a synthetic teleport.
-        self._validate_paths(transit, coverage_legs, start_pose=a.pose)
+        vertical = self._retask_vertical_legs()
+        incoming = [*vertical, transit]
+        # A fixed-wing airborne climb moves horizontally, unlike a multirotor.
+        self._validate_paths(transit, coverage_legs, start_pose=self.retask_origin())
         first = coverage_legs[0] if coverage_legs else Path()
         endpoint = first.end_pose or transit.end_pose or a.pose
         required = (
@@ -91,7 +101,11 @@ class CoherentFlight:
             + a.rth.return_energy(endpoint, altitude_m=a.coverage_altitude_m, base=a.base)
             + a.rth.reserve_j
         )
-        if a.battery.level_j < required:
+        # S_SWAP cannot execute until the existing lifecycle installs a full
+        # pack. Validate that post-swap capacity without mutating live state.
+        available = (a.battery.capacity_j if a.state is S.S_SWAP
+                     else a.battery.level_j)
+        if available < required:
             raise RouteUnavailable("retask_energy_budget")
         return incoming
 
@@ -306,6 +320,8 @@ class CoherentFlight:
             ctx.landed_at_base = False
         transition = a.sm.step(ctx)
         if transition is not None:
+            if transition.dst in (S.S3_RTH, S.S_OBS):
+                a._repartition_hold = False
             a._apply_transition(transition, t + (used or 0), bus)
         return used
 
@@ -319,6 +335,8 @@ class CoherentFlight:
         if a._leg_idx >= len(a._legs):
             return 0.0
         path = a._legs[a._leg_idx]
+        if a._t <= 1e-12:
+            self._vertical_leg_start_agl = self.altitude_m
         end = min(a._t + dt, path.total_duration_s)
         used = end - a._t
         cursor = 0.0
@@ -360,8 +378,18 @@ class CoherentFlight:
                     a._photo_tracker.advance(old, new, at, elapsed, a._cov_idx)
                     if a._coverage_observer is not None:
                         a._coverage_observer(old, new)
-                if seg.maneuver is M.TAKEOFF:
-                    self.altitude_m = min(a.coverage_altitude_m, self.altitude_m + a.spec.v_climb * elapsed)
+                if seg.maneuver in (M.TAKEOFF, M.CLIMB):
+                    # Fixed-wing climb-out is a sloped CLIMB path, whereas a
+                    # multirotor uses TAKEOFF.  Interpolate from this leg's
+                    # authoritative starting AGL so a partial re-task climb
+                    # reaches exactly coverage altitude without double-counting.
+                    start_agl = (self._vertical_leg_start_agl
+                                 if self._vertical_leg_start_agl is not None else self.altitude_m)
+                    self.altitude_m = min(
+                        a.coverage_altitude_m,
+                        start_agl + (a.coverage_altitude_m - start_agl)
+                        * (end / path.total_duration_s),
+                    )
                 elif seg.maneuver is M.LAND:
                     self.altitude_m = max(0.0, self.altitude_m - a.spec.v_descent * elapsed)
                 if a.battery.level_j <= 1e-9:
@@ -377,6 +405,7 @@ class CoherentFlight:
                 a._photo_tracker.finish_pass()
             a._leg_idx += 1
             a._t = 0.0
+            self._vertical_leg_start_agl = None
             if a.state in (S.S2_MISSION, S.S_FERRY):
                 a._cov_idx += 1
         return used

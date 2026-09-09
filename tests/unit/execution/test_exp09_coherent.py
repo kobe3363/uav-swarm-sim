@@ -11,7 +11,9 @@ from uav_swarm_sim.execution.rth_calculator import RthCalculator
 from uav_swarm_sim.execution.state_machine import AgentContext, StateMachine, Transition
 from uav_swarm_sim.infrastructure.config import load_config, ConfigError
 from uav_swarm_sim.infrastructure.core_types import Path, PathSegment, Pose, CoveragePlan, Waypoint
-from uav_swarm_sim.infrastructure.enums import AgentState as S, BatteryZone, ManeuverType as M
+from uav_swarm_sim.infrastructure.enums import (
+    AgentState as S, BatteryZone, ManeuverType as M, PlatformType,
+)
 from uav_swarm_sim.physical_model.battery import Battery
 from uav_swarm_sim.physical_model.drone_specs import build_spec
 from uav_swarm_sim.physical_model.energy_model import EnergyModel
@@ -333,6 +335,41 @@ def test_infeasible_coherent_retask_is_rejected_before_state_changes(kit):
         a.prepare_retask(plan, transit, revision=1)
     assert (a.plan, a.plan_revision, a.pose, a.state, tuple(a._legs),
             a.battery.level_j, a.energy_consumed_j) == before
+
+
+def test_fixed_wing_remaining_climb_connects_to_retask_transit(kit):
+    """A sloped remaining climb hands its actual endpoint to the new transit."""
+    a = work_agent(kit, calculator(kit))
+    a.spec = replace(a.spec, platform=PlatformType.FIXED_WING,
+                     climb_angle_rad=math.radians(12), ground_roll_energy_j=800.0)
+    a._coherent.altitude_m = 45.0
+    a.pose = Pose(137.0, 500.0, 0.0)
+    origin = a._coherent.retask_origin()
+    assert origin.as_xy() != a.pose.as_xy()
+    target = Pose(origin.x + 100.0, origin.y, origin.heading)
+    plan = CoveragePlan(0, [Waypoint(target, M.COVERAGE, 10),
+                            Waypoint(Pose(target.x + 100.0, target.y, target.heading),
+                                     M.COVERAGE, 10)], 0, 0)
+    prepared = a.prepare_retask(plan, kit.motion.plan(origin, target, M.CRUISE), revision=1)
+    a.commit_retask(prepared, 0.0, SimpleNamespace(publish=lambda event: None))
+    for i in range(200):
+        a.step(0.5, i * 0.5, SimpleNamespace(publish=lambda event: None))
+        if a.state is S.S2_MISSION:
+            break
+    assert a.state is S.S2_MISSION
+    assert a._coherent.altitude_m == pytest.approx(100.0)
+
+
+def test_swap_retask_validates_post_swap_capacity_without_mutating_battery(kit):
+    a = work_agent(kit, calculator(kit))
+    a.state = S.S_SWAP
+    a.battery._level = 1.0
+    target = Pose(300.0, 500.0, 0.0)
+    plan = CoveragePlan(0, [Waypoint(target, M.COVERAGE, 10),
+                            Waypoint(Pose(400.0, 500.0, 0.0), M.COVERAGE, 10)], 0, 0)
+    prepared = a.prepare_retask(plan, kit.motion.plan(a.pose, target, M.CRUISE), revision=1)
+    assert prepared.revision == 1
+    assert a.battery.level_j == 1.0
 
 
 @pytest.mark.parametrize("interval", [0.1, 5.0, 1000.0])
