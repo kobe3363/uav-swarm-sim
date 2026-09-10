@@ -39,7 +39,7 @@ def _tiny_square_geojson(tmp_path, side_m: float = 220.0) -> str:
 @pytest.fixture(scope="module")
 def tiny_mission_metrics(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("per_agent_energy")
-    cfg = load_config("config/default.yaml")
+    cfg = load_config("config/study01_demand.yaml")
     env = dataclasses.replace(cfg.env, geojson_path=_tiny_square_geojson(tmp),
                               obstacle_density_per_km2=0.0)
     fleet = dataclasses.replace(cfg.fleet, n_drones=2)

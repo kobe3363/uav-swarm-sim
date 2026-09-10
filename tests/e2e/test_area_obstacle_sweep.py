@@ -48,7 +48,7 @@ def test_equivalence_cell_matches_shipped_shape_sweep(n):
     every physics field, for every shared (peer) variant. The reference reads
     the ON-DISK S5 shapes dir (the real anchor); fixture parity (unit test)
     guarantees the regenerated 1 km^2 l_shape is the identical polygon."""
-    base = load_config("config/default.yaml")
+    base = load_config("config/study01_demand.yaml")
     n_runs = 2
     ref = run_cell(base, "data/areas/shapes", "l_shape", n, "shipped", n_runs)
     new = run_area_cell(base, "data/areas/shapes/l_shape.geojson", n, n_runs,
@@ -67,7 +67,7 @@ def test_serial_parallel_bitwise_identical(tmp_path):
     area_obstacle_sweep.csv and contrasts.csv. 1<->2 straddles the serial->spawn
     boundary; the grid spans two areas x two densities so completion order
     differs from ordinal order (proving the k-index reassembly is jobs-invariant)."""
-    base = load_config("config/default.yaml")
+    base = load_config("config/study01_demand.yaml")
     shapes, areas, densities, ns, reps = ["square"], [1.0], [0.0, 8.0], [2], 2
     variants = list(_PEER_LABELS)
     shape_paths, descs = _paths_and_descs(base, tmp_path / "shapes", areas, shapes)
@@ -94,7 +94,7 @@ def test_rep_prefix_byte_identical():
     """The first-2 per-replication samples of a reps=4 cell equal the reps=2
     cell's samples (same shape/area/density/n/seed): N is incremental and paired
     seeds are stable across the reps axis. One variant (tgc_basic) suffices."""
-    base = load_config("config/default.yaml")
+    base = load_config("config/study01_demand.yaml")
     path = "data/areas/shapes/square.geojson"
     kw = dict(density=0.0, size_range=None, variant_labels=["tgc_basic"])
     two = run_area_cell(base, path, 2, 2, **kw)["tgc_basic"]
@@ -108,7 +108,7 @@ def test_rep_prefix_byte_identical():
 # smoke: tiny 4-axis grid                                                      #
 # --------------------------------------------------------------------------- #
 def test_smoke_grid_wellformed(tmp_path):
-    base = load_config("config/default.yaml")
+    base = load_config("config/study01_demand.yaml")
     shapes, areas, densities, ns, reps = ["l_shape"], [1.0, 2.0], [0.0], [2], 2
     variants = list(_PEER_LABELS)
     shape_paths, descs = _paths_and_descs(base, tmp_path / "shapes", areas, shapes)

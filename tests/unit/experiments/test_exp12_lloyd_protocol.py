@@ -84,7 +84,7 @@ def test_validate_config_fails_fast_without_raster():
     # default.yaml is mission.type=coverage with no raster override, so validation
     # refuses specifically on the raster branch (matched, so the branch is truly
     # exercised -- a bare SystemExit could also come from another check).
-    cfg = build_cfg("config/default.yaml", 3)
+    cfg = build_cfg("config/study01_demand.yaml", 3)
     with pytest.raises(SystemExit, match=r"coverage\.raster_enabled"):
         validate_config(cfg)
 

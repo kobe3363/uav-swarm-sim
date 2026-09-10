@@ -53,7 +53,7 @@ def cfg_factory(tmp_path):
     }
 
     def make(n=3):
-        cfg = build_cfg("config/default.yaml", n, extra)
+        cfg = build_cfg("config/study01_demand.yaml", n, extra)
         validate_config(cfg)
         return cfg
 

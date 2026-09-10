@@ -223,7 +223,7 @@ wiring (only `FAILURE` and `NEW_TASK` reach the redistributor), not by conventio
 
 ## 6. Configuration
 
-`config/default.yaml` mirrors the typed schema in `infrastructure/config.py` one-to-one.
+`config/study01_demand.yaml` mirrors the typed schema in `infrastructure/config.py` one-to-one.
 **`load_config` reads exactly ONE YAML — there is no merge or inheritance between files.**
 Optional blocks (`telemetry`, `coverage`, `rth.energy_map`, `safety.obstacle_recovery`, …)
 fall back to dataclass defaults when absent. Units in the YAML are Wh and degrees where
@@ -231,9 +231,9 @@ noted; the loader converts to SI (Wh→J, deg→rad) exactly once.
 
 | File | Purpose |
 |---|---|
-| `config/default.yaml` | The reference config; mirrors the schema 1:1 |
-| `config/djimatrice4e.yaml` | DJI Matrice 4E platform (99.5 Wh, swath 132 m, square obstacles) |
-| `config/scenarios/smoke.yaml` | Minimal smoke config (n=3) — fast tests only |
+| `config/study01_demand.yaml` | The reference config; mirrors the schema 1:1 |
+| `config/study01_demand.yaml` | DJI Matrice 4E platform (99.5 Wh, swath 132 m, square obstacles) |
+| `config/study01_demand.yaml` | Minimal smoke config (n=3) — fast tests only |
 | `config/study01_demand.yaml` | **Frozen test fixture** — see its header; not experiment evidence |
 
 > **`config_hash`** is computed from the merged config *after* CLI overrides but *before*
@@ -327,13 +327,13 @@ Five representative entry points:
 
 ```bash
 # One mission, full visual dump + GPX, into a structured run folder (the defense demo)
-python -m uav_swarm_sim.experiments.run_single_mission --config config/default.yaml --name demo --base runs
+python -m uav_swarm_sim.experiments.run_single_mission --config config/study01_demand.yaml --name demo --base runs
 
 # Headline comparison: classic_voronoi vs kmeans vs tgc_basic vs weighted_voronoi
-python -m uav_swarm_sim.experiments.run_decomposition_comparison --config config/default.yaml --base runs
+python -m uav_swarm_sim.experiments.run_decomposition_comparison --config config/study01_demand.yaml --base runs
 
 # Shape sweep: survey shape x fleet size x decomposition variant, paired seeds
-python -m uav_swarm_sim.experiments.run_shape_sweep --config config/default.yaml --mode clean --budget full --jobs 4
+python -m uav_swarm_sim.experiments.run_shape_sweep --config config/study01_demand.yaml --mode clean --budget full --jobs 4
 
 # Scale experiment: area x obstacle count x fleet size
 python -m uav_swarm_sim.experiments.run_area_obstacle_sweep \

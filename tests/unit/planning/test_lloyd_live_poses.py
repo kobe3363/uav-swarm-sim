@@ -85,7 +85,7 @@ def test_the_t0_views_carry_exactly_what_the_decomposer_used_to_freeze(engine_ov
     Heterogeneous initial SoC on purpose -- on a uniform fleet the battery half
     of this check would pass for the wrong reason.
     """
-    cfg = load_config("config/default.yaml", overrides=engine_overrides)
+    cfg = load_config("config/study01_demand.yaml", overrides=engine_overrides)
     eng = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                            algo=DecompositionAlgo.LLOYD_CVT)
     eng._build()
@@ -221,7 +221,7 @@ def energy_case():
     from uav_swarm_sim.planning.energy_balance import build_energy_balance_context
     from uav_swarm_sim.planning.lloyd_partition import LloydEnergyDecomposer
 
-    cfg = load_config("config/default.yaml", {
+    cfg = load_config("config/study01_demand.yaml", {
         "env.coverage_altitude_m": ALT,
         "sensor.sensor_power_w": 15.0,
         "sensor.photogrammetry.enabled": True,

@@ -225,7 +225,7 @@ def _fmt_grid(cells, desc, n_min, n_max, key, fmt="{:.2f}"):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--shapes-dir", default="data/areas/shapes")
     ap.add_argument("--n-min", type=int, default=1)
     ap.add_argument("--n-max", type=int, default=6)

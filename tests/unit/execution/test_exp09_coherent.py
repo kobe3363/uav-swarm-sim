@@ -27,7 +27,7 @@ from uav_swarm_sim.planning.visibility_router import RouteUnavailable, route_tra
 
 @pytest.fixture
 def kit():
-    cfg = load_config("config/djimatrice4e.yaml", overrides={
+    cfg = load_config("config/study01_demand.yaml", overrides={
         "platforms.MULTIROTOR.v_cruise": 10.0,
         "platforms.MULTIROTOR.v_coverage": 10.0,
         "env.coverage_altitude_m": 100.0,
@@ -167,8 +167,8 @@ def test_config_map_not_required_and_invalid_emergency_rejected(kit):
     assert not kit.cfg.rth.energy_map.enabled
     for value in (-0.1, 1, float("nan"), float("inf")):
         with pytest.raises(ConfigError, match="emergency_frac"):
-            load_config("config/djimatrice4e.yaml", overrides={"rth.emergency_frac": value})
-    assert load_config("config/djimatrice4e.yaml").rth.emergency_frac is None
+            load_config("config/study01_demand.yaml", overrides={"rth.emergency_frac": value})
+    assert load_config("config/study01_demand.yaml").rth.emergency_frac is None
 
 
 @pytest.mark.parametrize("router", [route_transit, route_connector])

@@ -155,7 +155,7 @@ def test_enabled_photogrammetry_rejects_fixed_cell_grid_planner(config_path):
 # The tests above only prove "explicit-off == profile-absent" inside a single  #
 # binary; both arms move together if EXP-01 perturbed the legacy path. This    #
 # golden is the cross-commit half: the signature was captured on d6bd6fa, the  #
-# commit immediately preceding EXP-01, using config/default.yaml unchanged and #
+# commit immediately preceding EXP-01, using config/study01_demand.yaml unchanged and #
 # no photogrammetry keys at all -- an explicit-off override is deliberately    #
 # NOT the baseline, because it materialises a PhotogrammetryConfig that does   #
 # not exist pre-change.                                                        #
@@ -174,7 +174,7 @@ _PRE_EXP01_TOTAL_ENERGY_J = 110988.0
 
 
 def _default_cfg(config_path):
-    """config/default.yaml (untouched by EXP-01) shrunk to a tiny mission.
+    """config/study01_demand.yaml (untouched by EXP-01) shrunk to a tiny mission.
 
     Mirrors test_energy_map_stage4._tiny_cfg so the two cross-commit goldens
     describe the same reference run.

@@ -20,7 +20,7 @@ from uav_swarm_sim.infrastructure.enums import BatteryZone, ManeuverType
 from uav_swarm_sim.metrics.efficiency_score import efficiency
 from uav_swarm_sim.metrics.smdp_estimator import STATE_ORDER
 
-CONFIG_PATH = str(Path(__file__).resolve().parents[3] / "config" / "default.yaml")
+CONFIG_PATH = str(Path(__file__).resolve().parents[3] / "config" / "study01_demand.yaml")
 
 
 def _sm() -> StateMachine:

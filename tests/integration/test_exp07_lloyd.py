@@ -50,7 +50,7 @@ def overrides(tmp_path):
 
 
 def _engine(overrides, algo=DecompositionAlgo.LLOYD_CVT, **extra):
-    cfg = load_config("config/default.yaml", overrides=dict(overrides, **extra))
+    cfg = load_config("config/study01_demand.yaml", overrides=dict(overrides, **extra))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0, algo=algo)
     engine._build()
     return cfg, engine
@@ -202,7 +202,7 @@ def test_the_cli_default_algo_cannot_stand_in_for_a_named_one_in_experiment_mode
     from uav_swarm_sim.experiments.run_replay import resolve_algo as replay_resolve
     from uav_swarm_sim.experiments.run_single_mission import resolve_algo
 
-    strict = load_config("config/default.yaml", {"mission.experiment_mode": True})
+    strict = load_config("config/study01_demand.yaml", {"mission.experiment_mode": True})
     for resolver in (resolve_algo, replay_resolve):
         with pytest.raises(SystemExit, match="requires an explicit --algo"):
             resolver(strict, None)
@@ -215,7 +215,7 @@ def test_the_cli_default_is_unchanged_outside_experiment_mode():
     from uav_swarm_sim.experiments.run_replay import resolve_algo as replay_resolve
     from uav_swarm_sim.experiments.run_single_mission import resolve_algo
 
-    relaxed = load_config("config/default.yaml")
+    relaxed = load_config("config/study01_demand.yaml")
     assert relaxed.mission.experiment_mode is False
     for resolver in (resolve_algo, replay_resolve):
         assert resolver(relaxed, None) is DecompositionAlgo.WEIGHTED_VORONOI

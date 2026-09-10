@@ -20,7 +20,7 @@ and aborts the whole batch).
 
 Example:
   python -m uav_swarm_sim.experiments.run_lloyd_protocol \\
-      --config config/default.yaml --n 3 5 8 --reps 30 --out runs
+      --config config/study01_demand.yaml --n 3 5 8 --reps 30 --out runs
 """
 from __future__ import annotations
 
@@ -511,7 +511,7 @@ def _results_dict(records: list[ProtocolRecord], n: int, algo: DecompositionAlgo
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="EXP-12 paired fixed-replication Lloyd protocol runner.")
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--n", type=int, nargs="+", default=[5],
                     help="fleet sizes to run (default 5; 3 and 8 supported)")
     ap.add_argument("--reps", type=int, default=MIN_PRODUCTION_REPS,

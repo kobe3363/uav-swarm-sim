@@ -1,4 +1,4 @@
-"""Validation that config/djimatrice4e.yaml loads to the expected DJI Matrice 4E
+"""Validation that config/study01_demand.yaml loads to the expected DJI Matrice 4E
 (M4E) spec.
 
 All HARDWARE values trace to the DJI M4E spec page (live-verified 2026-08-07):
@@ -15,7 +15,7 @@ from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import ManeuverType, PlatformType
 from uav_swarm_sim.physical_model.drone_specs import build_spec
 
-M4E = "config/djimatrice4e.yaml"
+M4E = "config/study01_demand.yaml"
 
 
 def test_m4e_config_loads_as_multirotor():

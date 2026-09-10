@@ -973,7 +973,7 @@ def _main_demand(args, cfg: Config, prior, coverage_j) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Spare-sizing success-probability study (paired-seed MC).")
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--reps", type=int, default=200,
                     help="paired replications per spare count")
     ap.add_argument("--margin", type=int, default=0,

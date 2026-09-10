@@ -46,7 +46,7 @@ from uav_swarm_sim.planning.launch_site_optimizer import optimize
 from uav_swarm_sim.planning.tgc import build_tgc
 from uav_swarm_sim.metrics.gpx_exporter import build_gpx, write_gpx
 
-CONFIG_PATH = "config/default.yaml"
+CONFIG_PATH = "config/study01_demand.yaml"
 
 
 # =========================================================================== #

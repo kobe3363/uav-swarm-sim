@@ -60,7 +60,7 @@ read from config, none hard-coded); the classification uses the one chosen with
 Usage
 -----
     python -m uav_swarm_sim.experiments.run_regime_calculator \
-        [--config config/default.yaml] [--geojson data/areas/shapes/square.geojson] \
+        [--config config/study01_demand.yaml] [--geojson data/areas/shapes/square.geojson] \
         [--n-drones 5] [--usable-floor terminal|return|rth] \
         [--verify] [--verify-n 1] [--sensor-power-w 0]
 """
@@ -364,7 +364,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Regime calculator: E_cover vs n·B_usable (battery-limited vs fuel-surplus)."
     )
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--geojson", default=None,
                     help="survey polygon (default: env.geojson_path from config)")
     ap.add_argument("--n-drones", type=_positive_int, default=None,

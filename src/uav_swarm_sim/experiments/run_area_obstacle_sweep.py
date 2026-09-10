@@ -45,7 +45,7 @@ This driver REUSES (does not copy) the S5 machinery -- ``metric_vectors``,
 Usage
 -----
     python -m uav_swarm_sim.experiments.run_area_obstacle_sweep \
-        [--config config/default.yaml] [--areas 1,2,4,8,16] \
+        [--config config/study01_demand.yaml] [--areas 1,2,4,8,16] \
         [--densities 0,8] [--obstacle-size-m S] \
         [--n 2,4,6 | --n-range 2 12 2] [--reps 20] \
         [--shapes l_shape] [--variants weighted_voronoi,tgc_basic,...] \
@@ -483,7 +483,7 @@ def _resolve_shapes(spec: str) -> list[str]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="config/djimatrice4e.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--shapes-dir", default="data/areas/shapes",
                     help="(unused for generation -- shapes are regenerated per "
                          "area into the run dir; kept for parity/tools)")

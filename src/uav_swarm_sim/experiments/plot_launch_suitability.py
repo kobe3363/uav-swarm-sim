@@ -233,7 +233,7 @@ def _render(env, base_pose, zone, extent, n_drones, out_path):
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Launch-site suitability map (staging periphery, exact fleet swaps).")
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--out", default="launch_suitability_map.png")
     args = ap.parse_args(argv)
 

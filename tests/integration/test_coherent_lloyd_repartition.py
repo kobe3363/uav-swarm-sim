@@ -45,7 +45,7 @@ def area(tmp_path):
 
 
 def _engine(area, algo):
-    cfg = load_config("config/djimatrice4e.yaml", overrides=_settings(area, algo))
+    cfg = load_config("config/study01_demand.yaml", overrides=_settings(area, algo))
     return SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), algo=algo)
 
 

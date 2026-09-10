@@ -30,7 +30,7 @@ from uav_swarm_sim.infrastructure.config import load_config
 from uav_swarm_sim.infrastructure.enums import AgentState, BatteryZone
 
 S = AgentState
-CONFIG_PATH = "config/default.yaml"
+CONFIG_PATH = "config/study01_demand.yaml"
 
 
 @pytest.fixture

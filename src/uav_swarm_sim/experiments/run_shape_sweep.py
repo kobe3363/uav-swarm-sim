@@ -56,7 +56,7 @@ Design decisions (all THESIS-AFFECTING, agreed with the author)
 Usage
 -----
 python -m uav_swarm_sim.experiments.run_shape_sweep \
-    [--config config/default.yaml] [--shapes-dir data/areas/shapes] \
+    [--config config/study01_demand.yaml] [--shapes-dir data/areas/shapes] \
     [--mode clean|shipped] [--budget quick|full] [--n-runs N] \
     [--shapes square,c_shape,...] [--n 2,3,4,5,6] \
     [--base runs] [--run-name NAME]
@@ -807,7 +807,7 @@ def _run_profile_subset(base: Config, shapes_dir: str, ctx: RunContext) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--shapes-dir", default="data/areas/shapes")
     ap.add_argument("--mode", choices=["clean", "shipped"], default="clean")
     ap.add_argument("--budget", choices=["quick", "full"], default="quick")
