@@ -1,10 +1,18 @@
 # =============================================================================
-# UAV Swarm Reconnaissance Simulation — DJI Matrice 4E (M4E) platform config.
+# UAV Swarm Reconnaissance Simulation — DJI Matrice 4E (M4E) PROTOCOL config.
 #
 # STANDALONE config (the loader reads each file whole; there is NO merge with
-# default.yaml — infrastructure/config.py:load_config). This is a full copy of
-# config/default.yaml with ONLY the M4E-specific platform/sensor/obstacle fields
-# changed; every other block is byte-for-byte default.yaml.
+# default.yaml — infrastructure/config.py:load_config). Omitted keys resolve to
+# their dataclass defaults, so only the M4E platform/sensor/obstacle fields and
+# the protocol scenario flags below diverge from default.yaml.
+#
+# EXP-13: this file is the single M4E mapping-mission protocol consumed by the
+# paired Lloyd runner (experiments/run_lloyd_protocol.py). It activates the
+# photogrammetry camera (geometry AND energy), the EXP-02 coverage raster, the
+# EXP-06 energy balance, the EXP-04 no-swap lifecycle, EXP-09 coherent routed
+# return and EXP-10 safety recording. Author decision (§4.1): coherent routing
+# is ON and EXP-08 reallocation is OFF — the two are mutually exclusive at load
+# time (config.py:1316-1318); see mission.repartition_enabled below.
 #
 # Units: battery in Wh, angles in degrees where noted, else SI. The loader
 # converts Wh -> J and degrees -> radians internally.
@@ -12,9 +20,10 @@
 # PROVENANCE. All HARDWARE values are the real DJI Matrice 4E spec, single
 # canonical source, live-verified 2026-08-07:
 #   https://enterprise.dji.com/matrice-4-series/specs
-# DERIVED values carry their formula. DJI does NOT publish per-maneuver power, so
-# the power table is an ASSUMPTION derived from hover power via the shipped
-# MULTIROTOR ratio model (marked below) — it is NOT datasheet power.
+# DERIVED values carry their formula. OPERATIONAL choices (survey speed, camera
+# payload draw) are marked ASSUMPTION and kept separable from the spec ceilings.
+# DJI does NOT publish per-maneuver power, so the power table is an ASSUMPTION
+# derived from hover power via the shipped MULTIROTOR ratio model — NOT datasheet.
 # =============================================================================
 telemetry:
   enabled: false
@@ -32,8 +41,9 @@ fleet:
   drone_dims_m: [0.307, 0.3875, 0.1495]   # DJI M4E — unfolded 307.0x387.5x149.5 mm (L×W×H), excl. props
                               #   https://enterprise.dji.com/matrice-4-series/specs (retrieved 2026-08-07)
   total_reserve_batteries: 50     # Phase 2: finite shared pool of swap packs for the
-                                  # WHOLE fleet. When exhausted before 100% coverage the
-                                  # mission halts as MISSION_FAILED. Omit => unbounded.
+                                  # WHOLE fleet. INERT under mission.no_swap_mode (the swap
+                                  # path is bypassed; pool_exhausted is never terminal).
+                                  # Retained for legacy-mode standalone completeness.
 
 # Active platform for this run. Per-run the swarm is homogeneous; one of the
 # three tables below is resolved into the active PlatformConfig by the loader.
@@ -71,10 +81,13 @@ platforms:
   # https://enterprise.dji.com/matrice-4-series/specs). Power is DERIVED, not
   # datasheet — see the power_w block.
   MULTIROTOR:
-    v_cruise: 21.0            # DJI M4E max horizontal speed 21 m/s (ferry / CRUISE legs)
-    v_coverage: 15.0          # ASSUMPTION: operational mapping-survey speed (< 21 m/s max).
-                              #   NOT a DJI-published cap — the "Pilot 2 15 m/s cap" claim is
-                              #   unverified; treated as a modelling choice, not spec.
+    v_cruise: 10.0            # PROTOCOL operational choice for ferry / CRUISE legs.
+                              #   DJI M4E spec CEILING is 21 m/s (max horizontal); 10.0 is the
+                              #   modelling choice, NOT the spec value — kept separable (AC-1).
+    v_coverage: 10.0          # ASSUMPTION: operational mapping-survey speed (EXP-13 protocol
+                              #   sets v_coverage = v_cruise = 10.0). NOT a DJI-published cap.
+                              #   Shutter feasible: photo_spacing/v_coverage = 21.667/10 = 2.167 s
+                              #   >= min_photo_interval 0.5 s (config.py photogrammetry check).
     v_climb: 10.0             # DJI M4E max ascent 10 m/s
     v_descent: 8.0            # DJI M4E max descent 8 m/s
     r_min_m: 0.0              # holonomic -> HolonomicModel, never Dubins
@@ -127,15 +140,19 @@ platforms:
       HOVER: 300.0            # transition / station-keeping
 
 sensor:
-  swath_width_m: 132.0        # DERIVED: 2.5 cm GSD x 5280 px (M4E 4/3 wide cam, DJI spec) — RAW
-                              #   footprint (build_spec applies 1-overlap; do NOT pre-discount).
-  overlap_frac: 0.6           # 60% side overlap (photogrammetry) -> effective strip = 132.0 x 0.4
-                              #   = 52.8 m (matches the obstacle square side below: obstacle = 1 strip)
-  sensor_power_w: 0.0         # camera + gimbal payload draw while filming a strip, charged only in
-                              # S2_MISSION. 0 keeps this an M4E platform binding only (camera-energy
-                              # term is a separate study opt-in), not an M4E requirement.
+  # INACTIVE under photogrammetry (enabled below): with the camera ON, build_spec
+  # derives the effective swath from camera.solve(...).line_spacing_m, so these two
+  # fields are the LEGACY fallback path only (drone_specs.py:96) and do not govern
+  # geometry here. Kept as DJI-provenance RAW-footprint documentation.
+  swath_width_m: 132.0        # LEGACY: 2.5 cm GSD x 5280 px (M4E 4/3 wide cam, DJI spec) RAW footprint.
+  overlap_frac: 0.6           # LEGACY: 60% side overlap -> legacy strip 132.0 x 0.4 = 52.8 m.
+  sensor_power_w: 20.0        # ASSUMPTION (not DJI spec): camera + gimbal payload draw over COVERAGE
+                              # segments (charged only in S2_MISSION). ~14% of the 142.1 W hover anchor.
+                              # FIRST-ORDER LLOYD_ENERGY parameter: it enters rho = (P_COVERAGE +
+                              # sensor_power_w)/(v_coverage*swath) (energy_balance.py:221), so it moves
+                              # the partition itself; 0.0 would assert a 20 MP camera draws zero watts.
   photogrammetry:
-    enabled: false            # EXP-01 profile is dormant here; EXP-13 enables the experiment preset.
+    enabled: true             # EXP-13 protocol: camera ON (governs both coverage geometry and energy).
     # DJI-published: 4/3 CMOS, 20 MP, 84 deg FOV, 24 mm equivalent lens,
     # 5280x3956 max image, 0.5 s minimum photo interval (20 MP JPEG).
     # https://enterprise.dji.com/matrice-4-series/specs
@@ -152,12 +169,23 @@ sensor:
     min_photo_interval_s: 0.5 # JPEG; configure 2.0 for JPEG+RAW interval capture
 
 # --------------------------------------------------------------------------- #
-# Coverage connector routing (S_FERRY Step 2). Verbatim default.yaml (OFF).    #
+# Coverage raster + connector routing. EXP-13 protocol: raster + free-space ON. #
 # --------------------------------------------------------------------------- #
 coverage:
-  ferry_free_space: false     # OFF => byte-identical; studies opt in.
+  raster_enabled: true        # EXP-02 raster: the single source of remaining work and the
+                              # basis of no-swap outcome + repartition/Lloyd partitioning.
+  transit_free_space: true    # EXP-09 coherent routing needs both free-space toggles
+  ferry_free_space: true      #   (config.py:1302); connectors route around obstacles.
   operating_area: convex_hull # convex_hull | bbox | survey
   operating_margin_m: 50.0    # convex-hull dilation (== one coverage swath)
+
+# --------------------------------------------------------------------------- #
+# EXP-06 energy balance (t=0 feasibility proxy + LLOYD_ENERGY weight law).      #
+# --------------------------------------------------------------------------- #
+planning:
+  energy_balance:
+    enabled: true             # required by run_lloyd_protocol fail-fast; itself requires
+                              # coverage.raster_enabled + photogrammetry.enabled (config.py:1035).
 
 aero:
   formation_drag_reduction: 0.1514   # Guo et al. 2025, homogeneous formation (15.14%)
@@ -167,13 +195,22 @@ aero:
   rth_rendezvous_window_s: 30.0   # ETA window to group a return formation
 
 env:
-  geojson_path: data/areas/example_area.geojson
-  coverage_altitude_m: 91.5   # DERIVED: flight height for 2.5 cm GSD with the M4E 24 mm-equiv wide
-                              #   lens on 4/3 (5280 px), GSD = H*pixel_pitch/focal. Pairs with the
-                              #   132 m swath. (A retailer "1.2 cm@120 m" figure conflicts and is
-                              #   NOT used — see the config plan's GSD flag.)
-  obstacle_density_per_km2: 8.0
-  obstacle_size_range_m: [52.8, 52.8]    # fixed square, side = effective swath (obstacle ≡ 1 strip)
+  geojson_path: data/areas/exp03_1000x750.geojson   # EXP-13 protocol survey area (1000 x 750 m)
+  coverage_altitude_m: 100.0  # PROTOCOL flight height (AGL). With photogrammetry ON the camera
+                              #   geometry is derived at this height: footprint_width = 100*17.3/12
+                              #   = 144.167 m; GSD = 144.167/5280 = 2.73 cm; effective swath
+                              #   (line_spacing) = 144.167*(1-0.70) = 43.25 m.
+  # Target obstacle field (EXP-03 mechanism). In target mode the obstacle SIDE is
+  # derived from the area: side = sqrt(area * area_fraction / count) — so on a
+  # 1000x750 survey side = sqrt(750000*0.05/10) = 61.24 m. NOTE: obstacle_density_per_km2
+  # and obstacle_size_range_m below are IGNORED in target mode (obstacle_generator.py:221),
+  # so the legacy "obstacle == 1 strip == 52.8 m" invariant no longer holds.
+  obstacle_generation_mode: target
+  obstacle_target_count: 10           # fixed obstacle count (area-fraction sizing)
+  obstacle_area_fraction: 0.05        # total obstacle area as a fraction of the survey area
+  obstacle_area_fraction_tolerance: 0.005   # accepted absolute band around the fraction
+  obstacle_density_per_km2: 8.0          # IGNORED in target mode (kept for legacy/poisson runs)
+  obstacle_size_range_m: [52.8, 52.8]    # IGNORED in target mode (side is area-derived; see above)
   obstacle_shapes: [square]              # axis-aligned fixed squares (see planning/obstacle_generator
                                          #   'square' kind: no rotation, no random aspect)
   n_obstacle_classes: 3       # semantic classes (e.g. building/vegetation/no-fly) for GVG
@@ -207,6 +244,13 @@ mission:
   n_targets: 40               # used when type=target_visit and no explicit coordinates
   target_coordinates: []      # explicit [[x, y], ...] in metres; if non-empty, overrides n_targets
   weight_targets_by_battery: true   # per-drone target COUNT proportional to battery (the contribution)
+  no_swap_mode: true          # EXP-04: touchdown is terminal (S_LANDED); swap path bypassed.
+  experiment_mode: true       # EXP-07: forbid tier auto-selection — the run MUST name its algo
+                              #   (simulation_engine.py:218). AC-4 "no alternate tier" as a config property.
+  contract_export: true       # EXP-11: export the mission contract (raster coverage masks) in results.
+  repartition_enabled: false  # EXP-08 reallocation OFF. AUTHOR DECISION (§4.1): mutually exclusive
+                              #   with rth.execution_coherent (config.py:1316-1318); coherent routing
+                              #   is chosen, so released work is NOT reallocated in this protocol.
 
 launch:
   candidate_sites: 8          # int N -> sample N free sites near boundary;
@@ -225,17 +269,23 @@ swap:
   n_bays: 2                   # parallel swap bays
 
 failure:
-  hazard_rate_per_hour: 0.3   # lambda; scale runners force this to 0.0 per-cell anyway.
+  hazard_rate_per_hour: 0.0   # PROTOCOL: no random hazard (lambda = 0), a clean paired scenario.
 
 safety:
   min_separation_m: 10.0
   obstacle_buffer_m: 5.0
   predict_horizon_s: 5.0      # proactive monitoring lookahead
   obstacle_recovery: true     # Task 2.5 Q2: skip obstructed coverage legs + boxed-in RTH (prevents S_OBS thrashing)
+  record_violations: true     # EXP-10: observational safety-violation recorder (no physics/RNG change).
 
 rth:
   check_interval_s: 5.0
   reserve_frac: 0.05          # small epsilon margin — explicitly NOT a static 30%
+  execution_coherent: true    # EXP-09: coherent routed return replaces Agent.step (§4.1 coherent arm).
+  energy_map:
+    zone_demotion: true       # AC-4: removes the static 0.40 CRITICAL guard; the coherent path
+                              #   governs the return (valid via execution_coherent, config.py:1295).
+                              #   energy_map.enabled stays false — no map is built.
 
 sim:
   dt_s: 0.5

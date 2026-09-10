@@ -124,10 +124,11 @@ class StateMachine:
         no_swap_mode: bool = False,
     ) -> None:
         self._zones = zones_cfg
-        # EM-01 B1: when True (rth.energy_map.zone_demotion, requires decide) the
-        # static CRITICAL net is removed from _coverage_guards so the dynamic map
-        # governs the normal energy return. Default False => the guard is byte-
-        # identical to pre-B1 and every existing call site is unchanged.
+        # EM-01 B1: when True (rth.energy_map.zone_demotion, requires decide or
+        # execution_coherent — config.py:1295) the static CRITICAL net is removed
+        # from _coverage_guards so the dynamic map (or the coherent path) governs
+        # the normal energy return. Default False => the guard is byte-identical to
+        # pre-B1 and every existing call site is unchanged.
         self._zone_demotion = zone_demotion
         # EXP-04 (mission.no_swap_mode): touchdown is terminal (S_LANDED).
         # Default False => the S3_RTH branch is byte-identical to pre-EXP-04.
