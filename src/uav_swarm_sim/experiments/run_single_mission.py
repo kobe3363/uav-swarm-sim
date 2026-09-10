@@ -3,7 +3,7 @@ structured run/simulation folder with plan.json + results.json + all artifacts.
 
 Usage:
   python -m uav_swarm_sim.experiments.run_single_mission \
-      --config config/default.yaml [--algo weighted_voronoi] [--planner dubins|grid] \
+      --config config/study01_demand.yaml [--algo weighted_voronoi] [--planner dubins|grid] \
       [--seed N] [--name demo] [--base runs]
 
 Produces:
@@ -55,7 +55,7 @@ def resolve_algo(cfg, algo_arg: str | None) -> DecompositionAlgo:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--algo", default=None,
                     help="decomposition algorithm (default: weighted_voronoi; required under mission.experiment_mode)")
     ap.add_argument("--planner", default="dubins", choices=["dubins", "grid"])

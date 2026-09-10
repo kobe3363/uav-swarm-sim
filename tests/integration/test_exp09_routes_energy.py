@@ -37,7 +37,7 @@ def mission(tmp_path):
 
 
 def engine(settings, algo=DecompositionAlgo.TGC_BASIC):
-    cfg = load_config("config/djimatrice4e.yaml", overrides=settings)
+    cfg = load_config("config/study01_demand.yaml", overrides=settings)
     return SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), algo=algo)
 
 

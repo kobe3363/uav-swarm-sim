@@ -31,7 +31,7 @@ from uav_swarm_sim.infrastructure.config import load_config
 
 def _smoke_config_path(config_path) -> str:
     # the small, fast scenario area (sibling of default.yaml under config/)
-    return str(config_path.parent / "scenarios" / "smoke.yaml")
+    return str(config_path.parent / "study01_demand.yaml")
 
 
 def test_analyzer_main_runs_end_to_end(config_path, capsys):

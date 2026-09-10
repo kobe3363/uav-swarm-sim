@@ -343,7 +343,7 @@ def _run_profile_subset(cfg: Config, ctx: RunContext) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--n", type=int, nargs="+", default=None,
                     help="explicit fleet sizes (override the --budget grid)")
     ap.add_argument("--n-range", type=int, nargs=3, metavar=("START", "STOP", "STEP"),

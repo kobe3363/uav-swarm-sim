@@ -43,7 +43,7 @@ _GRID = dict(shapes_dir="data/areas/shapes", shapes=["square", "c_shape"],
 
 @pytest.fixture(scope="module")
 def swept(tmp_path_factory):
-    base = load_config("config/default.yaml")
+    base = load_config("config/study01_demand.yaml")
     ctx = RunContext(base_dir=str(tmp_path_factory.mktemp("s5")), name="e2e")
     return sweep(base, _GRID["shapes_dir"], _GRID["shapes"], _GRID["ns"],
                  _GRID["mode"], _GRID["n_runs"], ctx, quiet=True)  # jobs=1
@@ -55,7 +55,7 @@ def swept_parallel(tmp_path_factory):
     completion order almost certainly differs from ordinal order -- the strongest
     test of the reassembly). Reuses the already-paid serial sweep for comparison
     rather than running a second serial pass (ENG-09 keeps this test cheap)."""
-    base = load_config("config/default.yaml")
+    base = load_config("config/study01_demand.yaml")
     ctx = RunContext(base_dir=str(tmp_path_factory.mktemp("s5p")), name="e2e_par")
     return sweep(base, _GRID["shapes_dir"], _GRID["shapes"], _GRID["ns"],
                  _GRID["mode"], _GRID["n_runs"], ctx, quiet=True, jobs=4)

@@ -75,7 +75,7 @@ def _overrides(area_file, **extra):
 
 
 def _run(area_file, algo, **extra):
-    cfg = load_config("config/default.yaml", overrides=_overrides(area_file, **extra))
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(area_file, **extra))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0, algo=algo)
     return engine, engine.run()
 
@@ -180,7 +180,7 @@ def test_no_cell_is_lost_or_duplicated_across_every_revision(area_file, algo):
 
 def test_a_revision_erases_no_coverage_and_no_energy(area_file):
     """A plan swap changes what a drone will do next, never what it has done."""
-    cfg = load_config("config/default.yaml", overrides=_overrides(
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
         area_file, **{"mission.repartition_enabled": True,
                       "mission.repartition_interval_s": 20.0}))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
@@ -211,7 +211,7 @@ def test_a_revision_erases_no_coverage_and_no_energy(area_file):
 
 
 def test_a_drone_committed_to_a_return_is_never_handed_work(area_file):
-    cfg = load_config("config/default.yaml", overrides=_overrides(
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
         area_file, **{"mission.repartition_enabled": True,
                       "mission.repartition_interval_s": 15.0}))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
@@ -249,7 +249,7 @@ def test_a_drone_committed_to_a_return_is_never_handed_work(area_file):
 # C. ordering, refusals and the loop bound                                     #
 # --------------------------------------------------------------------------- #
 def test_simultaneous_causes_produce_exactly_one_revision(area_file):
-    cfg = load_config("config/default.yaml", overrides=_overrides(
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
         area_file, **{"mission.repartition_enabled": True,
                       "mission.repartition_interval_s": 20.0}))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
@@ -300,7 +300,7 @@ def test_an_injected_task_is_refused_rather_than_dropped(area_file):
     """The raster is built once from the survey area and cannot grow, so an
     injected polygon has no cells. Accepting it would mean taking work and never
     flying it."""
-    cfg = load_config("config/default.yaml", overrides=_overrides(
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
         area_file, **{"mission.repartition_enabled": True}))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                               algo=DecompositionAlgo.LLOYD_CVT)
@@ -316,7 +316,7 @@ def test_the_hold_cost_is_reported_and_is_a_rounding_error(area_file):
     """One hover tick per zone completion. It is applied by one rule to both
     arms but is NOT paired -- the arms can finish a different NUMBER of zones --
     so the size of the asymmetry is reported rather than assumed away."""
-    cfg = load_config("config/default.yaml", overrides=_overrides(
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
         area_file, **{"mission.repartition_enabled": True}))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                               algo=DecompositionAlgo.LLOYD_CVT)
@@ -420,7 +420,7 @@ def test_flag_off_is_byte_identical_for_every_legacy_algorithm():
     signatures = {}
     for algo in _LEGACY_ALGOS:
         for replication in (0, 1):
-            cfg = load_config("config/default.yaml", overrides=_LEGACY_OVERRIDES)
+            cfg = load_config("config/study01_demand.yaml", overrides=_LEGACY_OVERRIDES)
             assert cfg.mission.repartition_enabled is False
             result = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed),
                                       replication=replication, algo=algo,
@@ -455,7 +455,7 @@ def test_repartitioning_with_kmeans_does_not_disturb_its_t0_init(area_file):
     # re-partition did consumed from the init stream. Taken from _build rather
     # than from the finished run, whose ``partition`` a revision has replaced.
     def _t0_zones(repartition):
-        cfg = load_config("config/default.yaml", overrides=_overrides(
+        cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
             area_file, **{"mission.repartition_enabled": repartition}))
         engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                                   algo=DecompositionAlgo.KMEANS)
@@ -484,7 +484,7 @@ def test_a_deterministic_decomposer_re_partitions_with_the_very_same_object(area
 # H. the legacy redistribution path is structurally unreachable                 #
 # --------------------------------------------------------------------------- #
 def test_the_legacy_redistributor_cannot_be_reached_with_the_flag_on(area_file):
-    cfg = load_config("config/default.yaml", overrides=_overrides(
+    cfg = load_config("config/study01_demand.yaml", overrides=_overrides(
         area_file, **{"mission.repartition_enabled": True}))
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed), 0,
                               algo=DecompositionAlgo.LLOYD_CVT)

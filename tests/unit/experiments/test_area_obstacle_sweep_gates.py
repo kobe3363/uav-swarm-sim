@@ -28,7 +28,7 @@ from uav_swarm_sim.experiments.run_area_obstacle_sweep import (
 
 @pytest.fixture(scope="module")
 def base():
-    return load_config("config/default.yaml")
+    return load_config("config/study01_demand.yaml")
 
 
 # --------------------------------------------------------------------------- #

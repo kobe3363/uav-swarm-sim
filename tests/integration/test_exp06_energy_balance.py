@@ -51,7 +51,7 @@ def mission_overrides(tmp_path):
 
 
 def _run(overrides):
-    cfg = load_config("config/default.yaml", overrides=overrides)
+    cfg = load_config("config/study01_demand.yaml", overrides=overrides)
     engine = SimulationEngine(cfg, RngFactory(cfg.sim.master_seed),
                               algo=DecompositionAlgo.TGC_BASIC)
     return engine, engine.run()

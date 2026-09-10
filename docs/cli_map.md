@@ -20,12 +20,12 @@ Viskas gyvena `config/` kataloge.
 
 | Failas | Paskirtis |
 |---|---|
-| `config/default.yaml` | **Vienintelis tikrasis šaltinis** — 1:1 atspindi dataclass schemą, λ=0.3 (pakeltas MC), MULTIROTOR |
-| `config/djimatrice4e.yaml` | DJI Matrice 4E platforma (99.5 Wh, swath 132 m, kvadratinės kliūtys). Scale sweep'ų default |
+| `config/study01_demand.yaml` | **Vienintelis tikrasis šaltinis** — 1:1 atspindi dataclass schemą, λ=0.3 (pakeltas MC), MULTIROTOR |
+| `config/study01_demand.yaml` | DJI Matrice 4E platforma (99.5 Wh, swath 132 m, kvadratinės kliūtys). Scale sweep'ų default |
 | ~~`config/shape_sweep_newrth.yaml`~~ | **IŠIMTAS** (C3 shape sweep su nauju RTH / energy_map) — `git show 493e8d2:config/shape_sweep_newrth.yaml` |
 | `config/study01_demand.yaml` | STUDY-01 demand; `run_rth_ab.py` default. **UŽŠALDYTAS TEST FIXTURE** — nekeisti, nepervadinti, netrinti |
 | ~~`config/study01_demand_newrth.yaml`~~ | **IŠIMTAS** (C2 užšaldyta arm-4 versija) — `git show 493e8d2:config/study01_demand_newrth.yaml` |
-| `config/scenarios/smoke.yaml` | Minimalus smoke (n=3, mc.n_max=6) — tik greitam testui |
+| `config/study01_demand.yaml` | Minimalus smoke (n=3, mc.n_max=6) — tik greitam testui |
 
 **Mechanika:** `load_config(path, overrides)` skaito **VIENĄ** YAML — nėra merge/paveldėjimo
 tarp failų. Kiekvienas config'as savarankiškas; neprivalomi blokai (`telemetry`, `coverage`,
@@ -116,7 +116,7 @@ platforma, kliūčių dydis) keičiami **TIK per YAML**; CLI flag'ai eksponuoja 
 #### `run_single_mission` — gynybos demo: viena misija, pilnas vizualų dump'as
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_single_mission --config config/djimatrice4e.yaml --algo tgc_basic --planner dubins --seed 123 --name defense-demo --base runs
+python -m uav_swarm_sim.experiments.run_single_mission --config config/study01_demand.yaml --algo tgc_basic --planner dubins --seed 123 --name defense-demo --base runs
 ```
 **Ką atlieka:** Paleidžia VIENĄ misiją su pasirinktu dekompozicijos algoritmu ir kelio planuotoju,
 priverstinai įjungia telemetriją (GPX). Sukuria struktūruotą `runs/run-<ts>/simulation-<name>/`
@@ -142,7 +142,7 @@ kliūčių „boxing".
 #### `run_replay` — atkuria vieną konkrečią replikaciją kaip animaciją
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_replay --config config/scenarios/smoke.yaml --replication 60 --seed 42 --algo weighted_voronoi --planner dubins --fps 12 --max-frames 200 --out runs/replay60
+python -m uav_swarm_sim.experiments.run_replay --config config/study01_demand.yaml --replication 60 --seed 42 --algo weighted_voronoi --planner dubins --fps 12 --max-frames 200 --out runs/replay60
 ```
 **Ką atlieka:** Kadangi variklis determinuotas, bet kurią MC serijos replikaciją galima tiksliai
 atkurti nurodžius tą patį `--replication` indeksą (nereikia saugoti trajektorijų). Įrašo
@@ -168,7 +168,7 @@ išanalizuoti — pvz. kodėl konkreti replikacija žlugo.
 #### `run_decomposition_comparison` — 4 algoritmų palyginimas (headline)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_decomposition_comparison --config config/default.yaml --base runs --run-name decomp-headline
+python -m uav_swarm_sim.experiments.run_decomposition_comparison --config config/study01_demand.yaml --base runs --run-name decomp-headline
 ```
 **Ką atlieka:** Vienas run'as, viena simuliacija KIEKVIENAM iš 4 peer algoritmų
 (classic_voronoi, kmeans, tgc_basic, weighted_voronoi) ant PORUOTŲ sėklų (vienas bendras
@@ -187,7 +187,7 @@ null, ne bug'as.
 #### `run_shape_sweep` — S5 formos sweep (centrinis empirinis tinklelis)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_shape_sweep --config config/default.yaml --mode clean --budget full --shapes square,l_shape,c_shape,star_5 --n 2,3,4,5,6 --jobs 4 --run-name shape_sweep_clean
+python -m uav_swarm_sim.experiments.run_shape_sweep --config config/study01_demand.yaml --mode clean --budget full --shapes square,l_shape,c_shape,star_5 --n 2,3,4,5,6 --jobs 4 --run-name shape_sweep_clean
 ```
 **Ką atlieka:** Sweepina survey FORMĄ (9 vienodo ploto 1 km² poligonai) × flotilės dydį n ×
 dekompozicijos variantą ant poruotų sėklų. Homogeniška flotilė, λ=0, kliūtys pagal `--mode`.
@@ -215,7 +215,7 @@ Kanoninės 9 formos: `square, rect_2_1, rect_4_1, rect_8_1, disk, l_shape, star_
 #### `run_scale_tiers` — smulkus flotilės dydžio sweep + break-even
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_scale_tiers --config config/default.yaml --n-range 2 100 2 --mode clean --budget full --jobs 4 --out runs
+python -m uav_swarm_sim.experiments.run_scale_tiers --config config/study01_demand.yaml --n-range 2 100 2 --mode clean --budget full --jobs 4 --out runs
 ```
 **Ką atlieka:** Sweepina weighted-TGC prieš kmeans bazinę liniją per flotilės dydžius, kiekvienas
 variantas MC su CI-adaptyviu stabdymu (kiekvienas n naudoja tik tiek replikacijų, kiek reikia).
@@ -238,7 +238,7 @@ neaplenkia toje ribose.
 #### `run_area_obstacle_sweep` — plotas × kliūčių tankis × n (scale eksperimentas)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_area_obstacle_sweep --config config/djimatrice4e.yaml --areas 1,2,4,8,16 --densities 0,8 --obstacle-size-m 52.8 --n-range 2 8 2 --reps 20 --shapes l_shape --variants tgc_basic,kmeans --jobs 4 --out runs
+python -m uav_swarm_sim.experiments.run_area_obstacle_sweep --config config/study01_demand.yaml --areas 1,2,4,8,16 --densities 0,8 --obstacle-size-m 52.8 --n-range 2 8 2 --reps 20 --shapes l_shape --variants tgc_basic,kmeans --jobs 4 --out runs
 ```
 **Ką atlieka:** Sweepina survey PLOTĄ (K1 — formos regeneruojamos kiekvienam plotui, proporcijos
 fiksuotos), statinį kliūčių TANKĮ (K4 — count = Poisson(density·area_km2)), fiksuotą kliūties DYDĮ,
@@ -288,7 +288,7 @@ routing'ą; `arm4−arm3` izoliuoja decide+demotion.
 #### `run_spare_sizing` — kiek atsarginių swap-baterijų sandėliuoti
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_spare_sizing --config config/default.yaml --demand-mode --reps 500 --margin 1 --jobs 4 --out runs/spares
+python -m uav_swarm_sim.experiments.run_spare_sizing --config config/study01_demand.yaml --demand-mode --reps 500 --margin 1 --jobs 4 --out runs/spares
 ```
 **Ką atlieka:** Sweepina `fleet.total_reserve_batteries` (bendras baigtinis swap-paketų fondas).
 Misija = SĖKMĖ, kai padengimas baigiamas prieš išsenkant fondui. Randa sėkmės-tikimybės „kelį"
@@ -318,7 +318,7 @@ rekonstruojama post-hoc (O(reps) vietoj O(tinklelis×reps)).
 #### `run_fleet_sizing_analyzer` — flotilės dydžio Pareto (mažėjančios grąžos)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_fleet_sizing_analyzer --config config/djimatrice4e.yaml --n-min 1 --n-max 20 --knee-frac 0.05 --plot runs/pareto.png
+python -m uav_swarm_sim.experiments.run_fleet_sizing_analyzer --config config/study01_demand.yaml --n-min 1 --n-max 20 --knee-frac 0.05 --plot runs/pareto.png
 ```
 **Ką atlieka:** Pastato planavimo sluoksnį (EnvironmentMap + energijos-suvokiantis
 LaunchSiteOptimizer), kad gautų TIKRĄ bazės pozą ir navigacinį plotą, tada per gryną
@@ -341,7 +341,7 @@ joks starto taškas neįmanomas.
 #### `run_regime_calculator` — A2 režimas: E_cover vs n·B_usable
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_regime_calculator --config config/default.yaml --geojson data/areas/shapes/l_shape.geojson --n-drones 4 --usable-floor terminal --sensor-power-w 15 --verify --verify-n 3
+python -m uav_swarm_sim.experiments.run_regime_calculator --config config/study01_demand.yaml --geojson data/areas/shapes/l_shape.geojson --n-drones 4 --usable-floor terminal --sensor-power-w 15 --verify --verify-n 3
 ```
 **Ką atlieka:** Atsako į go/no-go klausimą, kurį formos studija privalo išspręsti PIRMA: ar bazė
 **battery-limited** (reikia swap'ų → forma svarbi) ar **fuel-surplus** (vienas įkrovimas padengia
@@ -367,7 +367,7 @@ dronas battery-limited (PIRMINIS rodiklis). Jei fuel-surplus — formos sweep b�
 #### `run_shape_regime_table` — formos-režimo lentelė (partition picture)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_shape_regime_table --config config/default.yaml --n-min 1 --n-max 6 --f-min 0.40 --f-max 1.00 --perms 8 --usable-floor terminal --csv runs/shape_regime.csv
+python -m uav_swarm_sim.experiments.run_shape_regime_table --config config/study01_demand.yaml --n-min 1 --n-max 6 --f-min 0.40 --f-max 1.00 --perms 8 --usable-floor terminal --csv runs/shape_regime.csv
 ```
 **Ką atlieka:** Gryna analizė virš esamų A2/A3 įrankių (jokio MC). Kiekvienai `(forma, n)` ląstelei —
 du režimo rodikliai (pooled + per-drono max-zone) prieš tikrą weighted-Voronoi partition, ir
@@ -392,7 +392,7 @@ krūvį įgaubtoms formoms.
 #### `run_launch_site_study` — starto vietos optimizacija (§2.4)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_launch_site_study --config config/default.yaml --out runs/launch
+python -m uav_swarm_sim.experiments.run_launch_site_study --config config/study01_demand.yaml --out runs/launch
 ```
 **Ką atlieka:** Pastato variklio build fazę (kuri apskaičiuoja starto vietą ir kandidatų balus) ir
 atspausdina reitinguotą kandidatų lentelę. Naudoja `launch.w_distance/w_energy/w_swaps` svorius.
@@ -409,7 +409,7 @@ atspausdina reitinguotą kandidatų lentelę. Naudoja `launch.w_distance/w_energ
 #### `run_kinematics_comparison` — Dubins vs grid (tik FW/VTOL, §1.2)
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.run_kinematics_comparison --config config/default.yaml --out runs/kinematics
+python -m uav_swarm_sim.experiments.run_kinematics_comparison --config config/study01_demand.yaml --out runs/kinematics
 ```
 **Ką atlieka:** Palygina Dubins vs diskretizuotą grid planuotoją. **Tik ne-holonominėms
 platformoms** — MULTIROTOR grąžina exit 1 su žinute (holonomiškai beprasmiška; nustatyk
@@ -430,7 +430,7 @@ planavimo laiką vs skrydžio kokybę tarp dviejų planuotojų.
 #### `generate_shapes` — A3 vienodo ploto formų generatorius
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.generate_shapes --config config/default.yaml --target-area-m2 1000000 --out-dir data/areas/shapes --disk-sides 128
+python -m uav_swarm_sim.experiments.generate_shapes --config config/study01_demand.yaml --target-area-m2 1000000 --out-dir data/areas/shapes --disk-sides 128
 ```
 **Ką atlieka:** Sugeneruoja formų šeimą (kanoninės 9), visas su TUO PAČIU plotu (default 1 km²) bet
 skirtinga forma, kaip GeoJSON simuliatoriaus loaderio formatu. Vienodas plotas izoliuoja formos
@@ -450,7 +450,7 @@ solidity, bbox, strip skaičius + įrašyti geojson. **Interpretacija:** `solidi
 #### `plot_launch_suitability` — B6.3 starto-tinkamumo šilumos žemėlapis
 **Pavyzdys:**
 ```bash
-python -m uav_swarm_sim.experiments.plot_launch_suitability --config config/djimatrice4e.yaml --out runs/launch_suitability.png
+python -m uav_swarm_sim.experiments.plot_launch_suitability --config config/study01_demand.yaml --out runs/launch_suitability.png
 ```
 **Ką atlieka:** Piešia per staging žiedą (aplink survey plotą) kiekvieno starto taško kokybę pagal
 TIKSLŲ flotilės nuovargį (swap skaičių), naudodamas tą pačią matematiką kaip optimizatorius.

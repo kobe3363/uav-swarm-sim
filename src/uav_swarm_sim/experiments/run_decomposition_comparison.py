@@ -21,7 +21,7 @@ from ..metrics.run_output import RunContext, build_plan, build_results_mc
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--base", default="runs")
     ap.add_argument("--run-name", default=None)
     args = ap.parse_args(argv)

@@ -47,7 +47,7 @@ class _PassedFormerFailure(RuntimeError):
 
 
 def test_m4e_seed42_planning_passes_the_former_blocked_centroid(monkeypatch):
-    cfg = build_cfg("config/djimatrice4e.yaml", 5, DIAGNOSTIC_OVERRIDES)
+    cfg = build_cfg("config/study01_demand.yaml", 5, DIAGNOSTIC_OVERRIDES)
     engine = SimulationEngine(
         cfg,
         RngFactory(cfg.sim.master_seed),

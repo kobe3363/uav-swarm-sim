@@ -45,7 +45,7 @@ CAPACITY_J = 360000.0
 def case():
     """A pinned, fully explicit fixture: no engine, no RNG, no config file drift
     beyond the photogrammetry block the estimator requires."""
-    cfg = load_config("config/default.yaml", {
+    cfg = load_config("config/study01_demand.yaml", {
         "env.coverage_altitude_m": ALT,
         "sensor.sensor_power_w": 15.0,
         "sensor.photogrammetry.enabled": True,

@@ -11,7 +11,7 @@ from ..infrastructure.enums import DecompositionAlgo
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--out", default="runs/launch")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)

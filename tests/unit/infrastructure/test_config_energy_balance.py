@@ -13,13 +13,13 @@ def test_every_yaml_defaults_off(path):
 
 @pytest.mark.parametrize("block", [{}, {"energy_balance": {}}, None])
 def test_optional_planning(block):
-    assert load_config("config/default.yaml", {"planning": block}).planning.energy_balance.enabled is False
+    assert load_config("config/study01_demand.yaml", {"planning": block}).planning.energy_balance.enabled is False
 
 
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
 def test_enabled_requires_boolean(value):
     with pytest.raises(ConfigError, match="planning.energy_balance.enabled must be a boolean"):
-        load_config("config/default.yaml", {"planning.energy_balance.enabled": value})
+        load_config("config/study01_demand.yaml", {"planning.energy_balance.enabled": value})
 
 
 @pytest.mark.parametrize("key,value,message", [
@@ -30,13 +30,13 @@ def test_enabled_requires_boolean(value):
 ])
 def test_mapping_and_unknown_keys(key, value, message):
     with pytest.raises(ConfigError, match=message):
-        load_config("config/default.yaml", {key: value})
+        load_config("config/study01_demand.yaml", {key: value})
 
 
 @pytest.mark.parametrize("raster,photo", [(False, False), (False, True), (True, False)])
 def test_enabled_requires_entire_chain(raster, photo):
     with pytest.raises(ConfigError, match="enabled requires coverage.raster_enabled.*sensor.photogrammetry.enabled"):
-        load_config("config/default.yaml", {
+        load_config("config/study01_demand.yaml", {
             "planning.energy_balance.enabled": True,
             "coverage.raster_enabled": raster,
             "sensor.photogrammetry.enabled": photo,
@@ -55,15 +55,15 @@ def test_parse_enabled_and_reject_target_mission():
         "sensor.photogrammetry.image_height_px": 3956,
         "sensor.photogrammetry.min_photo_interval_s": 0.5,
     }
-    assert load_config("config/default.yaml", overrides).planning.energy_balance.enabled is True
+    assert load_config("config/study01_demand.yaml", overrides).planning.energy_balance.enabled is True
     with pytest.raises(ConfigError, match="requires mission.type = coverage"):
-        load_config("config/default.yaml", dict(overrides, **{"mission.type": "target_visit"}))
+        load_config("config/study01_demand.yaml", dict(overrides, **{"mission.type": "target_visit"}))
 
 
 def test_absent_block_preserves_hash():
     # Raw YAML is unchanged; constructing default dataclasses cannot enter its hash.
-    baseline = load_config("config/default.yaml")
-    assert baseline.config_hash == load_config("config/default.yaml", {}).config_hash
+    baseline = load_config("config/study01_demand.yaml")
+    assert baseline.config_hash == load_config("config/study01_demand.yaml", {}).config_hash
 
 
 @pytest.mark.parametrize("key", ["weight_step", "weight_clamp_factor"])
@@ -72,9 +72,9 @@ def test_partition_weights_reject_null(key):
     unguarded it reaches _validate as None, where isfinite() raises TypeError
     instead of the ConfigError every other malformed field produces."""
     with pytest.raises(ConfigError, match=f"planning.partition.{key} must be numeric"):
-        load_config("config/default.yaml", {f"planning.partition.{key}": None})
+        load_config("config/study01_demand.yaml", {f"planning.partition.{key}": None})
 
 
 def test_slack_tolerance_may_be_null_because_it_has_a_derived_default():
-    cfg = load_config("config/default.yaml", {"planning.partition.slack_tolerance_j": None})
+    cfg = load_config("config/study01_demand.yaml", {"planning.partition.slack_tolerance_j": None})
     assert cfg.planning.partition.slack_tolerance_j is None

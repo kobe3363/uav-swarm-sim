@@ -40,7 +40,7 @@ def area(tmp_path):
 
 def _run(area, **extra):
     settings = dict(_overrides(area), **extra)
-    cfg = load_config("config/djimatrice4e.yaml", overrides=settings)
+    cfg = load_config("config/study01_demand.yaml", overrides=settings)
     return SimulationEngine(cfg, RngFactory(cfg.sim.master_seed),
                             algo=DecompositionAlgo.TGC_BASIC).run()
 

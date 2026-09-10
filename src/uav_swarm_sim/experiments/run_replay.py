@@ -9,7 +9,7 @@ script does that, then writes:
 
 Usage:
   python -m uav_swarm_sim.experiments.run_replay \
-      --config config/scenarios/smoke.yaml --replication 60 \
+      --config config/study01_demand.yaml --replication 60 \
       [--seed N] [--algo weighted_voronoi] [--planner dubins|grid] \
       [--fps 12] [--max-frames 200] [--out runs/replay60]
 
@@ -50,7 +50,7 @@ def resolve_algo(cfg, algo_arg: str | None) -> DecompositionAlgo:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config/scenarios/smoke.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--replication", type=int, default=0, help="which replication to reproduce")
     ap.add_argument("--seed", type=int, default=None, help="master seed (defaults to the config's)")
     ap.add_argument("--algo", default=None,

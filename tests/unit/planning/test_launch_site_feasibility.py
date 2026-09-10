@@ -24,7 +24,7 @@ from uav_swarm_sim.planning.launch_site_optimizer import (
 )
 from uav_swarm_sim.planning.tgc import build_tgc
 
-CONFIG_PATH = "config/default.yaml"
+CONFIG_PATH = "config/study01_demand.yaml"
 ALT = 100.0
 
 

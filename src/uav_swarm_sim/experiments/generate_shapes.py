@@ -34,7 +34,7 @@ camera profile uses its altitude-derived line spacing and legacy configs retain
 Usage
 -----
     python -m uav_swarm_sim.experiments.generate_shapes \
-        [--config config/default.yaml] [--target-area-m2 1000000] \
+        [--config config/study01_demand.yaml] [--target-area-m2 1000000] \
         [--out-dir data/areas/shapes] [--disk-sides 128]
 """
 from __future__ import annotations
@@ -271,7 +271,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Generate equal-area survey shapes as loader-compatible GeoJSON."
     )
-    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--config", default="config/study01_demand.yaml")
     ap.add_argument("--target-area-m2", type=float, default=1_000_000.0)
     ap.add_argument("--out-dir", default="data/areas/shapes")
     ap.add_argument("--disk-sides", type=int, default=128)

@@ -18,7 +18,7 @@ from uav_swarm_sim.planning.energy_balance import DroneEnergyState, build_energy
 
 @pytest.fixture
 def energy_case():
-    cfg = load_config("config/default.yaml", {
+    cfg = load_config("config/study01_demand.yaml", {
         "env.coverage_altitude_m": 100.0,
         "sensor.sensor_power_w": 15.0,
         "sensor.photogrammetry.enabled": True,
